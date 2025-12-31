@@ -1268,12 +1268,14 @@ class FakeLLM(LLMProvider):
 示意：
 
 ```python
+from story_for_you.utils.json_utils import load_json_response
+
 system = templates.load("event_extraction")
 context_block = "\n".join(context.for_prompt().values())
 task = EVENT_TASK_TEMPLATE.format(chapter_no=chapter_no, text=chapter_text)
 prompt = f"{context_block}\n\n{task}"
 response = llm.generate(prompt=prompt, system=system)
-payload = json.loads(response.content)
+payload = load_json_response(response.content)
 ```
 
 ### 11.3 资源与容错策略

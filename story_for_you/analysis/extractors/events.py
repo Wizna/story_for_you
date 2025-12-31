@@ -9,6 +9,7 @@ from typing import Any
 from story_for_you.analysis.context import EventImpact, PlotEvent
 from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
 from story_for_you.llm.base import LLMProvider
+from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +50,11 @@ class EventExtractor:
             logger.debug("Event extraction prompt truncated to %s chars", len(prompt))
         response = self.llm.generate(prompt=prompt)
         try:
-            payload = json.loads(response.content)
+            payload = load_json_response(response.content)
             if isinstance(payload, list):
                 return [self._from_payload(item, chapter_no) for item in payload]
             raise ValueError("Event extractor response is not a list.")
-        except (json.JSONDecodeError, ValueError, TypeError) as exc:
+        except (ValueError, TypeError) as exc:
             logger.warning("Failed to parse event extraction response: %s", exc)
             return self._fallback_extract(chapter_text, participants, chapter_no)
 

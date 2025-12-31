@@ -3,13 +3,13 @@ from __future__ import annotations
 from collections import Counter
 from typing import Iterable
 
-import json
 import logging
 import re
 
 from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
 from story_for_you.llm.base import LLMProvider
+from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,9 @@ class CharacterExtractor:
         except Exception as exc:  # pragma: no cover - defensive against provider issues
             logger.warning("Character extraction prompt failed: %s", exc)
             return []
-        try:
-            payload = json.loads(response.content)
-        except json.JSONDecodeError as exc:
-            logger.warning("Character extractor returned invalid JSON: %s", exc)
+        payload = load_json_response(response.content)
+        if payload is None:
+            logger.warning("Character extractor returned invalid JSON payload.")
             return []
         if not isinstance(payload, list):
             logger.warning("Character extractor payload is not a list.")

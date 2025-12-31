@@ -8,6 +8,7 @@ from typing import Any
 from story_for_you.analysis.context import PlotEvent, StoryState
 from story_for_you.analysis.prompting import fill_template, load_template
 from story_for_you.llm.base import LLMProvider
+from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -38,7 +39,9 @@ class StateSynthesizer:
         )
         response = self.llm.generate(prompt=prompt)
         try:
-            data = json.loads(response.content)
+            data = load_json_response(response.content)
+            if not isinstance(data, dict):
+                raise ValueError("Story state response is not a JSON object.")
             return StoryState(
                 current_arc=str(data.get("current_arc") or (story_state.current_arc if story_state else "setup")),
                 world_tension=str(data.get("world_tension") or (story_state.world_tension if story_state else "low")),
@@ -46,7 +49,7 @@ class StateSynthesizer:
                 time_constraints=[str(item) for item in data.get("time_constraints", [])][:3],
                 unresolved_events=[str(item) for item in data.get("unresolved_events", [])][:5],
             )
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (TypeError, ValueError) as exc:
             logger.warning("Failed to synthesize story state via LLM: %s", exc)
             return self._fallback_update(story_state, events)
 

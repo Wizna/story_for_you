@@ -8,6 +8,7 @@ from typing import Any
 from story_for_you.analysis.context import ChapterSummary
 from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
 from story_for_you.llm.base import LLMProvider
+from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,9 @@ class ChapterSummarizer:
             logger.debug("Chapter summary prompt truncated to %s chars", len(prompt))
         response = self.llm.generate(prompt=prompt)
         try:
-            data = json.loads(response.content)
+            data = load_json_response(response.content)
+            if not isinstance(data, dict):
+                raise ValueError("Chapter summary response is not a JSON object.")
             return ChapterSummary(
                 chapter=int(data.get("chapter", chapter_no)),
                 title=(data.get("title") or meta_payload.get("title_hint") or f"Chapter {chapter_no}")[:80],
@@ -55,7 +58,7 @@ class ChapterSummarizer:
                 synopsis=str(data.get("synopsis", "")).strip() or chapter_text[:200].strip(),
                 irreversible_flags=[str(flag) for flag in data.get("irreversible_flags", [])],
             )
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        except (TypeError, ValueError) as exc:
             logger.warning("Failed to parse chapter summary response: %s", exc)
             return self._fallback_summary(chapter_text, chapter_no)
 
