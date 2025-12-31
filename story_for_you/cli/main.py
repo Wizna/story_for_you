@@ -128,12 +128,16 @@ def _deserialize_index(payload: dict, segments: list[Segment]) -> SegmentIndex:
 def _reanalyze(text: str, settings: Settings, llm: OllamaProvider):
     chunks = _split_text(text, settings)
     chapters = [chunk.content for chunk in chunks]
+    total_chapters = len(chapters)
+    typer.echo(f"Preparing {total_chapters} chapter-sized chunk(s) for analysis...")
     analyzer = StoryAnalyzer(
         llm=llm,
         window_size=settings.analysis.window_size,
         prompt_budget=settings.llm.max_tokens,
     )
-    context = analyzer.analyze(chapters)
+    progress_label = "Analyzing chapters"
+    with typer.progressbar(chapters, length=total_chapters, label=progress_label) as progress_iter:
+        context = analyzer.analyze(progress_iter)
     segments = _chunks_to_segments(chunks)
     segment_index = SegmentIndexService().build(context, segments)
     return context, segments, segment_index
