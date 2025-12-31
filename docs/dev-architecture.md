@@ -1224,3 +1224,109 @@ story --help
 - [ ] 进度条显示
 - [ ] 分析结果可视化（人物关系图）
 - [ ] 支持更多输入格式（epub、mobi）
+
+---
+
+## 11. LLM 推理策略（Ollama + Qwen2.5）
+
+### 11.1 Provider 生命周期
+
+- CLI 入口通过 `_build_llm(settings)` 构造单例 `OllamaProvider`，再把同一个实例注入 `StoryAnalyzer` 与四个核心业务，确保一次命令只建立一个 HTTP client，避免本地 Ollama 端口被短时间打爆。
+- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/seed`，默认指向 `http://localhost:11434` 与 `qwen2.5:7b-instruct`。所有命令都尊重同一套配置，因此切换模型只需修改 `config.yaml` 或 `STORY_LLM__MODEL` 环境变量。
+- `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
+
+```python
+class FakeLLM(LLMProvider):
+    def __init__(self, mapping: dict[str, str]):
+        self.mapping = mapping
+
+    def generate(self, prompt: str, system: str = "") -> LLMResponse:
+        return LLMResponse(content=self.mapping.get(prompt, ""), tokens_used=0)
+
+    def generate_stream(self, prompt: str, system: str = ""):
+        yield from []
+```
+
+### 11.2 Prompt 组装套路
+
+所有抽取与业务 Prompt 遵循统一骨架，便于替换底模：
+
+1. **System 层**：描述抽取/处理目标（位于 `analysis/prompt_templates/` 或各业务模块旁）。
+2. **上下文层**：`StoryContext.for_prompt()` 输出的四段（世界观 → 人物 → 当前剧情 → 最近章节）。
+3. **任务层**：描述当前步骤（如“列出事件”“压缩以下段落”）。
+4. **输出约束**：强制 JSON/YAML schema，避免模型自由发挥。
+
+示意：
+
+```python
+system = templates.load("event_extraction")
+context_block = "\n".join(context.for_prompt().values())
+task = EVENT_TASK_TEMPLATE.format(chapter_no=chapter_no, text=chapter_text)
+prompt = f"{context_block}\n\n{task}"
+response = llm.generate(prompt=prompt, system=system)
+payload = json.loads(response.content)
+```
+
+### 11.3 资源与容错策略
+
+- `OllamaProvider` 默认超时 120 秒，若 Qwen 在本地推理较慢可通过构造函数调大该值（后续会暴露到配置）。
+- `settings.llm.temperature`、`seed` 直接透传到 Prompt 模板，用于固定输出（分析阶段设 0.2～0.3，续写阶段可升到 0.7）。
+- 对于结构化输出（analysis、filter、remove），使用同步 `generate`，确保拿到完整 JSON；续写等长文本可切换到 `generate_stream` 以逐步落盘（v0.2 计划）。
+- 所有命令在捕获 `RuntimeError("Ollama request failed")` 时会立即退出，让用户检查本地服务；未来计划在 `LLMProvider` 层加入指数退避重试。
+
+### 11.4 扩展其他 Provider
+
+1. 新建 `story_for_you/llm/<provider>.py`，继承 `LLMProvider` 并实现 `generate/generate_stream`。
+2. 在 `_build_llm` 中按 `settings.llm.provider` 分支返回对应实现。
+3. 若需要额外配置（API key、proxy 等），把字段加入 `LLMSettings` 并同步 `config.example.yaml`、文档。
+4. 测试：使用 Pytest fixture 注入新的 provider fake，覆盖 CLI 命令的 happy path。
+
+---
+
+## 12. 调试与可观测性
+
+### 12.1 CLI 诊断开关
+
+- `story <cmd> --config path/to/config.yaml`：快速切换不同模型或 chunk 策略。
+- `--context` / `--segments`：复用既有分析输出，定位问题时不用重复跑 LLM。
+- `--no-cache`：排查缓存污染；`--reanalyze`：强制刷新缓存后再执行业务。
+- `story cache clear` / `story cache status`：对应 `.story_cache/`，可立即清除异常条目或读取缓存规模。
+
+### 12.2 Prompt & 缓存审计
+
+- `analysis.json` 中的 `metadata`（`model/_fingerprint/window_size`）是复现关键，提交 issue 时需附带。
+- `segments.json` / `index.json` 搭配 `SegmentIndexService` 可以复盘一次筛选/删除为何拿到特定段落。
+- 若怀疑上下文不一致，可使用 `StoryContext.to_dict()` + `jq` 检查 `characters[*].unresolved` 是否按预期更新。
+
+### 12.3 常见故障排查
+
+| 症状 | 可能原因 | 排查步骤 |
+| ---- | -------- | -------- |
+| `RuntimeError: Ollama request failed` | 本地 `ollama serve` 未启动或模型未下载 | `curl http://localhost:11434/api/tags` 验证服务；`ollama pull qwen2.5:7b-instruct` |
+| 结果不复现 | 使用旧缓存或变更了配置 | 加 `--reanalyze`，确认 `StoryContext.metadata.config_fingerprint` 更新 |
+| 筛选结果空白 | 角色别名未登记 | 检查 `StoryContext.characters[name].aliases`，必要时在分析阶段补充 |
+
+---
+
+## 13. 测试策略
+
+### 13.1 单元测试
+
+- `analysis/layers`：验证窗口、事件账本、状态存储的增删查；利用轻量 dataclass 构造输入，确保窗口大小、事件索引正确。
+- `cache/store`：使用 `tmp_path` 建立临时缓存目录，覆盖 `save/get/clear_all` 分支。
+- `indexer`：为 `SegmentSplitter/SegmentRetriever` 编写 deterministic 文本片段，断言检索结果与 gap 计算。
+
+### 13.2 LLM 相关测试
+
+- 通过前述 `FakeLLMProvider` 固定输出，覆盖 `CharacterExtractor` 等需要 JSON 解析的逻辑，避免在 CI 中调用真实模型。
+- 对核心命令（`compress/filter/remove/continue`）使用 Typer 的 `CliRunner`，注入 fake context/segments，验证 CLI wiring 与文件输出。
+
+### 13.3 基准数据与夹具
+
+- `tests/fixtures/`（待建立）存放 2～3 段短篇文本，涵盖人物冲突、关系变化、反转，以驱动所有模块的回归测试。
+- 针对缓存逻辑，添加 `sample_context.json` 与 `segments.json`，便于在测试中快速构造 `CachedArtifacts`。
+
+### 13.4 覆盖率目标
+
+- `pytest --cov=story_for_you --maxfail=1`：分析、核心、LLM 三个子包需保持 ≥85%。
+- PR 前必须在本地运行 `pytest -q` + `ruff check .`，CLi 输出附于 PR 描述，确保 reviewer 能够复现。
