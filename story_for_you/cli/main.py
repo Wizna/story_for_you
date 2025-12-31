@@ -38,7 +38,11 @@ def _build_llm(settings: Settings) -> OllamaProvider:
 
 
 def _split_text(text: str, settings: Settings) -> list[TextChunk]:
-    splitter = TextSplitter(chunk_size=settings.parser.chunk_size, overlap=settings.parser.overlap)
+    prompt_margin = 2300  # Reserve space for instructions/context to avoid LLM truncation.
+    min_chunk = 800
+    chunk_budget = max(min_chunk, settings.llm.max_tokens - prompt_margin)
+    chunk_size = min(settings.parser.chunk_size, chunk_budget)
+    splitter = TextSplitter(chunk_size=chunk_size, overlap=settings.parser.overlap)
     chunks = splitter.split(text)
     if not chunks:
         chunks = [TextChunk(content=text, start_pos=0, end_pos=len(text), chapter="1")]
@@ -117,7 +121,11 @@ def _deserialize_index(payload: dict, segments: list[Segment]) -> SegmentIndex:
 def _reanalyze(text: str, settings: Settings, llm: OllamaProvider):
     chunks = _split_text(text, settings)
     chapters = [chunk.content for chunk in chunks]
-    analyzer = StoryAnalyzer(llm=llm, window_size=settings.analysis.window_size)
+    analyzer = StoryAnalyzer(
+        llm=llm,
+        window_size=settings.analysis.window_size,
+        prompt_budget=settings.llm.max_tokens,
+    )
     context = analyzer.analyze(chapters)
     segments = _chunks_to_segments(chunks)
     segment_index = SegmentIndexService().build(context, segments)

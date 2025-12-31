@@ -19,15 +19,15 @@ from story_for_you.llm.base import LLMProvider
 class StoryAnalyzer:
     """Coordinates extractor components to build a StoryContext."""
 
-    def __init__(self, llm: LLMProvider, window_size: int = 12):
+    def __init__(self, llm: LLMProvider, window_size: int = 12, prompt_budget: int | None = None):
         self.llm = llm
         self.chapter_window = ChapterSummaryWindow(window_size)
         self.event_ledger = EventLedger()
         self.state_store = StateStore()
-        self.character_extractor = CharacterExtractor(llm)
+        self.character_extractor = CharacterExtractor(llm, prompt_budget=prompt_budget)
         self.relationship_mapper = RelationshipMapper(llm)
-        self.chapter_summarizer = ChapterSummarizer(llm)
-        self.event_extractor = EventExtractor(llm)
+        self.chapter_summarizer = ChapterSummarizer(llm, prompt_budget=prompt_budget)
+        self.event_extractor = EventExtractor(llm, prompt_budget=prompt_budget)
         self.state_synthesizer = StateSynthesizer(llm)
 
     def analyze(self, chapters: Iterable[str]) -> StoryContext:

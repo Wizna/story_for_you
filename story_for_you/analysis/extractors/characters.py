@@ -8,7 +8,7 @@ import logging
 import re
 
 from story_for_you.analysis.context import CharacterState
-from story_for_you.analysis.prompting import fill_template, load_template
+from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
 from story_for_you.llm.base import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -19,14 +19,15 @@ class CharacterExtractor:
 
     ROLE_PRIORITY = {"main": 3, "support": 2, "minor": 1}
 
-    def __init__(self, llm: LLMProvider):
+    def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
         self.llm = llm
         self.personality_analyzer = PersonalityAnalyzer(llm)
         self.template = load_template("character_sheet")
+        self.prompt_budget = prompt_budget
 
     def extract(self, text: str) -> list[CharacterState]:
         """Return structured character states for the text."""
-        prompt = fill_template(self.template, chapter_text=text.strip())
+        prompt = self._build_prompt(text)
         characters = self._prompt_characters(prompt)
         if not characters:
             characters = self._heuristic_extract(text)
@@ -49,6 +50,18 @@ class CharacterExtractor:
         chinese_names = re.findall(r"[\u4e00-\u9fff]{2,3}", text)
         tokens = latin_names + chinese_names
         return Counter(tokens)
+
+    def _build_prompt(self, text: str) -> str:
+        chapter_text = text.strip()
+        prompt, truncated = render_prompt_with_budget(
+            self.template,
+            budget=self.prompt_budget,
+            text_key="chapter_text",
+            text_value=chapter_text,
+        )
+        if truncated:
+            logger.debug("Character prompt truncated to %s chars", len(prompt))
+        return prompt
 
     # Internal helpers -------------------------------------------------
     def _prompt_characters(self, prompt: str) -> list[CharacterState]:

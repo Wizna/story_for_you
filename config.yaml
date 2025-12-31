@@ -1,0 +1,3 @@
+llm:
+  model: qwen2.5:32b-instruct
+  max_tokens: 32000

@@ -7,7 +7,7 @@ import re
 from typing import Any
 
 from story_for_you.analysis.context import EventImpact, PlotEvent
-from story_for_you.analysis.prompting import fill_template, load_template
+from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
 from story_for_you.llm.base import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -16,10 +16,11 @@ logger = logging.getLogger(__name__)
 class EventExtractor:
     """LLM-backed event extractor using structured prompts."""
 
-    def __init__(self, llm: LLMProvider):
+    def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
         self.llm = llm
         self._counter = itertools.count(1)
         self.template = load_template("event_extraction")
+        self.prompt_budget = prompt_budget
 
     def extract(
         self,
@@ -33,13 +34,19 @@ class EventExtractor:
             {"name": name, "aliases": []}
             for name in sorted({participant for participant in participants if participant})
         ]
-        prompt = fill_template(
+        recent_context_text = recent_context.strip() or "暂无历史上下文。"
+        chapter_body = chapter_text.strip()
+        prompt, truncated = render_prompt_with_budget(
             self.template,
+            budget=self.prompt_budget,
+            text_key="chapter_text",
+            text_value=chapter_body,
             chapter_no=str(chapter_no),
             character_roster=json.dumps(roster, ensure_ascii=False),
-            recent_context=recent_context.strip() or "暂无历史上下文。",
-            chapter_text=chapter_text.strip(),
+            recent_context=recent_context_text,
         )
+        if truncated:
+            logger.debug("Event extraction prompt truncated to %s chars", len(prompt))
         response = self.llm.generate(prompt=prompt)
         try:
             payload = json.loads(response.content)

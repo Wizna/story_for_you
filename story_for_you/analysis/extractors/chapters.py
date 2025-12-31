@@ -6,7 +6,7 @@ import re
 from typing import Any
 
 from story_for_you.analysis.context import ChapterSummary
-from story_for_you.analysis.prompting import fill_template, load_template
+from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
 from story_for_you.llm.base import LLMProvider
 
 logger = logging.getLogger(__name__)
@@ -15,9 +15,10 @@ logger = logging.getLogger(__name__)
 class ChapterSummarizer:
     """LLM-backed chapter summarizer using structured prompt templates."""
 
-    def __init__(self, llm: LLMProvider):
+    def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
         self.llm = llm
         self.template = load_template("chapter_summary")
+        self.prompt_budget = prompt_budget
 
     def summarize(
         self,
@@ -30,12 +31,18 @@ class ChapterSummarizer:
         meta_payload = {"chapter_no": chapter_no}
         if chapter_meta:
             meta_payload.update(chapter_meta)
-        prompt = fill_template(
+        recent_context_text = recent_context.strip() or "暂无历史上下文。"
+        chapter_body = chapter_text.strip()
+        prompt, truncated = render_prompt_with_budget(
             self.template,
+            budget=self.prompt_budget,
+            text_key="chapter_text",
+            text_value=chapter_body,
             chapter_meta=json.dumps(meta_payload, ensure_ascii=False),
-            recent_context=recent_context.strip() or "暂无历史上下文。",
-            chapter_text=chapter_text.strip(),
+            recent_context=recent_context_text,
         )
+        if truncated:
+            logger.debug("Chapter summary prompt truncated to %s chars", len(prompt))
         response = self.llm.generate(prompt=prompt)
         try:
             data = json.loads(response.content)
