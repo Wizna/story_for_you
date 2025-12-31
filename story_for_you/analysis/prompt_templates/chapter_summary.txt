@@ -1,0 +1,5 @@
+Chapter Summary Prompt
+======================
+
+Provide a concise summary of the supplied chapter.
+TODO: fill with the final prompt once the extractor is implemented.

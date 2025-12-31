@@ -1,0 +1,5 @@
+State Update Prompt
+===================
+
+Summarize how recent events change the world and characters.
+TODO: complete with production-ready guidance.

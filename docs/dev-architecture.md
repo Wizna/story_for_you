@@ -61,15 +61,15 @@
 
 ## 2. 技术选型
 
-| 组件 | 选择 | 理由 |
-|------|------|------|
-| 语言 | Python 3.11+ | 生态丰富，LLM 集成方便 |
-| LLM 运行时 | Ollama | 本地部署简单，Mac 友好 |
-| 默认模型 | Qwen2.5-7B-Instruct | 中文优秀，内存 < 16G |
-| CLI 框架 | Typer | 类型提示友好，自动生成帮助 |
-| LLM 调用 | httpx + Ollama REST API | 轻量，无额外依赖 |
-| 配置管理 | Pydantic + YAML | 类型安全，易于验证 |
-| 测试 | pytest | Python 标准选择 |
+| 组件       | 选择                    | 理由                       |
+| ---------- | ----------------------- | -------------------------- |
+| 语言       | Python 3.11+            | 生态丰富，LLM 集成方便     |
+| LLM 运行时 | Ollama                  | 本地部署简单，Mac 友好     |
+| 默认模型   | Qwen2.5-7B-Instruct     | 中文优秀，内存 < 16G       |
+| CLI 框架   | Typer                   | 类型提示友好，自动生成帮助 |
+| LLM 调用   | httpx + Ollama REST API | 轻量，无额外依赖           |
+| 配置管理   | Pydantic + YAML         | 类型安全，易于验证         |
+| 测试       | pytest                  | Python 标准选择            |
 
 ---
 
@@ -77,83 +77,82 @@
 
 ```
 story_for_you/
-├── src/
-│   └── story_for_you/
+├── story_for_you/                 # Python package（直接作为 PyPI 包发布）
+│   ├── __init__.py
+│   ├── cli/                      # CLI 入口层
+│   │   ├── __init__.py
+│   │   └── main.py               # Typer 命令定义
+│   │
+│   ├── analysis/                 # 内容理解层（核心）
+│   │   ├── __init__.py
+│   │   ├── context.py            # StoryContext + dataclasses
+│   │   ├── layers/               # 三层记忆结构
+│   │   │   ├── __init__.py
+│   │   │   ├── chapter_window.py # 短期：章节滑窗
+│   │   │   ├── event_ledger.py   # 中期：事件账本
+│   │   │   └── state_store.py    # 长期：状态快照
+│   │   ├── extractors/           # LLM 驱动的语义抽取
+│   │   │   ├── __init__.py
+│   │   │   ├── chapters.py       # ChapterSummarizer
+│   │   │   ├── characters.py     # CharacterExtractor + PersonalityAnalyzer
+│   │   │   ├── events.py         # EventExtractor（含 impact）
+│   │   │   ├── relationships.py  # RelationshipMapper
+│   │   │   └── state.py          # StateSynthesizer
+│   │   └── prompt_templates/     # Prompt 统一维护
+│   │       ├── chapter_summary.txt
+│   │       ├── event_extraction.txt
+│   │       └── state_update.txt
+│   │
+│   ├── indexer/                  # 文本索引与检索
+│   │   ├── __init__.py
+│   │   ├── segment.py            # 段落/场景分割
+│   │   ├── tagger.py             # 人物标注器
+│   │   └── retriever.py          # 段落检索
+│   │
+│   ├── cache/                    # 分析结果缓存
+│   │   ├── __init__.py
+│   │   └── store.py              # 缓存存储管理
+│   │
+│   ├── core/                     # 核心业务逻辑
+│   │   ├── __init__.py
+│   │   ├── compressor.py         # 情节压缩
+│   │   ├── character_filter.py   # 只看指定人物
+│   │   ├── character_remover.py  # 删除人物
+│   │   └── ending_writer.py      # 结局续写
+│   │
+│   ├── llm/                      # LLM 抽象层
+│   │   ├── __init__.py
+│   │   ├── base.py               # 抽象基类
+│   │   └── ollama.py             # Ollama 实现
+│   │
+│   ├── parser/                   # 文本处理
+│   │   ├── __init__.py
+│   │   └── text_splitter.py      # 文本分块
+│   │
+│   ├── config/                   # 配置管理
+│   │   ├── __init__.py
+│   │   └── settings.py           # 配置定义
+│   │
+│   └── utils/                    # 工具函数
 │       ├── __init__.py
-│       ├── cli/                      # CLI 入口层
-│       │   ├── __init__.py
-│       │   └── main.py               # 命令定义
-│       │
-│       ├── analysis/                 # 内容理解层（核心）
-│       │   ├── __init__.py
-│       │   ├── context.py            # StoryContext + dataclasses
-│       │   ├── layers/               # 三层记忆结构
-│       │   │   ├── __init__.py
-│       │   │   ├── chapter_window.py # 短期：章节滑窗
-│       │   │   ├── event_ledger.py   # 中期：事件账本
-│       │   │   └── state_store.py    # 长期：状态快照
-│       │   ├── extractors/           # LLM 驱动的语义抽取
-│       │   │   ├── __init__.py
-│       │   │   ├── chapters.py       # ChapterSummarizer
-│       │   │   ├── characters.py     # CharacterExtractor + PersonalityAnalyzer
-│       │   │   ├── events.py         # EventExtractor（含 impact）
-│       │   │   ├── relationships.py  # RelationshipMapper
-│       │   │   └── state.py          # StateSynthesizer
-│       │   └── prompt_templates/     # Prompt 统一维护
-│       │       ├── chapter_summary.txt
-│       │       ├── event_extraction.txt
-│       │       └── state_update.txt
-│       │
-│       ├── indexer/                  # 文本索引与检索
-│       │   ├── __init__.py
-│       │   ├── segment.py            # 段落/场景分割
-│       │   ├── tagger.py             # 人物标注器
-│       │   └── retriever.py          # 段落检索
-│       │
-│       ├── cache/                    # 分析结果缓存
-│       │   ├── __init__.py
-│       │   └── store.py              # 缓存存储管理
-│       │
-│       ├── core/                     # 核心业务逻辑
-│       │   ├── __init__.py
-│       │   ├── compressor.py         # 情节压缩
-│       │   ├── character_filter.py   # 只看指定人物
-│       │   ├── character_remover.py  # 删除人物
-│       │   └── ending_writer.py      # 结局续写
-│       │
-│       ├── llm/                      # LLM 抽象层
-│       │   ├── __init__.py
-│       │   ├── base.py               # 抽象基类
-│       │   └── ollama.py             # Ollama 实现
-│       │
-│       ├── parser/                   # 文本处理
-│       │   ├── __init__.py
-│       │   └── text_splitter.py      # 文本分块
-│       │
-│       ├── config/                   # 配置管理
-│       │   ├── __init__.py
-│       │   └── settings.py           # 配置定义
-│       │
-│       └── utils/                    # 工具函数
-│           ├── __init__.py
-│           └── file_io.py            # 文件读写
+│       └── file_io.py            # 文件读写
 │
-├── tests/                            # 测试目录
+├── tests/                        # 测试目录（与包结构一一对应）
 │   ├── test_analysis.py
 │   ├── test_compressor.py
 │   ├── test_character_filter.py
 │   └── ...
 │
-├── .story_cache/                     # 默认缓存目录（gitignore）
-│   └── {file_hash}/                  # 按文件哈希组织
-│       └── context.json              # 缓存的分析结果
+├── .story_cache/                 # 默认缓存目录（gitignore）
+│   └── {file_hash}/              # 按文件哈希组织
+│       └── context.json          # 缓存的分析结果
 │
-├── docs/                             # 文档
+├── docs/                         # 文档
 │   ├── specs01.md
 │   └── dev-architecture.md
 │
-├── config.example.yaml               # 示例配置
-├── pyproject.toml                    # 项目配置
+├── config.example.yaml           # 示例配置
+├── pyproject.toml                # PEP 621 配置（包含入口脚本）
 └── README.md
 ```
 
@@ -310,13 +309,13 @@ class StoryAnalyzer:
 
 #### 4.1.4 StoryContext 数据约定
 
-| 字段 | 说明 | 作用范围 |
-|------|------|----------|
-| `chapter_window: list[ChapterSummary]` | 最近 N 章摘要，用于短期记忆 | `continue`/`compress` |
-| `events: list[PlotEvent]` | 中期记忆，含 impact/irreversible | `compress`/`filter`/`remove`/`ending` |
-| `characters: dict[str, CharacterState]` | 人物画像 + 性格锚点 + 未解要素 | 全部 |
-| `story_state: StoryState` | 当前大局状态、冲突、悬念 | prompt 拼装 & 决策 |
-| `metadata: dict[str, Any]` | `_version`、`config_fingerprint`、`model`、`window_size` 等 | 缓存校验 |
+| 字段                                      | 说明                                                                | 作用范围                                      |
+| ----------------------------------------- | ------------------------------------------------------------------- | --------------------------------------------- |
+| `chapter_window: list[ChapterSummary]`  | 最近 N 章摘要，用于短期记忆                                         | `continue`/`compress`                     |
+| `events: list[PlotEvent]`               | 中期记忆，含 impact/irreversible                                    | `compress`/`filter`/`remove`/`ending` |
+| `characters: dict[str, CharacterState]` | 人物画像 + 性格锚点 + 未解要素                                      | 全部                                          |
+| `story_state: StoryState`               | 当前大局状态、冲突、悬念                                            | prompt 拼装 & 决策                            |
+| `metadata: dict[str, Any]`              | `_version`、`config_fingerprint`、`model`、`window_size` 等 | 缓存校验                                      |
 
 `StoryContext.for_prompt()` 输出「世界观 → 人物状态 → 当前剧情线 → 最近章节摘要」四段文本，直接对应记忆文档中的黄金顺序。
 
@@ -432,15 +431,15 @@ class CachedArtifacts:
 
 #### 4.2.2 缓存策略
 
-| 场景 | 行为 |
-|------|------|
-| 首次分析 | 分析后自动缓存（`context + segments + index`） |
-| 再次执行命令 | 根据 `config_hash` 命中缓存，直接复用上下文 + 索引 |
-| 文件内容变更 | `file_hash` 变化 → 新 fingerprint → 重新分析 |
-| CLI/配置变更 (`--model`, `--chunk-size`) | `config_hash` 改变 → 自动失效 |
-| 手动指定 `--context` | 加载提供的 `context.json` + 可选 `segments.json` |
-| 指定 `--no-cache` | 不读取/写入缓存 |
-| 指定 `--reanalyze` | 重新分析并覆盖缓存 |
+| 场景                                         | 行为                                                 |
+| -------------------------------------------- | ---------------------------------------------------- |
+| 首次分析                                     | 分析后自动缓存（`context + segments + index`）     |
+| 再次执行命令                                 | 根据 `config_hash` 命中缓存，直接复用上下文 + 索引 |
+| 文件内容变更                                 | `file_hash` 变化 → 新 fingerprint → 重新分析     |
+| CLI/配置变更 (`--model`, `--chunk-size`) | `config_hash` 改变 → 自动失效                     |
+| 手动指定 `--context`                       | 加载提供的 `context.json` + 可选 `segments.json` |
+| 指定 `--no-cache`                          | 不读取/写入缓存                                      |
+| 指定 `--reanalyze`                         | 重新分析并覆盖缓存                                   |
 
 #### 4.2.3 StoryContext 序列化
 
@@ -492,12 +491,12 @@ class StoryContext:
 
 #### 4.3.1 设计原则
 
-| 原则 | 说明 |
-|------|------|
+| 原则               | 说明                                |
+| ------------------ | ----------------------------------- |
 | **检索优先** | 先通过文本搜索定位，再决定保留/删除 |
-| **原文优先** | 尽可能保留原始文本，不做无谓改写 |
-| **最小改写** | 仅修复逻辑断裂和语言不通顺之处 |
-| **标记透明** | 清晰标注哪些是原文、哪些是桥接文本 |
+| **原文优先** | 尽可能保留原始文本，不做无谓改写    |
+| **最小改写** | 仅修复逻辑断裂和语言不通顺之处      |
+| **标记透明** | 清晰标注哪些是原文、哪些是桥接文本  |
 
 #### 4.3.2 段落分割 (`segment.py`)
 
@@ -604,13 +603,13 @@ class SegmentRetriever:
 
 #### 4.3.5 处理策略对比
 
-| 功能 | 传统方式（LLM 重写） | 检索优先方式 |
-|------|---------------------|-------------|
-| 人物筛选 | LLM 逐段改写 | 检索 + 原文拼接 + 最小桥接 |
-| 人物删除 | LLM 逐段改写 | 检索排除 + 原文保留 + 断点修复 |
-| 原文保留度 | 低（大量改写） | 高（90%+ 原文） |
-| LLM 调用量 | 高 | 低（仅桥接处） |
-| 幻觉风险 | 高 | 低 |
+| 功能       | 传统方式（LLM 重写） | 检索优先方式                   |
+| ---------- | -------------------- | ------------------------------ |
+| 人物筛选   | LLM 逐段改写         | 检索 + 原文拼接 + 最小桥接     |
+| 人物删除   | LLM 逐段改写         | 检索排除 + 原文保留 + 断点修复 |
+| 原文保留度 | 低（大量改写）       | 高（90%+ 原文）                |
+| LLM 调用量 | 高                   | 低（仅桥接处）                 |
+| 幻觉风险   | 高                   | 低                             |
 
 ---
 
@@ -726,6 +725,7 @@ class StoryCompressor:
 ```
 
 **压缩 Prompt 策略**：
+
 - 保留：主线剧情、关键对话、转折点、主要人物互动
 - 删除：重复心理描写、无推进日常、信息回顾
 
@@ -781,10 +781,10 @@ class FilterResult:
 
 **筛选策略**：
 
-| 模式 | 行为 |
-|------|------|
-| `strict` | 仅保留人物直接出现的段落 |
-| `soft` | 包含：直接出现 + 场景上下文 + 相关事件 |
+| 模式       | 行为                                   |
+| ---------- | -------------------------------------- |
+| `strict` | 仅保留人物直接出现的段落               |
+| `soft`   | 包含：直接出现 + 场景上下文 + 相关事件 |
 
 ---
 
@@ -867,9 +867,9 @@ class RemoveResult:
 
 **删除策略**：
 
-| 模式 | 行为 |
-|------|------|
-| `hard` | 彻底删除：整段移除 + 断点桥接 |
+| 模式     | 行为                                    |
+| -------- | --------------------------------------- |
+| `hard` | 彻底删除：整段移除 + 断点桥接           |
 | `soft` | 弱化存在：名字替换为代词/删除，保留情节 |
 
 ---
@@ -908,50 +908,60 @@ story <command> [options] <input_file>
 ### 5.2 命令列表
 
 #### 内容分析（推荐首先执行）
+
 ```bash
 story analyze novel.txt -o analysis.json
 ```
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `-o, --output` | 分析结果输出文件 | `{input}_analysis.json` |
-| `--format` | 输出格式 json/yaml | json |
+
+| 参数             | 说明               | 默认值                    |
+| ---------------- | ------------------ | ------------------------- |
+| `-o, --output` | 分析结果输出文件   | `{input}_analysis.json` |
+| `--format`     | 输出格式 json/yaml | json                      |
 
 **输出内容**：人物列表、人物关系、关键事件、性格分析
 
 #### 情节压缩
+
 ```bash
 story compress novel.txt -o output.txt --level medium
 ```
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `-o, --output` | 输出文件 | `{input}_compressed.txt` |
-| `--level` | 压缩级别 light/medium/heavy | medium |
+
+| 参数             | 说明                        | 默认值                     |
+| ---------------- | --------------------------- | -------------------------- |
+| `-o, --output` | 输出文件                    | `{input}_compressed.txt` |
+| `--level`      | 压缩级别 light/medium/heavy | medium                     |
 
 #### 人物筛选
+
 ```bash
 story filter novel.txt --characters "张三,李四" --mode soft -o output.txt
 ```
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `-c, --characters` | 要保留的人物（逗号分隔） | 必填 |
-| `--mode` | strict/soft | soft |
+
+| 参数                 | 说明                     | 默认值 |
+| -------------------- | ------------------------ | ------ |
+| `-c, --characters` | 要保留的人物（逗号分隔） | 必填   |
+| `--mode`           | strict/soft              | soft   |
 
 #### 人物删除
+
 ```bash
 story remove novel.txt --characters "王五" --mode hard -o output.txt
 ```
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `-c, --characters` | 要删除的人物 | 必填 |
-| `--mode` | hard/soft | hard |
+
+| 参数                 | 说明         | 默认值 |
+| -------------------- | ------------ | ------ |
+| `-c, --characters` | 要删除的人物 | 必填   |
+| `--mode`           | hard/soft    | hard   |
 
 #### 结局续写
+
 ```bash
 story continue novel.txt --hint "希望是HE" -o output.txt
 ```
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--hint` | 结局期望提示 | 空 |
+
+| 参数       | 说明         | 默认值 |
+| ---------- | ------------ | ------ |
+| `--hint` | 结局期望提示 | 空     |
 
 ### 5.3 全局选项
 
@@ -985,12 +995,12 @@ story cache clear
 story cache status
 ```
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `--context` | 指定分析结果文件路径 | 自动查找缓存 |
-| `--segments` | 指定 SegmentIndex JSON（若与 context 不在同一目录） | 自动查找缓存 |
-| `--no-cache` | 不使用也不保存缓存 | false |
-| `--reanalyze` | 强制重新分析并更新缓存 | false |
+| 参数            | 说明                                                | 默认值       |
+| --------------- | --------------------------------------------------- | ------------ |
+| `--context`   | 指定分析结果文件路径                                | 自动查找缓存 |
+| `--segments`  | 指定 SegmentIndex JSON（若与 context 不在同一目录） | 自动查找缓存 |
+| `--no-cache`  | 不使用也不保存缓存                                  | false        |
+| `--reanalyze` | 强制重新分析并更新缓存                              | false        |
 
 ---
 
@@ -1174,7 +1184,7 @@ story = "story_for_you.cli.main:app"
 
 ### 9.1 前置条件
 
-1. Python 3.11+
+1. Python 3.12+
 2. Ollama 已安装并运行
 3. Qwen2.5:7b-instruct 模型已下载
 

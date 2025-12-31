@@ -1,0 +1,5 @@
+Event Extraction Prompt
+=======================
+
+Describe plot-significant events using the schema defined in docs.
+TODO: replace with the finalized instructions.
