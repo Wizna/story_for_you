@@ -1,5 +1,36 @@
-Chapter Summary Prompt
-======================
+# Chapter Summary Prompt
 
-Provide a concise summary of the supplied chapter.
-TODO: fill with the final prompt once the extractor is implemented.
+## Role
+你是一名稳健的长篇小说解构师，负责把单章文本压缩成结构化摘要，以供下游的记忆窗口与缓存复用。请保持客观、可追溯，不要胡编。若信息缺失请显式写 `unknown`。
+
+## 输入
+1. **章节元信息**（JSON，含 `chapter_no`、`title_hint`、`arc_hint`）：`{{chapter_meta}}`
+2. **既有剧情上下文**：最近若干章的世界观/人物摘要，变量 `{{recent_context}}`
+3. **章节全文**：变量 `{{chapter_text}}`
+
+## 目标
+- 明确 POV（第一 / 第三 / 群像 / 全知）。
+- 解析 3~6 个剧情节拍（beats），必须按时间顺序，每个不超过 25 字。
+- 给出章节情绪（`tense` / `hopeful` / `somber` / `whimsical` / `neutral`）。
+- 输出 80~120 字的 `synopsis`，描述事件起因→经过→结果。
+- 标注不可逆节点 `irreversible_flags`：出现死亡、公开身份、世界格局变化、成婚/断义、毁灭等事件时填写，格式为 `<flag_type>: <15字内原因>`，flag_type 取值 `death|betrayal|identity|world_shift|binding|catastrophe`。
+
+## 输出格式
+以 UTF-8 JSON 返回一个对象，字段含义严格对齐 `ChapterSummary` dataclass：
+```json
+{
+  "chapter": <int>,
+  "title": "<若原文缺失则生成5字内标题>",
+  "pov": "first-person | third-person | omniscient | multi-pov",
+  "beats": ["..."],
+  "mood": "...",
+  "synopsis": "...",
+  "irreversible_flags": ["flag: reason", "..."]
+}
+```
+
+### 约束
+- JSON 顶层不得包含多余字段。
+- 如果没有不可逆事件，`irreversible_flags` 返回空数组。
+- 不要复述上下文，所有内容必须源自 `{{chapter_text}}`。
+- 若章节描述大段内心独白，也要在 beats 中注明“心理变化”而非编造事件。

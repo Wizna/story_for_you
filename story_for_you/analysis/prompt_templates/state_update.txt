@@ -1,5 +1,33 @@
-State Update Prompt
-===================
+# State Update Prompt
 
-Summarize how recent events change the world and characters.
-TODO: complete with production-ready guidance.
+## Role
+你是剧情状态合并器，需要读取上一帧的世界/人物状态以及新发生的事件，产出最新的 `StoryState`。目标是压缩成可复现的结构化 JSON，而非散文。
+
+## 输入
+1. **上一帧 StoryState**：JSON，变量 `{{prior_state}}`（若为 `null` 表示全新故事）。
+2. **关键事件**：来自同章节的 `PlotEvent` 数组 `{{events}}`。
+3. **上下文摘要**：`{{recent_context}}`（世界观与主冲突的背景提醒）。
+
+## 输出任务
+- 识别当前剧情所在阶段 `current_arc`：`setup | journey | twist | climax | dark-night | resolution`。
+- 根据事件类型调节 `world_tension`：`low / medium / high`。冲突或 setback 需至少 medium。
+- 汇总 3~5 条 `major_conflicts`，描述正在进行的矛盾或任务。
+- 捕捉 0~3 条 `time_constraints`（deadline、限时诅咒、婚期等）。
+- 更新 `unresolved_events`：记录尚未收尾的承诺 / 伏笔 / 债务，每条 20 字内。
+
+## 输出格式
+```json
+{
+  "current_arc": "...",
+  "world_tension": "low|medium|high",
+  "major_conflicts": ["..."],
+  "time_constraints": ["..."],
+  "unresolved_events": ["..."]
+}
+```
+
+### 规则
+- 如果输入事件为空，则延用上一帧的 tension 与 arc，但仍需清理长列表（最多 5 项）。
+- 仅当事件结果明确无解时才把条目移出 `unresolved_events`；若故事进入 resolution，务必移除已解决事项。
+- 将人物层面的誓言/仇恨也可写入 `major_conflicts`，但要明确是谁 vs 谁。
+- 不添加额外字段；若某数组无内容，返回空数组。

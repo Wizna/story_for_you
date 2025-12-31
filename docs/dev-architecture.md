@@ -270,6 +270,16 @@ class StateSynthesizer:
 - `EventExtractor` 使用 `prompt_templates/event_extraction.txt` 中的【事件标准】，过滤掉无长期影响的桥段。
 - `StateSynthesizer` 接收旧状态 + 新事件，输出 diff，再由 `StateStore` 合并。
 
+**Prompt 模板细则**
+
+| 模板 | 输入片段 | 关键字段 | 约束 |
+| --- | --- | --- | --- |
+| `chapter_summary.txt` | 章节元信息、最近上下文、章节原文 | `pov`（first/third/omniscient/multi）、`beats` 3~6 条、`mood`、`synopsis`、`irreversible_flags` | 仅产出 1 个 JSON 对象；不可逆标记格式 `flag: reason`，类型限定为 `death/betrayal/identity/world_shift/binding/catastrophe` |
+| `event_extraction.txt` | 章节号、人物清单、上下文、章节原文 | `event_id`(`CH{chapter}-E01`)、`type`、`participants`、`impact`、`is_irreversible` | 只保留对剧情长期有意义的事件；`participants` 需映射回主名；`impact` 字段允许空结构 |
+| `state_update.txt` | 旧 `StoryState`、事件数组、上下文 | `current_arc`、`world_tension`、`major_conflicts`、`time_constraints`、`unresolved_events` | Arc 取值 `setup/journey/twist/climax/dark-night/resolution`；数组最长 5 条；无新增字段 |
+
+模板中统一使用 `{{chapter_text}}`、`{{recent_context}}`、`{{events}}` 等占位符，后续在 `StoryAnalyzer` 中按需替换。文本采用 Markdown 说明 + JSON schema 例子，便于快照测试与手动审阅。
+
 #### 4.1.3 分析协调器 (`StoryAnalyzer`)
 
 ```python

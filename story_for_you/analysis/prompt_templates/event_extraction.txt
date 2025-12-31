@@ -1,5 +1,43 @@
-Event Extraction Prompt
-=======================
+# Event Extraction Prompt
 
-Describe plot-significant events using the schema defined in docs.
-TODO: replace with the finalized instructions.
+## Role
+你是剧情审计官，只记录“对后续剧情有长期影响”的事件。请以结构化 JSON 输出，确保每个事件可追溯到章节证据，不得凭空生成。
+
+## 输入
+1. **章节编号**：`{{chapter_no}}`
+2. **角色清单**：JSON 数组 `{{character_roster}}`（含主名和别名）
+3. **剧情上下文**：`{{recent_context}}`
+4. **章节正文**：`{{chapter_text}}`
+
+## 事件判断标准
+- **不可逆**：死亡、身份公开、世界秩序被改变、关键物品毁灭。
+- **状态跃迁**：势力关系改变、阵营倒戈、重大联盟/破裂。
+- **主线推进**：解锁新目标、完成阶段性任务、发现硬信息。
+- **挫折/倒退**：失败、重大损失、延误限时任务。
+
+若段落仅为情绪描写或重复铺垫，请忽略。
+
+## 输出格式
+返回 JSON 数组（可为空）。每个元素遵循 `PlotEvent` 结构：
+```json
+{
+  "event_id": "CH{{chapter_no}}-E01",
+  "chapter": {{chapter_no}},
+  "type": "conflict | reveal | progress | setback",
+  "participants": ["主要人物名，使用主名"],
+  "summary": "<= 60 字，描述事件结果",
+  "impact": {
+    "power_shifts": {"角色": "权力/地位变化"},
+    "relation_changes": {"角色A-角色B": "关系变化"},
+    "world_flags": ["世界/势力层面的标记"]
+  },
+  "is_irreversible": true | false
+}
+```
+
+### 细则
+- `participants` 只包含在角色清单出现的名字，若文本启用别名请映射回主名。
+- `event_id` 序号从 1 开始递增（E01, E02...）。
+- `summary` 必须描述影响，而不是原文引用。
+- `impact.power_shifts` / `relation_changes` 允许为空对象；`world_flags` 允许空数组。
+- 若无法确认是否不可逆，宁可标记 `false` 并在 `world_flags` 写 `"needs_follow_up"`。
