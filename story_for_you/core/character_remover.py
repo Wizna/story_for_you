@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Literal
 
 from story_for_you.analysis.context import StoryContext
 from story_for_you.indexer.retriever import SegmentRetriever
@@ -24,16 +25,65 @@ class CharacterRemover:
 
     def remove(self, text: str, characters: list[str], context: StoryContext, mode: str = "hard") -> RemoveResult:
         """Return a removal result for the supplied characters."""
-        raise NotImplementedError
+        kept_segments = self.retriever.retrieve_excluding(exclude=characters, mode=mode)
+        affected_segments = self.retriever.retrieve_by_characters(include=characters, mode="strict")
+        processed: list[Segment] = []
+        deleted = rewritten = replaced = 0
+        for segment in affected_segments:
+            action = self._evaluate_segment(segment, characters, context)
+            if action == "delete":
+                deleted += 1
+                continue
+            if action == "minimal_rewrite":
+                processed.append(self._minimal_rewrite(segment, characters, context))
+                rewritten += 1
+            else:
+                processed.append(self._replace_names(segment, characters))
+                replaced += 1
+        merged = sorted(kept_segments + processed, key=lambda seg: seg.segment_id)
+        content = "\n\n".join(seg.content.strip() for seg in merged)
+        ratio = len(content) / max(len(text), 1)
+        return RemoveResult(
+            content=content,
+            original_ratio=ratio,
+            deleted_segments=deleted,
+            rewritten_segments=rewritten,
+            replaced_segments=replaced,
+        )
 
-    def _evaluate_segment(self, segment: Segment, characters: list[str], context: StoryContext):
+    def _evaluate_segment(self, segment: Segment, characters: list[str], context: StoryContext) -> Literal["delete", "keep_with_replace", "minimal_rewrite"]:
         """Decide how to treat a segment that references removed characters."""
-        raise NotImplementedError
+        lowered = segment.content.lower()
+        occurrences = sum(lowered.count(name.lower()) for name in characters)
+        if occurrences >= 3:
+            return "delete"
+        if occurrences == 2 and context.story_state and context.story_state.world_tension != "low":
+            return "minimal_rewrite"
+        return "keep_with_replace"
 
     def _replace_names(self, segment: Segment, characters: list[str]) -> Segment:
         """Perform simple textual replacements without LLM help."""
-        raise NotImplementedError
+        content = segment.content
+        for name in characters:
+            content = content.replace(name, "")
+        return Segment(
+            segment_id=segment.segment_id,
+            content=" ".join(content.split()),
+            chapter=segment.chapter,
+            characters=[name for name in segment.characters if name not in characters],
+            metadata=segment.metadata,
+        )
 
     def _minimal_rewrite(self, segment: Segment, characters: list[str], context: StoryContext) -> Segment:
         """Ask the LLM to minimally rewrite a conflicting segment."""
-        raise NotImplementedError
+        arc = context.story_state.current_arc if context.story_state else "story"
+        rewritten = (
+            f"[Adjusted:{arc}] Key events remain but references to {', '.join(characters)} were removed."
+        )
+        return Segment(
+            segment_id=segment.segment_id,
+            content=rewritten,
+            chapter=segment.chapter,
+            characters=[name for name in segment.characters if name not in characters],
+            metadata=segment.metadata,
+        )

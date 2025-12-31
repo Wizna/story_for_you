@@ -1,12 +1,27 @@
+from __future__ import annotations
+
+import json
+import shutil
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional, Tuple
 
 import typer
+import yaml
 
+from story_for_you.analysis.context import StoryContext
 from story_for_you.analysis.story_analyzer import StoryAnalyzer
-from story_for_you.cache.store import ContextStore
+from story_for_you.cache.store import CachedArtifacts, ContextStore
 from story_for_you.config.settings import Settings, SettingsLoader
+from story_for_you.core.character_filter import CharacterFilter
+from story_for_you.core.character_remover import CharacterRemover
+from story_for_you.core.compressor import StoryCompressor
+from story_for_you.core.ending_writer import EndingWriter
+from story_for_you.indexer import SegmentIndexService
+from story_for_you.indexer.retriever import SegmentRetriever
+from story_for_you.indexer.segment import Gap, Segment, SegmentIndex
 from story_for_you.llm.ollama import OllamaProvider
+from story_for_you.parser.text_splitter import TextChunk, TextSplitter
+from story_for_you.utils.file_io import read_text_file, write_text_file
 
 app = typer.Typer(help="Story For You command line interface.")
 cache_app = typer.Typer(help="Cache management commands.")
@@ -22,6 +37,143 @@ def _build_llm(settings: Settings) -> OllamaProvider:
     return OllamaProvider(model=settings.llm.model, base_url=settings.llm.base_url)
 
 
+def _split_text(text: str, settings: Settings) -> list[TextChunk]:
+    splitter = TextSplitter(chunk_size=settings.parser.chunk_size, overlap=settings.parser.overlap)
+    chunks = splitter.split(text)
+    if not chunks:
+        chunks = [TextChunk(content=text, start_pos=0, end_pos=len(text), chapter="1")]
+    return chunks
+
+
+def _chunks_to_segments(chunks: Iterable[TextChunk]) -> list[Segment]:
+    segments: list[Segment] = []
+    for idx, chunk in enumerate(chunks, start=1):
+        chapter_value = chunk.chapter
+        try:
+            chapter = int(chapter_value) if chapter_value is not None else None
+        except (TypeError, ValueError):
+            chapter = None
+        segments.append(
+            Segment(
+                segment_id=idx,
+                content=chunk.content,
+                chapter=chapter or idx,
+                characters=[],
+                metadata={"start": chunk.start_pos, "end": chunk.end_pos},
+            )
+        )
+    return segments
+
+
+def _serialize_segments(segments: list[Segment]) -> list[dict]:
+    serialized: list[dict] = []
+    for segment in segments:
+        serialized.append(
+            {
+                "segment_id": segment.segment_id,
+                "content": segment.content,
+                "chapter": segment.chapter,
+                "characters": segment.characters,
+                "metadata": segment.metadata,
+            }
+        )
+    return serialized
+
+
+def _deserialize_segments(payload: list[dict]) -> list[Segment]:
+    return [
+        Segment(
+            segment_id=item["segment_id"],
+            content=item["content"],
+            chapter=item.get("chapter"),
+            characters=item.get("characters", []),
+            metadata=item.get("metadata", {}),
+        )
+        for item in payload
+    ]
+
+
+def _serialize_index(index: SegmentIndex) -> dict:
+    return {
+        "char_index": index.char_index,
+        "chapter_index": index.chapter_index,
+        "gap_map": {key: {"start_id": gap.start_id, "end_id": gap.end_id, "description": gap.description} for key, gap in index.gap_map.items()},
+    }
+
+
+def _deserialize_index(payload: dict, segments: list[Segment]) -> SegmentIndex:
+    gap_map = {
+        key: Gap(start_id=value["start_id"], end_id=value["end_id"], description=value.get("description", ""))
+        for key, value in payload.get("gap_map", {}).items()
+    }
+    return SegmentIndex(
+        segments=segments,
+        char_index=payload.get("char_index", {}),
+        chapter_index=payload.get("chapter_index", {}),
+        gap_map=gap_map,
+    )
+
+
+def _reanalyze(text: str, settings: Settings, llm: OllamaProvider):
+    chunks = _split_text(text, settings)
+    chapters = [chunk.content for chunk in chunks]
+    analyzer = StoryAnalyzer(llm=llm, window_size=settings.analysis.window_size)
+    context = analyzer.analyze(chapters)
+    segments = _chunks_to_segments(chunks)
+    segment_index = SegmentIndexService().build(context, segments)
+    return context, segments, segment_index
+
+
+def _load_artifacts(
+    *,
+    input_file: Path,
+    text: str,
+    settings: Settings,
+    llm: OllamaProvider,
+    context_path: Path | None = None,
+    segments_path: Path | None = None,
+    no_cache: bool = False,
+    reanalyze: bool = False,
+) -> Tuple[StoryContext, list[Segment], SegmentIndex]:
+    store = ContextStore()
+    if context_path:
+        payload = json.loads(context_path.read_text(encoding="utf-8"))
+        context = StoryContext.from_dict(payload)
+        if segments_path and segments_path.exists():
+            segments_payload = json.loads(segments_path.read_text(encoding="utf-8"))
+            segments = _deserialize_segments(segments_payload)
+        else:
+            segments = _chunks_to_segments(_split_text(text, settings))
+        segment_index = SegmentIndexService().build(context, segments)
+        return context, segments, segment_index
+    if not no_cache and not reanalyze:
+        cached = store.get(input_file, settings)
+        if cached:
+            segments = _deserialize_segments(cached.segments)
+            segment_index = _deserialize_index(cached.index, segments)
+            return cached.context, segments, segment_index
+    context, segments, segment_index = _reanalyze(text, settings, llm)
+    if not no_cache:
+        artifacts = CachedArtifacts(
+            context=context,
+            segments=_serialize_segments(segments),
+            index=_serialize_index(segment_index),
+            metadata={"input": str(input_file), "segments": len(segments)},
+        )
+        store.save(input_file, settings, artifacts)
+    return context, segments, segment_index
+
+
+def _write_analysis_output(context: StoryContext, output_path: Path, fmt: str) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if fmt == "yaml":
+        payload = yaml.safe_dump(context.to_dict(), allow_unicode=True, sort_keys=False)
+        output_path.write_text(payload, encoding="utf-8")
+    else:
+        payload = json.dumps(context.to_dict(), ensure_ascii=False, indent=2)
+        output_path.write_text(payload, encoding="utf-8")
+
+
 @app.command()
 def analyze(
     input_file: Path,
@@ -32,9 +184,25 @@ def analyze(
     """Analyze the input story and persist a StoryContext artifact."""
     settings = _load_settings(config)
     llm = _build_llm(settings)
-    _ = StoryAnalyzer(llm=llm, window_size=settings.analysis.window_size)
-    _ = ContextStore()
-    typer.echo("Analyze pipeline placeholder - implementation pending.")
+    if format not in {"json", "yaml"}:
+        raise typer.BadParameter("Format must be 'json' or 'yaml'.")
+    text = read_text_file(input_file)
+    context, segments, segment_index = _reanalyze(text, settings, llm)
+    store = ContextStore()
+    if settings.cache.enabled and settings.cache.auto_save:
+        artifacts = CachedArtifacts(
+            context=context,
+            segments=_serialize_segments(segments),
+            index=_serialize_index(segment_index),
+            metadata={"input": str(input_file), "segments": len(segments)},
+        )
+        store.save(input_file, settings, artifacts)
+    output_path = output
+    if output_path is None:
+        suffix = "yaml" if format == "yaml" else "json"
+        output_path = input_file.with_name(f"{input_file.stem}_analysis.{suffix}")
+    _write_analysis_output(context, output_path, format)
+    typer.echo(f"Analysis saved to {output_path}")
 
 
 @app.command()
@@ -43,10 +211,30 @@ def compress(
     output: Optional[Path] = typer.Option(None, "--output", "-o"),
     level: str = typer.Option("medium", "--level", show_default=True),
     config: Optional[Path] = typer.Option(None, "--config"),
+    context_path: Optional[Path] = typer.Option(None, "--context"),
+    segments_path: Optional[Path] = typer.Option(None, "--segments"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    reanalyze: bool = typer.Option(False, "--reanalyze"),
 ) -> None:
     """Compress story beats according to the configured level."""
-    _ = _load_settings(config)
-    typer.echo(f"Compression pipeline placeholder (level={level}).")
+    settings = _load_settings(config)
+    text = read_text_file(input_file)
+    llm = _build_llm(settings)
+    context, segments, segment_index = _load_artifacts(
+        input_file=input_file,
+        text=text,
+        settings=settings,
+        llm=llm,
+        context_path=context_path,
+        segments_path=segments_path,
+        no_cache=no_cache,
+        reanalyze=reanalyze,
+    )
+    compressor = StoryCompressor(llm, segment_index, level=level, levels=settings.compress.levels.__dict__)
+    compressed = compressor.compress(text, context)
+    target = output or input_file.with_name(f"{input_file.stem}_compressed.txt")
+    write_text_file(target, compressed)
+    typer.echo(f"Compressed story saved to {target}")
 
 
 @app.command(name="filter")
@@ -56,11 +244,34 @@ def filter_characters(
     mode: str = typer.Option("soft", "--mode", show_default=True),
     output: Optional[Path] = typer.Option(None, "--output", "-o"),
     config: Optional[Path] = typer.Option(None, "--config"),
+    context_path: Optional[Path] = typer.Option(None, "--context"),
+    segments_path: Optional[Path] = typer.Option(None, "--segments"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    reanalyze: bool = typer.Option(False, "--reanalyze"),
 ) -> None:
     """Filter story content by the provided character list."""
-    _ = _load_settings(config)
+    settings = _load_settings(config)
+    text = read_text_file(input_file)
+    llm = _build_llm(settings)
     targets = [item.strip() for item in characters.split(",") if item.strip()]
-    typer.echo("Character filter placeholder for: " + ", ".join(targets))
+    if not targets:
+        raise typer.BadParameter("Provide at least one character name.")
+    context, segments, segment_index = _load_artifacts(
+        input_file=input_file,
+        text=text,
+        settings=settings,
+        llm=llm,
+        context_path=context_path,
+        segments_path=segments_path,
+        no_cache=no_cache,
+        reanalyze=reanalyze,
+    )
+    retriever = SegmentRetriever(segment_index)
+    filterer = CharacterFilter(llm, retriever)
+    result = filterer.filter(text, targets, context, mode)
+    target = output or input_file.with_name(f"{input_file.stem}_filtered.txt")
+    write_text_file(target, result.content)
+    typer.echo(f"Filtered story saved to {target} (original ratio {result.original_ratio:.2f})")
 
 
 @app.command()
@@ -70,11 +281,38 @@ def remove(
     mode: str = typer.Option("hard", "--mode", show_default=True),
     output: Optional[Path] = typer.Option(None, "--output", "-o"),
     config: Optional[Path] = typer.Option(None, "--config"),
+    context_path: Optional[Path] = typer.Option(None, "--context"),
+    segments_path: Optional[Path] = typer.Option(None, "--segments"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    reanalyze: bool = typer.Option(False, "--reanalyze"),
 ) -> None:
     """Remove the given characters from the source text."""
-    _ = _load_settings(config)
+    settings = _load_settings(config)
+    text = read_text_file(input_file)
+    llm = _build_llm(settings)
     targets = [item.strip() for item in characters.split(",") if item.strip()]
-    typer.echo("Character removal placeholder for: " + ", ".join(targets))
+    if not targets:
+        raise typer.BadParameter("Provide at least one character name.")
+    context, segments, segment_index = _load_artifacts(
+        input_file=input_file,
+        text=text,
+        settings=settings,
+        llm=llm,
+        context_path=context_path,
+        segments_path=segments_path,
+        no_cache=no_cache,
+        reanalyze=reanalyze,
+    )
+    retriever = SegmentRetriever(segment_index)
+    remover = CharacterRemover(llm, retriever)
+    result = remover.remove(text, targets, context, mode)
+    target = output or input_file.with_name(f"{input_file.stem}_rewritten.txt")
+    write_text_file(target, result.content)
+    typer.echo(
+        "Removal saved to "
+        + str(target)
+        + f" (deleted={result.deleted_segments}, rewritten={result.rewritten_segments}, replaced={result.replaced_segments})"
+    )
 
 
 @app.command(name="continue")
@@ -83,19 +321,53 @@ def continue_story(
     hint: str = typer.Option("", "--hint"),
     output: Optional[Path] = typer.Option(None, "--output", "-o"),
     config: Optional[Path] = typer.Option(None, "--config"),
+    context_path: Optional[Path] = typer.Option(None, "--context"),
+    segments_path: Optional[Path] = typer.Option(None, "--segments"),
+    no_cache: bool = typer.Option(False, "--no-cache"),
+    reanalyze: bool = typer.Option(False, "--reanalyze"),
 ) -> None:
     """Continue the story with an optional hint about the desired ending."""
-    _ = _load_settings(config)
-    typer.echo(f"Ending writer placeholder. Hint: {hint or 'n/a'}")
+    settings = _load_settings(config)
+    text = read_text_file(input_file)
+    llm = _build_llm(settings)
+    context, segments, segment_index = _load_artifacts(
+        input_file=input_file,
+        text=text,
+        settings=settings,
+        llm=llm,
+        context_path=context_path,
+        segments_path=segments_path,
+        no_cache=no_cache,
+        reanalyze=reanalyze,
+    )
+    writer = EndingWriter(llm, segment_index)
+    continuation = writer.continue_story(text, context, hint)
+    target = output or input_file.with_name(f"{input_file.stem}_ending.txt")
+    write_text_file(target, continuation)
+    typer.echo(f"Continuation saved to {target}")
 
 
 @cache_app.command()
 def clear() -> None:
     """Clear cached analysis artifacts."""
-    typer.echo("Cache clearing placeholder.")
+    store = ContextStore()
+    if store.cache_dir.exists():
+        shutil.rmtree(store.cache_dir)
+    store.cache_dir.mkdir(parents=True, exist_ok=True)
+    typer.echo("Cache cleared.")
 
 
 @cache_app.command()
 def status() -> None:
     """Show cache status summary."""
-    typer.echo("Cache status placeholder.")
+    store = ContextStore()
+    cache_dir = store.cache_dir
+    if not cache_dir.exists():
+        typer.echo("Cache directory does not exist.")
+        return
+    entries = [path for path in cache_dir.iterdir() if path.is_dir()]
+    total_size = 0
+    for file_path in cache_dir.rglob("*"):
+        if file_path.is_file():
+            total_size += file_path.stat().st_size
+    typer.echo(f"{len(entries)} entries, {(total_size / 1024):.1f} KiB total.")

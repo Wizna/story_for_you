@@ -37,6 +37,7 @@ class Relationship:
     relation_type: str
     sentiment: Literal["positive", "neutral", "negative"] = "neutral"
     description: str = ""
+    source: str | None = None
 
 
 @dataclass
