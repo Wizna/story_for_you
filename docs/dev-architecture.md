@@ -1217,15 +1217,11 @@ ollama pull qwen2.5:7b-instruct
 git clone <repo>
 cd story_for_you
 
-# 5. 创建虚拟环境
-python -m venv .venv
-source .venv/bin/activate
+# 5. 安装依赖
+uv sync --dev
 
-# 6. 安装依赖
-pip install -e ".[dev]"
-
-# 7. 验证安装
-story --help
+# 6. 验证安装
+uv run story --help
 ```
 
 ---
