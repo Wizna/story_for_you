@@ -69,13 +69,14 @@ class StoryContext:
     story_state: StoryState | None = None
 
     def for_prompt(self) -> dict[str, Any]:
-        """Serialize the context into prompt-ready sections."""
-        return {
-            "world_state": self.story_state,
-            "characters": list(self.characters.values()),
-            "recent_events": self.events[-5:],
-            "recent_chapters": self.chapter_window[-5:],
+        """Serialize the context into prompt-ready textual sections."""
+        sections = {
+            "world": self._render_world_section(),
+            "characters": self._render_character_section(),
+            "plot": self._render_plot_section(),
+            "chapters": self._render_chapter_section(),
         }
+        return {key: value for key, value in sections.items() if value}
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the context into a JSON-serializable dictionary."""
@@ -127,3 +128,55 @@ class StoryContext:
     def add_metadata(self, key: str, value: Any) -> None:
         """Record helper metadata for downstream consumers."""
         self.metadata[key] = value
+
+    # Prompt helpers ---------------------------------------------------
+    def _render_world_section(self) -> str:
+        if not self.story_state:
+            return ""
+        lines = [
+            f"Arc: {self.story_state.current_arc}",
+            f"Tension: {self.story_state.world_tension}",
+        ]
+        if self.story_state.major_conflicts:
+            lines.append("Major conflicts: " + "; ".join(self.story_state.major_conflicts[-5:]))
+        if self.story_state.time_constraints:
+            lines.append("Time constraints: " + "; ".join(self.story_state.time_constraints[-3:]))
+        if self.story_state.unresolved_events:
+            lines.append("World-level unresolved: " + "; ".join(self.story_state.unresolved_events[-5:]))
+        return "\n".join(lines)
+
+    def _render_character_section(self) -> str:
+        if not self.characters:
+            return ""
+        role_order = {"main": 0, "support": 1, "minor": 2}
+        ordered = sorted(
+            self.characters.values(),
+            key=lambda char: (role_order.get(char.role, 3), char.name.lower()),
+        )
+        lines: list[str] = []
+        for character in ordered[:6]:
+            traits = ", ".join(character.personality[:3]) if character.personality else "traits unknown"
+            unresolved = ", ".join(character.unresolved[:2]) if character.unresolved else ""
+            suffix = f" | unresolved: {unresolved}" if unresolved else ""
+            lines.append(f"- {character.name} ({character.role}): {traits}{suffix}")
+        return "\n".join(lines)
+
+    def _render_plot_section(self) -> str:
+        if not self.events:
+            return ""
+        lines: list[str] = []
+        for event in self.events[-5:]:
+            scope = f"[CH{event.chapter:03d}]" if event.chapter else "[??]"
+            flag = " [irreversible]" if event.is_irreversible else ""
+            participants = ", ".join(event.participants[:3]) if event.participants else "unknown actors"
+            lines.append(f"{scope} {event.type}: {event.summary} ({participants}){flag}")
+        return "\n".join(lines)
+
+    def _render_chapter_section(self) -> str:
+        if not self.chapter_window:
+            return ""
+        lines = []
+        for summary in self.chapter_window[-5:]:
+            flags = f" | flags: {', '.join(summary.irreversible_flags)}" if summary.irreversible_flags else ""
+            lines.append(f"Chapter {summary.chapter} - {summary.title}: {summary.synopsis}{flags}")
+        return "\n".join(lines)

@@ -1,6 +1,6 @@
 # Analysis 模块记忆化设计
 
-> 参考 `docs/memory_system.md` 的“三层记忆”思想，为 `analysis/` 模块制定可落地的设计方案。
+> 参考内部“三层记忆”讨论稿，为 `analysis/` 模块制定可落地的设计方案。
 
 ## 1. 设计目标
 
@@ -114,7 +114,7 @@ class StoryContext:
   - `find_by_character("林凡")`
   - `list_irreversible_since(chapter=128)`
   - `to_timeline()`：按章排序用于缓存和调试。
-- **与 memory_system.md 对齐**：聚焦“不可逆”“有长期影响”的事件。
+- **长期影响准则**：聚焦“不可逆”“有长期影响”的事件。
 
 ### 4.3 长期：状态存储
 
@@ -179,4 +179,3 @@ flowchart TD
 1. **事件图谱**：为 `EventLedger` 增加依赖图，计算剧情主/支线。
 2. **冲突检测**：在 `StateSynthesizer` 中校验人物设定前后一致。
 3. **可视化**：输出 timeline markdown，辅助人工审阅。
-

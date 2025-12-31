@@ -94,11 +94,12 @@ class StoryAnalyzer:
         if recent_chapters:
             lines.append("Recent chapters:")
             lines.extend(recent_chapters)
-        recent_events = self.event_ledger.timeline()[-3:]
+        recent_events = self.event_ledger.recent(3)
         if recent_events:
             lines.append("Recent events:")
             lines.extend(
-                f"- {event.type}: {event.summary} ({', '.join(event.participants[:3])})".strip()
+                f"- {event.type}: {event.summary} ({', '.join(event.participants[:3])})"
+                + (" [irreversible]" if event.is_irreversible else "")
                 for event in recent_events
             )
         return "\n".join(lines).strip()

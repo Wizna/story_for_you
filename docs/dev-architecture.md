@@ -151,9 +151,11 @@ story_for_you/
 │   ├── specs01.md
 │   └── dev-architecture.md
 │
-├── config.example.yaml           # 示例配置
+├── .story_cache/ (runtime)       # 命令执行后生成的缓存目录（gitignore）
 ├── pyproject.toml                # PEP 621 配置（包含入口脚本）
 └── README.md
+
+> 注：原设计中的 `tests/` 与 `config.example.yaml` 仍在规划阶段，当前代码库尚未提供，可在需要时再补齐。
 ```
 
 ---
@@ -162,7 +164,7 @@ story_for_you/
 
 ### 4.1 内容理解层 (`analysis/`) - 核心模块
 
-**目的**：遵循 `docs/memory_system.md` 的“三层记忆”方案，产出可验证的 `StoryContext`，让四大核心业务在最少 LLM 调用下保持剧情一致。详细设计补充在 `docs/analysis_memory_design.md`。
+**目的**：遵循 `docs/analysis_memory_design.md` 中的“三层记忆”方案，产出可验证的 `StoryContext`，让四大核心业务在最少 LLM 调用下保持剧情一致。详细设计补充在该文档中。
 
 #### 4.1.1 StoryContext 与三层记忆 (`context.py` + `layers/`)
 
@@ -274,6 +276,7 @@ class StateSynthesizer:
 
 | 模板 | 输入片段 | 关键字段 | 约束 |
 | --- | --- | --- | --- |
+| `character_sheet.txt` | 章节原文 | `name`、`aliases`、`role`、`realm`、`personality`、`unresolved` | 最多 8 人，禁止杜撰，仅记录原文证实的信息 |
 | `chapter_summary.txt` | 章节元信息、最近上下文、章节原文 | `pov`（first/third/omniscient/multi）、`beats` 3~6 条、`mood`、`synopsis`、`irreversible_flags` | 仅产出 1 个 JSON 对象；不可逆标记格式 `flag: reason`，类型限定为 `death/betrayal/identity/world_shift/binding/catastrophe` |
 | `event_extraction.txt` | 章节号、人物清单、上下文、章节原文 | `event_id`(`CH{chapter}-E01`)、`type`、`participants`、`impact`、`is_irreversible` | 只保留对剧情长期有意义的事件；`participants` 需映射回主名；`impact` 字段允许空结构 |
 | `state_update.txt` | 旧 `StoryState`、事件数组、上下文 | `current_arc`、`world_tension`、`major_conflicts`、`time_constraints`、`unresolved_events` | Arc 取值 `setup/journey/twist/climax/dark-night/resolution`；数组最长 5 条；无新增字段 |
