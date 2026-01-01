@@ -1,5 +1,6 @@
 from collections import deque
-from typing import Deque, Iterable, List
+from dataclasses import asdict
+from typing import Any, Deque, Iterable, List
 
 from story_for_you.analysis.context import ChapterSummary
 
@@ -31,3 +32,19 @@ class ChapterSummaryWindow:
     def clear(self) -> None:
         """Reset the rolling window."""
         self._window.clear()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the window state to a dictionary."""
+        return {
+            "window_size": self.window_size,
+            "summaries": [asdict(s) for s in self._window],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ChapterSummaryWindow":
+        """Restore window state from a dictionary."""
+        window_size = payload.get("window_size", 12)
+        instance = cls(window_size=window_size)
+        for item in payload.get("summaries", []):
+            instance.append(ChapterSummary(**item))
+        return instance

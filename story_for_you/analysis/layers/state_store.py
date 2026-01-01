@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Iterable
+from dataclasses import asdict
+from typing import Any, Iterable
 
-from story_for_you.analysis.context import CharacterState, PlotEvent, Relationship, StoryState
+from story_for_you.analysis.context import (
+    CharacterState,
+    EventImpact,
+    PlotEvent,
+    Relationship,
+    StoryState,
+)
 
 
 class StateStore:
@@ -122,3 +129,45 @@ class StateStore:
             if character.unresolved:
                 unresolved.append(f"{character.name}: {', '.join(character.unresolved[:2])}")
         return unresolved[:5]
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the store state to a dictionary."""
+        return {
+            "characters": {name: asdict(c) for name, c in self._characters.items()},
+            "story_state": asdict(self._story_state) if self._story_state else None,
+            "event_log": [asdict(e) for e in self._event_log],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> StateStore:
+        """Restore store state from a dictionary."""
+        instance = cls()
+        for name, char_data in payload.get("characters", {}).items():
+            relationships = [Relationship(**r) for r in char_data.get("relationships", [])]
+            character = CharacterState(
+                name=char_data.get("name", name),
+                aliases=char_data.get("aliases", []),
+                realm=char_data.get("realm"),
+                role=char_data.get("role", "minor"),
+                personality=char_data.get("personality", []),
+                relationships=relationships,
+                unresolved=char_data.get("unresolved", []),
+            )
+            instance._characters[name] = character
+        story_state_data = payload.get("story_state")
+        if story_state_data:
+            instance._story_state = StoryState(**story_state_data)
+        for event_data in payload.get("event_log", []):
+            impact_data = event_data.get("impact", {})
+            impact = EventImpact(**impact_data)
+            event = PlotEvent(
+                event_id=event_data.get("event_id", ""),
+                chapter=event_data.get("chapter", 0),
+                type=event_data.get("type", "progress"),
+                participants=event_data.get("participants", []),
+                summary=event_data.get("summary", ""),
+                impact=impact,
+                is_irreversible=event_data.get("is_irreversible", False),
+            )
+            instance._event_log.append(event)
+        return instance

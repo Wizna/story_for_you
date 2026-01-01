@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Iterable, List
+from dataclasses import asdict
+from typing import Any, Iterable, List
 
-from story_for_you.analysis.context import PlotEvent
+from story_for_you.analysis.context import EventImpact, PlotEvent
 
 
 class EventLedger:
@@ -49,3 +50,30 @@ class EventLedger:
         self._events.clear()
         self._char_index.clear()
         self._irreversible.clear()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serialize the ledger state to a dictionary."""
+        return {
+            "events": [asdict(e) for e in self._events],
+        }
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> EventLedger:
+        """Restore ledger state from a dictionary."""
+        instance = cls()
+        events: list[PlotEvent] = []
+        for item in payload.get("events", []):
+            impact_data = item.get("impact", {})
+            impact = EventImpact(**impact_data)
+            event = PlotEvent(
+                event_id=item.get("event_id", ""),
+                chapter=item.get("chapter", 0),
+                type=item.get("type", "progress"),
+                participants=item.get("participants", []),
+                summary=item.get("summary", ""),
+                impact=impact,
+                is_irreversible=item.get("is_irreversible", False),
+            )
+            events.append(event)
+        instance.record(events)
+        return instance

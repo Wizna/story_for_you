@@ -8,10 +8,12 @@ from .context import (
     StoryContext,
     StoryState,
 )
+from .resumable_analyzer import ResumableStoryAnalyzer
 from .story_analyzer import StoryAnalyzer
 
 __all__ = [
     "StoryAnalyzer",
+    "ResumableStoryAnalyzer",
     "StoryContext",
     "StoryState",
     "ChapterSummary",

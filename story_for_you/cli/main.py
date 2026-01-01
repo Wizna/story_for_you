@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from pathlib import Path
@@ -9,7 +10,9 @@ import typer
 import yaml
 
 from story_for_you.analysis.context import StoryContext
+from story_for_you.analysis.resumable_analyzer import ResumableStoryAnalyzer
 from story_for_you.analysis.story_analyzer import StoryAnalyzer
+from story_for_you.cache.progress_store import ProgressStore
 from story_for_you.cache.store import CachedArtifacts, ContextStore
 from story_for_you.config.settings import Settings, SettingsLoader
 from story_for_you.core.character_filter import CharacterFilter
@@ -31,6 +34,17 @@ app.add_typer(cache_app, name="cache")
 def _load_settings(config: Optional[Path]) -> Settings:
     loader = SettingsLoader(config_path=config)
     return loader.load()
+
+
+def _compute_file_hash(file_path: Path) -> str:
+    """Compute a hash of the file content for progress tracking."""
+    digest = hashlib.sha256()
+    with file_path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            if not chunk:
+                break
+            digest.update(chunk)
+    return digest.hexdigest()[:24]
 
 
 def _build_llm(settings: Settings) -> OllamaProvider:
@@ -199,6 +213,7 @@ def analyze(
     output: Optional[Path] = typer.Option(None, "--output", "-o"),
     format: str = typer.Option("json", "--format", show_default=True),
     config: Optional[Path] = typer.Option(None, "--config"),
+    resume: bool = typer.Option(True, "--resume/--no-resume", help="Resume from saved progress if available"),
 ) -> None:
     """Analyze the input story and persist a StoryContext artifact."""
     settings = _load_settings(config)
@@ -206,7 +221,42 @@ def analyze(
     if format not in {"json", "yaml"}:
         raise typer.BadParameter("Format must be 'json' or 'yaml'.")
     text = read_text_file(input_file)
-    context, segments, segment_index = _reanalyze(text, settings, llm)
+
+    if resume:
+        file_hash = _compute_file_hash(input_file)
+        cache_dir = Path(settings.cache.directory) if settings.cache.directory else Path(".story_cache")
+        progress_store = ProgressStore(cache_dir)
+
+        existing_progress = progress_store.get_progress(file_hash)
+        if existing_progress:
+            typer.echo(
+                f"Found existing progress: {existing_progress.completed_chapters}/{existing_progress.total_chapters} chapters completed"
+            )
+            typer.echo(f"Resuming from chapter {existing_progress.completed_chapters + 1}...")
+
+        chunks = _split_text(text, settings)
+        chapters = [chunk.content for chunk in chunks]
+        total_chapters = len(chapters)
+        typer.echo(f"Preparing {total_chapters} chapter-sized chunk(s) for analysis...")
+
+        analyzer = ResumableStoryAnalyzer(
+            llm=llm,
+            progress_store=progress_store,
+            window_size=settings.analysis.window_size,
+            prompt_budget=settings.llm.max_tokens,
+        )
+
+        with typer.progressbar(length=total_chapters, label="Analyzing chapters") as progress:
+            def update_progress(current: int, total: int) -> None:
+                progress.update(1)
+
+            context = analyzer.analyze(chapters, file_hash, progress_callback=update_progress)
+
+        segments = _chunks_to_segments(chunks)
+        segment_index = SegmentIndexService().build(context, segments)
+    else:
+        context, segments, segment_index = _reanalyze(text, settings, llm)
+
     store = ContextStore()
     if settings.cache.enabled and settings.cache.auto_save:
         artifacts = CachedArtifacts(
