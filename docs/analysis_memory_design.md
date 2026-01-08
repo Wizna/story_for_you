@@ -94,6 +94,8 @@ class StoryContext:
 
     def for_prompt(self) -> dict[str, Any]:
         """Transform into prompt payload sections."""
+
+> 关系记忆说明：自 `Relationship.targets` 起，描述一次剧情时会同时列出所有与 `source` 同句出现的人物，避免在 `.story_cache/` 中为每个角色重复写入相同的 `description`。
 ```
 
 ## 4. 三层记忆实现
@@ -130,7 +132,7 @@ class StoryContext:
 
 1. **分块**：通过 `parser/text_splitter.py` 生成章节或场景文本。
 2. **人物/别名提取**：`CharacterExtractor` + `merge_aliases`。
-3. **关系与性格**：`RelationshipMapper`、`PersonalityAnalyzer`。
+3. **关系与性格**：`RelationshipMapper`（句级 co-occurrence，所有其他人物一次性写进 `targets`，`description` 保存剔除多余空白后的完整句子，既清晰又无重复）、`PersonalityAnalyzer`。
 4. **章节摘要**：逐章调用 `ChapterSummarizer` → `ChapterSummaryWindow.upsert(chapter_summary)`.
 5. **事件抽取**：`EventExtractor.extract` → `EventLedger.record`.
 6. **状态刷新**：`StateSynthesizer.update_state(events, characters)`。

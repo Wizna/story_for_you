@@ -33,11 +33,40 @@ class PlotEvent:
 
 @dataclass
 class Relationship:
-    target: str
-    relation_type: str
+    targets: list[str] = field(default_factory=list)
+    relation_type: str = "acquaintance"
     sentiment: Literal["positive", "neutral", "negative"] = "neutral"
     description: str = ""
     source: str | None = None
+
+    def __post_init__(self) -> None:
+        """Ensure targets remain deterministic and deduplicated."""
+        cleaned = [target.strip() for target in self.targets if target]
+        self.targets = sorted(dict.fromkeys(cleaned))
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "Relationship":
+        """Instantiate from legacy payloads supporting both target/targets."""
+        raw_targets = payload.get("targets")
+        if raw_targets is None:
+            raw_target = payload.get("target")
+            if isinstance(raw_target, str):
+                raw_targets = [raw_target]
+            elif isinstance(raw_target, list):
+                raw_targets = [item for item in raw_target if isinstance(item, str)]
+            else:
+                raw_targets = []
+        elif isinstance(raw_targets, str):
+            raw_targets = [raw_targets]
+        else:
+            raw_targets = [item for item in raw_targets if isinstance(item, str)]
+        return cls(
+            targets=raw_targets,
+            relation_type=payload.get("relation_type", "acquaintance"),
+            sentiment=payload.get("sentiment", "neutral"),
+            description=payload.get("description", ""),
+            source=payload.get("source"),
+        )
 
 
 @dataclass
@@ -103,7 +132,7 @@ class StoryContext:
             )
         characters = {}
         for name, value in payload.get("characters", {}).items():
-            relationships = [Relationship(**rel) for rel in value.get("relationships", [])]
+            relationships = [Relationship.from_dict(rel) for rel in value.get("relationships", [])]
             characters[name] = CharacterState(
                 name=value.get("name", name),
                 aliases=value.get("aliases", []),

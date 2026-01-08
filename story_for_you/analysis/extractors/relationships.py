@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import itertools
 import re
 
 from story_for_you.analysis.context import Relationship
@@ -18,24 +17,28 @@ class RelationshipMapper:
         if not characters:
             return []
         relationships: list[Relationship] = []
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple[str, tuple[str, ...]]] = set()
         sentences = re.split(r"(?<=[。.!?])\s+", chapter_text.strip())
         for sentence in sentences:
-            present = [name for name in characters if name in sentence]
-            if len(present) < 2:
+            participants = sorted({name for name in characters if name in sentence})
+            if len(participants) < 2:
                 continue
-            for source, target in itertools.permutations(sorted(set(present)), 2):
-                key = (source, target)
+            relation_type = self._infer_type(sentence)
+            sentiment = self._infer_sentiment(sentence)
+            description = self._render_description(sentence)
+            for source in participants:
+                targets = tuple(name for name in participants if name != source)
+                if not targets:
+                    continue
+                key = (source, targets)
                 if key in seen:
                     continue
-                relation_type = self._infer_type(sentence)
-                sentiment = self._infer_sentiment(sentence)
                 relationships.append(
                     Relationship(
-                        target=target,
+                        targets=list(targets),
                         relation_type=relation_type,
                         sentiment=sentiment,
-                        description=sentence.strip()[:160],
+                        description=description,
                         source=source,
                     )
                 )
@@ -57,3 +60,8 @@ class RelationshipMapper:
         if any(keyword in lowered for keyword in ["comfort", "love", "拥抱", "救"]):
             return "positive"
         return "neutral"
+
+    def _render_description(self, sentence: str) -> str:
+        """Return a compact, readable description snippet."""
+        collapsed = re.sub(r"\s+", " ", sentence).strip()
+        return collapsed

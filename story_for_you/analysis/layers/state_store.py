@@ -87,14 +87,31 @@ class StateStore:
     def _merge_relationship(self, relationship: Relationship) -> None:
         if not relationship.source or relationship.source not in self._characters:
             return
+        if not relationship.targets:
+            return
         owner = self._characters[relationship.source]
+        normalized_targets = self._normalize_targets(relationship.targets)
         for existing in owner.relationships:
-            if existing.target == relationship.target:
+            if existing.targets == normalized_targets:
                 existing.relation_type = relationship.relation_type
                 existing.sentiment = relationship.sentiment
-                existing.description = relationship.description or existing.description
+                if relationship.description:
+                    existing.description = relationship.description
                 return
-        owner.relationships.append(relationship)
+        owner.relationships.append(
+            Relationship(
+                targets=normalized_targets,
+                relation_type=relationship.relation_type,
+                sentiment=relationship.sentiment,
+                description=relationship.description,
+                source=relationship.source,
+            )
+        )
+
+    def _normalize_targets(self, targets: Iterable[str]) -> list[str]:
+        """Return a deterministic, deduplicated target list."""
+        cleaned = [target.strip() for target in targets if target]
+        return sorted(dict.fromkeys(cleaned))
 
     def _render_world_state(self) -> list[str]:
         if not self._story_state:
@@ -143,7 +160,7 @@ class StateStore:
         """Restore store state from a dictionary."""
         instance = cls()
         for name, char_data in payload.get("characters", {}).items():
-            relationships = [Relationship(**r) for r in char_data.get("relationships", [])]
+            relationships = [Relationship.from_dict(r) for r in char_data.get("relationships", [])]
             character = CharacterState(
                 name=char_data.get("name", name),
                 aliases=char_data.get("aliases", []),

@@ -202,10 +202,11 @@ class PlotEvent:
 
 @dataclass
 class Relationship:
-    target: str
+    targets: list[str]
     relation_type: str
     sentiment: Literal["positive", "neutral", "negative"] = "neutral"
     description: str = ""
+    source: str | None = None
 
 @dataclass
 class CharacterState:
@@ -238,6 +239,8 @@ class StoryContext:
     def for_prompt(self) -> dict[str, Any]:
         """拆分为 prompt 需要的几个段落"""
         ...
+
+> 关系去重策略：`Relationship.targets` 记录与 `source` 同句出现的所有人物，因而每段 `description` 只会写入一次，就算原文涉及多人也不会在缓存中反复出现。
 ```
 
 - **短期记忆**：`ChapterSummaryWindow`（`layers/chapter_window.py`）维护最近 N 章（默认 12），提供 `append`, `dump`, `to_prompt_lines()`。
@@ -269,6 +272,7 @@ class StateSynthesizer:
 
 - Prompt 模板集中在 `analysis/prompt_templates/`，便于测试快照稳定。
 - `CharacterExtractor` 与 `PersonalityAnalyzer` 合并输出 `CharacterState`，性格锚点直接写入 `personality`，避免后续“性格漂移”。
+- `RelationshipMapper` 以句子为粒度提取关系，把同一句中的所有其他人物一次性写在 `targets` 内，并把去除多余空白后的完整句子写入 `description`，既不截断也不重复。
 - `EventExtractor` 使用 `prompt_templates/event_extraction.txt` 中的【事件标准】，过滤掉无长期影响的桥段。
 - `StateSynthesizer` 接收旧状态 + 新事件，输出 diff，再由 `StateStore` 合并。
 
