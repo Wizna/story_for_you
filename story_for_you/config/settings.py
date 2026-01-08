@@ -16,6 +16,7 @@ class LLMSettings:
     base_url: str = "http://localhost:11434"
     temperature: float = 0.7
     max_tokens: int = 4096
+    timeout: float = 300.0
     seed: int = 42
 
 

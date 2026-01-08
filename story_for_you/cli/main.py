@@ -55,7 +55,12 @@ def _build_llm(settings: Settings) -> OllamaProvider:
     if settings.llm.max_tokens and settings.llm.max_tokens > 0:
         options["num_ctx"] = settings.llm.max_tokens
     options = {key: value for key, value in options.items() if value is not None}
-    return OllamaProvider(model=settings.llm.model, base_url=settings.llm.base_url, options=options)
+    return OllamaProvider(
+        model=settings.llm.model,
+        base_url=settings.llm.base_url,
+        timeout=settings.llm.timeout,
+        options=options,
+    )
 
 
 def _split_text(text: str, settings: Settings) -> list[TextChunk]:

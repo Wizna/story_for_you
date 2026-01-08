@@ -16,7 +16,7 @@ class OllamaProvider(LLMProvider):
         model: str = "qwen2.5:7b-instruct",
         base_url: str = "http://localhost:11434",
         *,
-        timeout: float = 120.0,
+        timeout: float | httpx.Timeout | None = 300.0,
         options: dict | None = None,
     ):
         self.model = model

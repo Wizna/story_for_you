@@ -1245,7 +1245,7 @@ uv run story --help
 ### 11.1 Provider 生命周期
 
 - CLI 入口通过 `_build_llm(settings)` 构造单例 `OllamaProvider`，再把同一个实例注入 `StoryAnalyzer` 与四个核心业务，确保一次命令只建立一个 HTTP client，避免本地 Ollama 端口被短时间打爆。
-- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/seed`，默认指向 `http://localhost:11434` 与 `qwen2.5:7b-instruct`。所有命令都尊重同一套配置，因此切换模型只需修改 `config.yaml` 或 `STORY_LLM__MODEL` 环境变量。
+- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/timeout/seed`，默认指向 `http://localhost:11434` 与 `qwen2.5:7b-instruct`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 
 ```python
@@ -1284,7 +1284,7 @@ payload = load_json_response(response.content)
 
 ### 11.3 资源与容错策略
 
-- `OllamaProvider` 默认超时 120 秒，若 Qwen 在本地推理较慢可通过构造函数调大该值（后续会暴露到配置）。
+- `OllamaProvider` 默认超时 300 秒，可通过 `settings.llm.timeout`（或环境变量 `STORY_LLM__TIMEOUT`）按需放宽，避免本地 Qwen 完整生成被中途截断。
 - `settings.llm.temperature`、`seed` 直接透传到 Prompt 模板，用于固定输出（分析阶段设 0.2～0.3，续写阶段可升到 0.7）。
 - 对于结构化输出（analysis、filter、remove），使用同步 `generate`，确保拿到完整 JSON；续写等长文本可切换到 `generate_stream` 以逐步落盘（v0.2 计划）。
 - 所有命令在捕获 `RuntimeError("Ollama request failed")` 时会立即退出，让用户检查本地服务；未来计划在 `LLMProvider` 层加入指数退避重试。
