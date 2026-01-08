@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
-from typing import Iterable
+from typing import Any, Iterable
 
 import logging
 import re
@@ -89,9 +89,9 @@ class CharacterExtractor:
         name = str(data.get("name", "")).strip()
         if not name:
             return None
-        aliases = [alias.strip() for alias in data.get("aliases", []) if alias and alias.strip()]
-        unresolved = [flag.strip() for flag in data.get("unresolved", []) if flag and flag.strip()]
-        personality = [trait.strip() for trait in data.get("personality", []) if trait and trait.strip()]
+        aliases = self._normalize_str_list(data.get("aliases", []))
+        unresolved = self._normalize_str_list(data.get("unresolved", []))
+        personality = self._normalize_str_list(data.get("personality", []))
         role = self._normalize_role(data.get("role"))
         realm = str(data.get("realm") or "").strip() or None
         return CharacterState(
@@ -154,6 +154,16 @@ class CharacterExtractor:
     def _merge_list(self, base: list[str], incoming: list[str]) -> list[str]:
         merged = list(dict.fromkeys(item for item in base + incoming if item))
         return merged
+
+    def _normalize_str_list(self, value: Any) -> list[str]:
+        """Ensure we always work with a list of trimmed strings."""
+        if isinstance(value, str):
+            raw = [value]
+        elif isinstance(value, Iterable):
+            raw = [item for item in value if isinstance(item, str)]
+        else:
+            raw = []
+        return [item.strip() for item in raw if item and item.strip()]
 
 
 class PersonalityAnalyzer:
