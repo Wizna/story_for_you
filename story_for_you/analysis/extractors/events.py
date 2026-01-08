@@ -53,9 +53,19 @@ class EventExtractor:
             payload = load_json_response(response.content)
             if isinstance(payload, list):
                 return [self._from_payload(item, chapter_no) for item in payload]
-            raise ValueError("Event extractor response is not a list.")
+            # Provide detailed info about what we got instead of a list
+            payload_repr = repr(payload)[:500] if payload is not None else "None"
+            raise ValueError(
+                f"Event extractor response is not a list. "
+                f"Got type={type(payload).__name__}, value={payload_repr}"
+            )
         except (ValueError, TypeError) as exc:
-            logger.warning("Failed to parse event extraction response: %s", exc)
+            raw_content = response.content[:1000] if response.content else "(empty)"
+            logger.warning(
+                "Failed to parse event extraction response: %s\nRaw response (truncated): %s",
+                exc,
+                raw_content,
+            )
             return self._fallback_extract(chapter_text, participants, chapter_no)
 
     def _from_payload(self, payload: Any, chapter_no: int) -> PlotEvent:
