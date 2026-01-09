@@ -1,0 +1,26 @@
+You produced malformed JSON during the story event extraction task. Convert the
+invalid output below into a syntactically valid JSON array of PlotEvent objects.
+
+Schema requirements:
+- Output must be a JSON array (no surrounding commentary).
+- Each element is an object with keys:
+  - event_id (string)
+  - chapter (integer)
+  - type (string, e.g., "progress", "setback", "reveal", "conflict")
+  - participants (array of strings; use [] when unknown)
+  - summary (string)
+  - impact (object) containing:
+      * power_shifts (object mapping strings to strings)
+      * relation_changes (object mapping strings to strings)
+      * world_flags (array of strings)
+  - is_irreversible (boolean)
+- When information is missing, supply a sensible default (e.g., empty list or false).
+- Preserve the language/tone of the original descriptions.
+
+Reason the previous output was rejected:
+{{error_message}}
+
+Invalid output to fix (truncated if necessary):
+{{invalid_output}}
+
+Return ONLY the corrected JSON array. Do not wrap it in code fences.

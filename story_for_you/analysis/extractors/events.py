@@ -7,11 +7,18 @@ import re
 from typing import Any
 
 from story_for_you.analysis.context import EventImpact, PlotEvent
-from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
+from story_for_you.analysis.prompting import (
+    clamp_text_middle,
+    fill_template,
+    load_template,
+    render_prompt_with_budget,
+)
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
+
+_REPAIR_SNIPPET_BUDGET = 4000
 
 
 class EventExtractor:
@@ -21,6 +28,7 @@ class EventExtractor:
         self.llm = llm
         self._counter = itertools.count(1)
         self.template = load_template("event_extraction")
+        self.repair_template = load_template("event_extraction_repair")
         self.prompt_budget = prompt_budget
 
     def extract(
@@ -49,24 +57,26 @@ class EventExtractor:
         if truncated:
             logger.debug("Event extraction prompt truncated to %s chars", len(prompt))
         response = self.llm.generate(prompt=prompt)
-        try:
-            payload = load_json_response(response.content)
-            if isinstance(payload, list):
-                return [self._from_payload(item, chapter_no) for item in payload]
-            # Provide detailed info about what we got instead of a list
-            payload_repr = repr(payload)[:500] if payload is not None else "None"
-            raise ValueError(
-                f"Event extractor response is not a list. "
-                f"Got type={type(payload).__name__}, value={payload_repr}"
-            )
-        except (ValueError, TypeError) as exc:
-            raw_content = response.content[:1000] if response.content else "(empty)"
-            logger.warning(
-                "Failed to parse event extraction response: %s\nRaw response (truncated): %s",
-                exc,
-                raw_content,
-            )
-            return self._fallback_extract(chapter_text, participants, chapter_no)
+        events, error = self._parse_response(response.content, chapter_no)
+        if events is not None:
+            return events
+
+        if error:
+            logger.debug("Event extraction parse failed (%s). Attempting repair.", error)
+        repaired_content = self._attempt_repair(response.content, error)
+        if repaired_content:
+            events, repair_error = self._parse_response(repaired_content, chapter_no)
+            if events is not None:
+                return events
+            error = repair_error or error
+
+        raw_content = response.content[:1000] if response.content else "(empty)"
+        logger.warning(
+            "Failed to parse event extraction response after repair: %s\nRaw response (truncated): %s",
+            error or "Unknown parse failure",
+            raw_content,
+        )
+        return self._fallback_extract(chapter_text, participants, chapter_no)
 
     def _from_payload(self, payload: Any, chapter_no: int) -> PlotEvent:
         event_id = payload.get("event_id") or f"CH{chapter_no:03d}-E{next(self._counter):02d}"
@@ -87,6 +97,60 @@ class EventExtractor:
             impact=impact,
             is_irreversible=bool(payload.get("is_irreversible", False)),
         )
+
+    def _parse_response(self, content: str | None, chapter_no: int) -> tuple[list[PlotEvent] | None, str | None]:
+        """Attempt to parse structured events from the model output."""
+        if not content:
+            return None, "Empty response body."
+        payload = load_json_response(content)
+        if payload is None:
+            return None, "Response body was not valid JSON."
+        events_payload = self._coerce_event_payload(payload)
+        if events_payload is None:
+            payload_repr = repr(payload)[:500]
+            return None, (
+                "Event extractor response is not a list. "
+                f"Got type={type(payload).__name__}, value={payload_repr}"
+            )
+        events: list[PlotEvent] = []
+        for idx, item in enumerate(events_payload, start=1):
+            if not isinstance(item, dict):
+                logger.debug(
+                    "Skipping event payload at index %s due to unexpected type %s",
+                    idx,
+                    type(item).__name__,
+                )
+                continue
+            events.append(self._from_payload(item, chapter_no))
+        return events, None
+
+    def _coerce_event_payload(self, payload: Any) -> list[Any] | None:
+        """Normalize various payload shapes into a list of events."""
+        if isinstance(payload, list):
+            return payload
+        if isinstance(payload, dict):
+            for key in ("events", "data", "result"):
+                candidate = payload.get(key)
+                if isinstance(candidate, list):
+                    return candidate
+        return None
+
+    def _attempt_repair(self, raw_response: str | None, error: str | None) -> str | None:
+        """Ask the LLM to fix its malformed JSON response."""
+        if not raw_response:
+            return None
+        snippet = clamp_text_middle(raw_response, _REPAIR_SNIPPET_BUDGET)
+        prompt = fill_template(
+            self.repair_template,
+            error_message=error or "JSON parsing failed.",
+            invalid_output=snippet,
+        )
+        try:
+            repaired = self.llm.generate(prompt=prompt)
+        except Exception as exc:
+            logger.warning("Event extraction repair attempt failed: %s", exc)
+            return None
+        return repaired.content
 
     # Fallback heuristics ----------------------------------------------------------
     def _fallback_extract(self, chapter_text: str, participants: list[str], chapter_no: int) -> list[PlotEvent]:
