@@ -42,16 +42,18 @@ class StateSynthesizer:
             data = load_json_response(response.content)
             if not isinstance(data, dict):
                 raise ValueError("Story state response is not a JSON object.")
-            return StoryState(
+            state = StoryState(
                 current_arc=str(data.get("current_arc") or (story_state.current_arc if story_state else "setup")),
                 world_tension=str(data.get("world_tension") or (story_state.world_tension if story_state else "low")),
                 major_conflicts=[str(item) for item in data.get("major_conflicts", [])][:5],
                 time_constraints=[str(item) for item in data.get("time_constraints", [])][:3],
                 unresolved_events=[str(item) for item in data.get("unresolved_events", [])][:5],
             )
+            return self._stabilize_arc(state, events)
         except (TypeError, ValueError) as exc:
             logger.warning("Failed to synthesize story state via LLM: %s", exc)
-            return self._fallback_update(story_state, events)
+            state = self._fallback_update(story_state, events)
+            return self._stabilize_arc(state, events)
 
     # Fallback heuristics ----------------------------------------------------------
     def _fallback_update(self, story_state: StoryState | None, events: list[PlotEvent]) -> StoryState:
@@ -75,17 +77,22 @@ class StateSynthesizer:
                 story_state.unresolved_events.append(event.summary)
         story_state.major_conflicts = story_state.major_conflicts[-5:]
         story_state.unresolved_events = list(dict.fromkeys(story_state.unresolved_events))[-5:]
-        story_state.current_arc = self._infer_arc(story_state, events)
         return story_state
 
-    def _infer_arc(self, story_state: StoryState, events: list[PlotEvent]) -> str:
+    def _stabilize_arc(self, story_state: StoryState, events: list[PlotEvent]) -> StoryState:
         if not events:
-            return story_state.current_arc
-        latest = events[-1].type
-        mapping = {
-            "conflict": "climax",
-            "reveal": "twist",
-            "progress": "journey",
-            "setback": "dark-night",
-        }
-        return mapping.get(latest, story_state.current_arc)
+            return story_state
+        irreversible_seen = any(event.is_irreversible for event in events)
+        conflict_seen = any(event.type in {"conflict", "setback"} for event in events)
+        reveal_seen = any(event.type == "reveal" for event in events)
+
+        if story_state.current_arc == "setup":
+            if conflict_seen:
+                story_state.current_arc = "journey"
+            if irreversible_seen:
+                story_state.current_arc = "dark-night" if conflict_seen else "twist"
+            elif reveal_seen:
+                story_state.current_arc = "twist"
+        elif story_state.current_arc in {"journey", "twist"} and irreversible_seen:
+            story_state.current_arc = "dark-night"
+        return story_state

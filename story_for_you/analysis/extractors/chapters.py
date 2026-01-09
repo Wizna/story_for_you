@@ -16,6 +16,10 @@ logger = logging.getLogger(__name__)
 class ChapterSummarizer:
     """LLM-backed chapter summarizer using structured prompt templates."""
 
+    MAX_TITLE_LEN = 80
+    MAX_BEAT_LEN = 160
+    MAX_SYNOPSIS_LEN = 360
+
     def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
         self.llm = llm
         self.template = load_template("chapter_summary")
@@ -49,13 +53,24 @@ class ChapterSummarizer:
             data = load_json_response(response.content)
             if not isinstance(data, dict):
                 raise ValueError("Chapter summary response is not a JSON object.")
+            title = self._clamp_text(
+                data.get("title") or meta_payload.get("title_hint") or f"Chapter {chapter_no}",
+                self.MAX_TITLE_LEN,
+            )
+            beats = [
+                self._clamp_text(str(item), self.MAX_BEAT_LEN) for item in data.get("beats", [])
+            ][:6]
+            synopsis = self._clamp_text(
+                str(data.get("synopsis", "")).strip() or chapter_text[:200].strip(),
+                self.MAX_SYNOPSIS_LEN,
+            )
             return ChapterSummary(
                 chapter=int(data.get("chapter", chapter_no)),
-                title=(data.get("title") or meta_payload.get("title_hint") or f"Chapter {chapter_no}")[:80],
+                title=title,
                 pov=data.get("pov", "third-person"),
-                beats=[str(item) for item in data.get("beats", [])][:6],
+                beats=beats,
                 mood=data.get("mood", "neutral"),
-                synopsis=str(data.get("synopsis", "")).strip() or chapter_text[:200].strip(),
+                synopsis=synopsis,
                 irreversible_flags=[str(flag) for flag in data.get("irreversible_flags", [])],
             )
         except (TypeError, ValueError) as exc:
@@ -65,11 +80,12 @@ class ChapterSummarizer:
     # Fallback heuristics preserved for robustness ---------------------------------
     def _fallback_summary(self, chapter_text: str, chapter_no: int) -> ChapterSummary:
         lines = [line.strip() for line in chapter_text.splitlines() if line.strip()]
-        title = lines[0] if lines else f"Chapter {chapter_no}"
+        title = self._clamp_text(lines[0] if lines else f"Chapter {chapter_no}", self.MAX_TITLE_LEN)
         pov = self._detect_pov(chapter_text)
-        beats = self._extract_beats(chapter_text)
+        beats = [self._clamp_text(item, self.MAX_BEAT_LEN) for item in self._extract_beats(chapter_text)]
         mood = self._infer_mood(chapter_text)
-        synopsis = " ".join(beats[:2]) if beats else chapter_text[:200]
+        synopsis_source = " ".join(beats[:2]) if beats else chapter_text[:200]
+        synopsis = self._clamp_text(synopsis_source, self.MAX_SYNOPSIS_LEN)
         irreversible_flags = self._find_irreversible(chapter_text)
         return ChapterSummary(
             chapter=chapter_no,
@@ -113,3 +129,8 @@ class ChapterSummarizer:
             if keyword in lowered:
                 flags.append(keyword)
         return flags
+
+    def _clamp_text(self, text: str, limit: int) -> str:
+        if len(text) <= limit:
+            return text
+        return text[: max(limit - 3, 0)].rstrip() + "..."

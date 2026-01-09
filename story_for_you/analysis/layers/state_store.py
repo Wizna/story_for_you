@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, Iterable
@@ -22,6 +23,7 @@ class StateStore:
         self._characters: dict[str, CharacterState] = {}
         self._story_state: StoryState | None = None
         self._event_log: list[PlotEvent] = []
+        self._alias_index: dict[str, str] = {}
 
     def update(
         self,
@@ -67,15 +69,20 @@ class StateStore:
         self._characters.clear()
         self._story_state = None
         self._event_log.clear()
+        self._alias_index.clear()
 
     # Internal helpers -------------------------------------------------
     def _merge_character(self, character: CharacterState) -> None:
-        existing = self._characters.get(character.name)
+        owner_name = self._resolve_owner(character)
+        existing = self._characters.get(owner_name or character.name)
         if not existing:
             self._characters[character.name] = deepcopy(character)
+            self._register_aliases(character.name, [character.name, *character.aliases])
             return
         if character.aliases:
             existing.aliases = sorted(set(existing.aliases + character.aliases))
+        if character.name != existing.name and character.name not in existing.aliases:
+            existing.aliases = sorted(set(existing.aliases + [character.name]))
         if character.personality:
             existing.personality = list(dict.fromkeys(existing.personality + character.personality))
         if character.unresolved:
@@ -83,6 +90,7 @@ class StateStore:
         if self.ROLE_PRIORITY.get(character.role, 0) > self.ROLE_PRIORITY.get(existing.role, 0):
             existing.role = character.role
         existing.realm = existing.realm or character.realm
+        self._register_aliases(existing.name, [existing.name, *existing.aliases, character.name])
 
     def _merge_relationship(self, relationship: Relationship) -> None:
         if not relationship.source or relationship.source not in self._characters:
@@ -171,6 +179,7 @@ class StateStore:
                 unresolved=char_data.get("unresolved", []),
             )
             instance._characters[name] = character
+            instance._register_aliases(character.name, [character.name, *character.aliases])
         story_state_data = payload.get("story_state")
         if story_state_data:
             instance._story_state = StoryState(**story_state_data)
@@ -188,3 +197,39 @@ class StateStore:
             )
             instance._event_log.append(event)
         return instance
+
+    def _resolve_owner(self, character: CharacterState) -> str | None:
+        for key in self._alias_keys(character):
+            owner = self._alias_index.get(key)
+            if owner:
+                return owner
+        return None
+
+    def _register_aliases(self, canonical_name: str, labels: Iterable[str]) -> None:
+        for label in labels:
+            for token in self._tokenize_label(label):
+                key = self._normalize_token(token)
+                if key:
+                    self._alias_index[key] = canonical_name
+
+    def _alias_keys(self, character: CharacterState) -> set[str]:
+        keys: set[str] = set()
+        for label in [character.name, *character.aliases]:
+            for token in self._tokenize_label(label):
+                normalized = self._normalize_token(token)
+                if normalized:
+                    keys.add(normalized)
+        return keys
+
+    def _tokenize_label(self, label: str) -> list[str]:
+        cleaned = (label or "").strip()
+        if not cleaned:
+            return []
+        without_paren = re.sub(r"[()（）]", " ", cleaned)
+        pieces = re.split(r"[、,，/|]+", without_paren)
+        tokens = [cleaned]
+        tokens.extend(part.strip() for part in pieces if part and part.strip())
+        return tokens
+
+    def _normalize_token(self, token: str) -> str:
+        return re.sub(r"\s+", "", token).lower()

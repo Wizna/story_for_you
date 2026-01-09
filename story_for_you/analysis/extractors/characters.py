@@ -18,6 +18,14 @@ class CharacterExtractor:
     """Identifies characters present in the supplied text."""
 
     ROLE_PRIORITY = {"main": 3, "support": 2, "minor": 1}
+    TRAIT_TRANSLATIONS = {
+        "resolute": "坚毅",
+        "protective": "守护欲强",
+        "curious": "好奇",
+        "empathetic": "善解人意",
+        "calculating": "精明",
+        "ambitious": "野心勃勃",
+    }
 
     def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
         self.llm = llm
@@ -91,7 +99,7 @@ class CharacterExtractor:
             return None
         aliases = self._normalize_str_list(data.get("aliases", []))
         unresolved = self._normalize_str_list(data.get("unresolved", []))
-        personality = self._normalize_str_list(data.get("personality", []))
+        personality = self._localize_personality(self._normalize_str_list(data.get("personality", [])))
         role = self._normalize_role(data.get("role"))
         realm = str(data.get("realm") or "").strip() or None
         return CharacterState(
@@ -140,7 +148,9 @@ class CharacterExtractor:
         merged_aliases.add(incoming.name)
         merged_aliases.update(incoming.aliases)
         target.aliases = sorted(alias for alias in merged_aliases if alias and alias != target.name)
-        target.personality = self._merge_list(target.personality, incoming.personality)
+        target.personality = self._localize_personality(
+            self._merge_list(target.personality, incoming.personality)
+        )
         target.unresolved = self._merge_list(target.unresolved, incoming.unresolved)
         target.realm = target.realm or incoming.realm
         if self.ROLE_PRIORITY[incoming.role] > self.ROLE_PRIORITY[target.role]:
@@ -165,6 +175,16 @@ class CharacterExtractor:
             raw = []
         return [item.strip() for item in raw if item and item.strip()]
 
+    def _localize_personality(self, traits: Iterable[str]) -> list[str]:
+        localized: list[str] = []
+        for trait in traits:
+            normalized = trait.strip()
+            if not normalized:
+                continue
+            translation = self.TRAIT_TRANSLATIONS.get(normalized.lower())
+            localized.append(translation or normalized)
+        return list(dict.fromkeys(localized))
+
 
 class PersonalityAnalyzer:
     """Derives personality anchors for the detected characters."""
@@ -185,7 +205,7 @@ class PersonalityAnalyzer:
     def _guess_traits(self, name: str) -> list[str]:
         bucket = sum(ord(ch) for ch in name) % 3
         if bucket == 0:
-            return ["resolute", "protective"]
+            return ["坚毅", "守护欲强"]
         if bucket == 1:
-            return ["curious", "empathetic"]
-        return ["calculating", "ambitious"]
+            return ["好奇", "善解人意"]
+        return ["精明", "野心勃勃"]

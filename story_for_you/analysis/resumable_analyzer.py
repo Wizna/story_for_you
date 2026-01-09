@@ -19,6 +19,7 @@ from story_for_you.analysis.extractors import (
     StateSynthesizer,
 )
 from story_for_you.analysis.layers import ChapterSummaryWindow, EventLedger, StateStore
+from story_for_you.analysis.utils import compute_primary_cast
 from story_for_you.cache.progress_store import AnalysisProgress, ProgressStore
 from story_for_you.llm.base import LLMProvider
 
@@ -111,13 +112,15 @@ class ResumableStoryAnalyzer:
 
         self.progress_store.clear_progress(file_hash)
 
-        return StoryContext(
+        context = StoryContext(
             metadata=self._build_metadata(),
             chapter_window=self.chapter_window.dump(),
             events=self.event_ledger.timeline(),
             characters=self.state_store.characters_snapshot(),
             story_state=self.state_store.story_snapshot(),
         )
+        self._enrich_metadata(context)
+        return context
 
     def _reset_state(self) -> None:
         """Reset all analysis state."""
@@ -201,3 +204,11 @@ class ResumableStoryAnalyzer:
             "title_hint": first_line[:40] or f"Chapter {chapter_no}",
             "arc_hint": arc_hint,
         }
+
+    def _enrich_metadata(self, context: StoryContext) -> None:
+        coverage = self.chapter_window.coverage()
+        if coverage:
+            context.add_metadata("chapter_coverage", coverage)
+        primary_cast = compute_primary_cast(context.characters.values())
+        if primary_cast:
+            context.add_metadata("primary_cast", primary_cast)
