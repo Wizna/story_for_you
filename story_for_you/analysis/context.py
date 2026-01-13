@@ -3,6 +3,43 @@ from typing import Any, Literal
 
 
 @dataclass
+class StyleSample:
+    """A representative text sample demonstrating the writing style."""
+
+    source_chapter: int
+    content: str  # 20-50字原文片段
+    style_notes: str  # 为何典型
+
+
+@dataclass
+class WritingStyle:
+    """Captured writing style characteristics for style-aware generation."""
+
+    # 句式结构
+    avg_sentence_length: int
+    sentence_variety: str  # uniform | varied | mixed
+    paragraph_density: str  # sparse | medium | dense
+
+    # 用词风格
+    register: str  # literary | colloquial | classical | mixed
+    characteristic_words: list[str] = field(default_factory=list)  # 特征词汇（最多8个）
+    idiom_frequency: str = "sparse"  # none | sparse | moderate | heavy
+
+    # 修辞手法
+    metaphor_style: str = ""
+    description_focus: list[str] = field(default_factory=list)  # landscape, psychological, action
+    parallelism_use: str = "rare"  # rare | occasional | frequent
+
+    # 叙事语气
+    tone_markers: list[str] = field(default_factory=list)  # 常用语气词
+    narrator_style: str = "detached"  # detached | intimate | intrusive
+
+    # 示例与摘要
+    representative_samples: list[StyleSample] = field(default_factory=list)
+    style_summary: str = ""  # 100-150字风格总结，用于提示词
+
+
+@dataclass
 class ChapterSummary:
     chapter: int
     title: str
@@ -96,6 +133,7 @@ class StoryContext:
     events: list[PlotEvent] = field(default_factory=list)
     characters: dict[str, CharacterState] = field(default_factory=dict)
     story_state: StoryState | None = None
+    writing_style: WritingStyle | None = None
 
     def for_prompt(self) -> dict[str, Any]:
         """Serialize the context into prompt-ready textual sections."""
@@ -104,6 +142,7 @@ class StoryContext:
             "characters": self._render_character_section(),
             "plot": self._render_plot_section(),
             "chapters": self._render_chapter_section(),
+            "style": self._render_style_section(),
         }
         return {key: value for key, value in sections.items() if value}
 
@@ -146,12 +185,34 @@ class StoryContext:
         story_state = None
         if story_state_payload:
             story_state = StoryState(**story_state_payload)
+        writing_style_payload = payload.get("writing_style")
+        writing_style = None
+        if writing_style_payload:
+            samples = [
+                StyleSample(**s) for s in writing_style_payload.get("representative_samples", [])
+            ]
+            writing_style = WritingStyle(
+                avg_sentence_length=writing_style_payload.get("avg_sentence_length", 20),
+                sentence_variety=writing_style_payload.get("sentence_variety", "mixed"),
+                paragraph_density=writing_style_payload.get("paragraph_density", "medium"),
+                register=writing_style_payload.get("register", "literary"),
+                characteristic_words=writing_style_payload.get("characteristic_words", []),
+                idiom_frequency=writing_style_payload.get("idiom_frequency", "sparse"),
+                metaphor_style=writing_style_payload.get("metaphor_style", ""),
+                description_focus=writing_style_payload.get("description_focus", []),
+                parallelism_use=writing_style_payload.get("parallelism_use", "rare"),
+                tone_markers=writing_style_payload.get("tone_markers", []),
+                narrator_style=writing_style_payload.get("narrator_style", "detached"),
+                representative_samples=samples,
+                style_summary=writing_style_payload.get("style_summary", ""),
+            )
         return cls(
             metadata=payload.get("metadata", {}),
             chapter_window=chapter_window,
             events=events,
             characters=characters,
             story_state=story_state,
+            writing_style=writing_style,
         )
 
     def add_metadata(self, key: str, value: Any) -> None:
@@ -209,3 +270,18 @@ class StoryContext:
             flags = f" | flags: {', '.join(summary.irreversible_flags)}" if summary.irreversible_flags else ""
             lines.append(f"Chapter {summary.chapter} - {summary.title}: {summary.synopsis}{flags}")
         return "\n".join(lines)
+
+    def _render_style_section(self) -> str:
+        if not self.writing_style:
+            return ""
+        ws = self.writing_style
+        lines = [
+            f"风格概述: {ws.style_summary}" if ws.style_summary else "",
+            f"句式: 平均{ws.avg_sentence_length}字, {ws.sentence_variety}变化",
+            f"用词: {ws.register}风格",
+        ]
+        if ws.characteristic_words:
+            lines.append(f"特征词: {', '.join(ws.characteristic_words[:5])}")
+        if ws.tone_markers:
+            lines.append(f"语气词: {', '.join(ws.tone_markers[:5])}")
+        return "\n".join(line for line in lines if line)

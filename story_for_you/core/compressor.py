@@ -7,7 +7,13 @@ import logging
 from story_for_you.analysis.context import PlotEvent, StoryContext
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
-from story_for_you.core.prompting import fill_template, format_context_sections, load_template
+from story_for_you.core.prompting import (
+    fill_template,
+    format_context_sections,
+    format_style_guide,
+    format_style_samples,
+    load_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,12 +41,16 @@ class StoryCompressor:
         targets = self._select_segments(context)
         ordered = sorted(targets, key=lambda item: item.segment.segment_id)
         context_block = format_context_sections(context.for_prompt())
+        style_guide = format_style_guide(context.writing_style)
+        style_samples = format_style_samples(context.writing_style)
         segments_payload = "\n---\n".join(item.segment.content.strip() for item in ordered)
         prompt = fill_template(
             self.template,
             level=self.level,
             context_block=context_block,
             segments=segments_payload,
+            style_guide=style_guide,
+            style_samples=style_samples,
         )
         try:
             response = self.llm.generate(prompt=prompt)

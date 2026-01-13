@@ -7,7 +7,12 @@ from story_for_you.analysis.context import StoryContext
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment
 from story_for_you.llm.base import LLMProvider
-from story_for_you.core.prompting import fill_template, format_context_sections, load_template
+from story_for_you.core.prompting import (
+    fill_template,
+    format_context_sections,
+    format_style_guide,
+    load_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,13 +41,14 @@ class CharacterRemover:
         processed: list[Segment] = []
         deleted = rewritten = replaced = 0
         context_block = format_context_sections(context.for_prompt())
+        style_guide = format_style_guide(context.writing_style)
         for segment in affected_segments:
             action = self._evaluate_segment(segment, characters, context, mode)
             if action == "delete":
                 deleted += 1
                 continue
             if action == "minimal_rewrite":
-                processed.append(self._minimal_rewrite(segment, characters, context_block, mode))
+                processed.append(self._minimal_rewrite(segment, characters, context_block, mode, style_guide))
                 rewritten += 1
             else:
                 processed.append(self._replace_names(segment, characters))
@@ -87,7 +93,9 @@ class CharacterRemover:
             metadata=segment.metadata,
         )
 
-    def _minimal_rewrite(self, segment: Segment, characters: list[str], context_block: str, mode: str) -> Segment:
+    def _minimal_rewrite(
+        self, segment: Segment, characters: list[str], context_block: str, mode: str, style_guide: str
+    ) -> Segment:
         """Ask the LLM to minimally rewrite a conflicting segment."""
         prompt = fill_template(
             self.rewrite_template,
@@ -95,6 +103,7 @@ class CharacterRemover:
             mode=mode,
             characters=", ".join(characters),
             segment_text=segment.content.strip(),
+            style_guide=style_guide,
         )
         rewritten = self._call_llm(prompt) or "[Adjusted] 该段落已删除关键人物引用并保留结果。"
         return Segment(

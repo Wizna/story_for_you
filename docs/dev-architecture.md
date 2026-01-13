@@ -8,6 +8,7 @@
 ┌─────────────────────────────────────────────────────────────┐
 │                         CLI 层                              │
 │  story analyze | compress | filter | remove | continue      │
+│                        | style                              │
 └─────────────────────────────┬───────────────────────────────┘
                               │
 ┌─────────────────────────────▼───────────────────────────────┐
@@ -97,11 +98,13 @@ story_for_you/
 │   │   │   ├── characters.py     # CharacterExtractor + PersonalityAnalyzer
 │   │   │   ├── events.py         # EventExtractor（含 impact）
 │   │   │   ├── relationships.py  # RelationshipMapper
-│   │   │   └── state.py          # StateSynthesizer
+│   │   │   ├── state.py          # StateSynthesizer
+│   │   │   └── style.py          # StyleExtractor（风格分析）
 │   │   └── prompt_templates/     # Prompt 统一维护
 │   │       ├── chapter_summary.txt
 │   │       ├── event_extraction.txt
-│   │       └── state_update.txt
+│   │       ├── state_update.txt
+│   │       └── style_extraction.txt
 │   │
 │   ├── indexer/                  # 文本索引与检索
 │   │   ├── __init__.py
@@ -118,7 +121,18 @@ story_for_you/
 │   │   ├── compressor.py         # 情节压缩
 │   │   ├── character_filter.py   # 只看指定人物
 │   │   ├── character_remover.py  # 删除人物
-│   │   └── ending_writer.py      # 结局续写
+│   │   ├── ending_writer.py      # 结局续写（多阶段）
+│   │   ├── prompting.py          # Prompt 工具函数
+│   │   └── prompt_templates/     # 核心业务 Prompt 模板
+│   │       ├── compress.txt
+│   │       ├── ending.txt
+│   │       ├── ending_inspiration.txt
+│   │       ├── ending_outline.txt
+│   │       ├── ending_draft.txt
+│   │       ├── ending_revision.txt
+│   │       ├── ending_polish.txt
+│   │       ├── filter_bridge.txt
+│   │       └── remove_rewrite.txt
 │   │
 │   ├── llm/                      # LLM 抽象层
 │   │   ├── __init__.py
@@ -228,6 +242,30 @@ class StoryState:
     unresolved_events: list[str]
 
 @dataclass
+class StyleSample:
+    """风格示例片段"""
+    source_chapter: int
+    content: str          # 20-50字原文片段
+    style_notes: str      # 为何典型
+
+@dataclass
+class WritingStyle:
+    """写作风格特征"""
+    avg_sentence_length: int
+    sentence_variety: str  # uniform | varied | mixed
+    paragraph_density: str # sparse | medium | dense
+    register: str          # literary | colloquial | classical | mixed
+    characteristic_words: list[str]
+    idiom_frequency: str   # none | sparse | moderate | heavy
+    metaphor_style: str
+    description_focus: list[str]  # landscape, psychological, action
+    parallelism_use: str   # rare | occasional | frequent
+    tone_markers: list[str]
+    narrator_style: str    # detached | intimate | intrusive
+    representative_samples: list[StyleSample]
+    style_summary: str     # 100-150字风格总结
+
+@dataclass
 class StoryContext:
     """统一上下文容器"""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -235,6 +273,7 @@ class StoryContext:
     events: list[PlotEvent] = field(default_factory=list)
     characters: dict[str, CharacterState] = field(default_factory=dict)
     story_state: StoryState | None = None
+    writing_style: WritingStyle | None = None
 
     def for_prompt(self) -> dict[str, Any]:
         """拆分为 prompt 需要的几个段落"""
@@ -979,6 +1018,22 @@ story continue novel.txt --hint "希望是HE" -o output.txt
 | 参数       | 说明         | 默认值 |
 | ---------- | ------------ | ------ |
 | `--hint` | 结局期望提示 | 空     |
+
+#### 风格分析（独立命令）
+
+```bash
+# 独立提取风格
+story style novel.txt -o style.json
+
+# 注入到已有 context
+story style novel.txt --context analysis.json --inject
+```
+
+| 参数          | 说明                           | 默认值                  |
+| ------------- | ------------------------------ | ----------------------- |
+| `-o, --output` | 风格输出文件                  | `{input}_style.json`   |
+| `--context`   | 已有 context 文件路径          | 空                      |
+| `--inject`    | 将风格注入已有 context         | false                   |
 
 ### 5.3 全局选项
 

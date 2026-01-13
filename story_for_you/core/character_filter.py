@@ -6,7 +6,12 @@ from story_for_you.analysis.context import StoryContext
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment
 from story_for_you.llm.base import LLMProvider
-from story_for_you.core.prompting import fill_template, format_context_sections, load_template
+from story_for_you.core.prompting import (
+    fill_template,
+    format_context_sections,
+    format_style_guide,
+    load_template,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +47,10 @@ class CharacterFilter:
             return FilterResult(content="", original_ratio=0.0)
         gaps = self._find_gaps(segments)
         context_block = format_context_sections(context.for_prompt())
+        style_guide = format_style_guide(context.writing_style)
         bridges: list[BridgeInfo] = []
         for gap in gaps:
-            gap.content = self._generate_bridge(gap, context_block, characters)
+            gap.content = self._generate_bridge(gap, context_block, characters, style_guide)
             bridges.append(gap)
         content = self._assemble(segments, bridges)
         ratio = len(content) / max(len(text), 1)
@@ -69,7 +75,7 @@ class CharacterFilter:
                 )
         return gaps
 
-    def _generate_bridge(self, gap: BridgeInfo, context_block: str, characters: list[str]) -> str:
+    def _generate_bridge(self, gap: BridgeInfo, context_block: str, characters: list[str], style_guide: str) -> str:
         """Generate a minimal bridge for the supplied gap."""
         prompt = fill_template(
             self.bridge_template,
@@ -78,6 +84,7 @@ class CharacterFilter:
             characters=", ".join(characters) or "目标人物",
             before_excerpt=gap.before_excerpt or "(无前文摘录)",
             after_excerpt=gap.after_excerpt or "(无后文摘录)",
+            style_guide=style_guide,
         )
         try:
             response = self.llm.generate(prompt=prompt)

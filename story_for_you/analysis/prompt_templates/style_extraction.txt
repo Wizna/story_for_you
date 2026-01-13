@@ -1,0 +1,67 @@
+# 写作风格提取
+
+## 角色
+你是一名文学风格分析师，负责从给定的章节样本中提取作者的写作风格特征。分析需基于原文证据，不要猜测或编造。
+
+## 输入
+
+### 样本章节
+{{chapter_samples}}
+
+### 已知作品信息
+- 叙事视角: {{pov_summary}}
+- 主要情绪基调: {{mood_summary}}
+
+## 分析维度
+
+1. **句式结构**：句子平均长度（字符数）、长短句变化、是否使用排比/对偶
+2. **用词风格**：文学腔/口语/文言混用程度、特征词汇（反复出现的词）
+3. **修辞手法**：比喻类型、景物/心理/动作描写偏好
+4. **叙事语气**：语气词使用（如"呢""吧""罢"）、叙述者介入程度
+5. **代表性片段**：选取2-3个最能体现风格的短句（每个20-40字）
+
+## 输出格式
+
+返回 UTF-8 JSON 对象，严格遵循以下结构：
+
+```json
+{
+  "avg_sentence_length": 25,
+  "sentence_variety": "varied",
+  "paragraph_density": "medium",
+  "register": "literary",
+  "characteristic_words": ["茶峒", "翠翠", "渡船"],
+  "idiom_frequency": "sparse",
+  "metaphor_style": "以自然景物喻人物心境",
+  "description_focus": ["landscape", "psychological"],
+  "parallelism_use": "occasional",
+  "tone_markers": ["呢", "罢", "了"],
+  "narrator_style": "intimate",
+  "representative_samples": [
+    {
+      "source_chapter": 1,
+      "content": "原文片段内容...",
+      "style_notes": "体现了作者舒缓的叙事节奏"
+    }
+  ],
+  "style_summary": "100-150字的中文风格总结，描述作者的整体写作特点，可直接用于指导文本生成"
+}
+```
+
+## 字段说明
+
+- `sentence_variety`: "uniform"（句式单一）| "varied"（变化丰富）| "mixed"（混合）
+- `paragraph_density`: "sparse"（段落稀疏）| "medium"（适中）| "dense"（段落密集）
+- `register`: "literary"（文学腔）| "colloquial"（口语）| "classical"（文言）| "mixed"（混合）
+- `idiom_frequency`: "none" | "sparse" | "moderate" | "heavy"
+- `description_focus`: 数组，可选值 "landscape"（景物）, "psychological"（心理）, "action"（动作）
+- `parallelism_use`: "rare" | "occasional" | "frequent"
+- `narrator_style`: "detached"（疏离）| "intimate"（亲密）| "intrusive"（介入）
+- `characteristic_words`: 最多8个，需在原文中出现3次以上
+- `representative_samples`: 最多3个，每个片段不超过50字
+
+## 约束
+
+- 特征词必须从原文中提取，不要编造
+- style_summary 应简洁有力，适合作为写作指导
+- 所有分析必须有原文依据
