@@ -52,23 +52,69 @@ def format_context_sections(sections: Dict[str, str]) -> str:
 
 
 def format_style_guide(style) -> str:
-    """Format style summary for prompt injection.
+    """Format structured style guide for prompt injection.
 
     Args:
         style: WritingStyle object or None.
 
     Returns:
-        Style summary string or a neutral placeholder.
+        Structured style guide string with all attributes, or a neutral placeholder.
     """
     if style is None:
         return "(无风格信息，请保持中性文学风格)"
+
+    sections = []
+
+    # 句式结构
+    avg_len = getattr(style, "avg_sentence_length", 0)
+    if avg_len:
+        sections.append(f"- 平均句长: {avg_len}字")
+    variety = getattr(style, "sentence_variety", "")
+    if variety:
+        sections.append(f"- 句式变化: {variety}")
+    density = getattr(style, "paragraph_density", "")
+    if density:
+        sections.append(f"- 段落密度: {density}")
+
+    # 用词风格
+    register = getattr(style, "register", "")
+    if register:
+        sections.append(f"- 语体: {register}")
+    char_words = getattr(style, "characteristic_words", [])
+    if char_words:
+        sections.append(f"- 特征词汇: {', '.join(char_words)}")
+    idiom_freq = getattr(style, "idiom_frequency", "")
+    if idiom_freq:
+        sections.append(f"- 成语使用: {idiom_freq}")
+
+    # 修辞手法
+    metaphor = getattr(style, "metaphor_style", "")
+    if metaphor:
+        sections.append(f"- 比喻风格: {metaphor}")
+    desc_focus = getattr(style, "description_focus", [])
+    if desc_focus:
+        sections.append(f"- 描写重点: {', '.join(desc_focus)}")
+    parallelism = getattr(style, "parallelism_use", "")
+    if parallelism:
+        sections.append(f"- 排比使用: {parallelism}")
+
+    # 叙事语气
+    tone = getattr(style, "tone_markers", [])
+    if tone:
+        sections.append(f"- 语气词: {', '.join(tone)}")
+    narrator = getattr(style, "narrator_style", "")
+    if narrator:
+        sections.append(f"- 叙述者风格: {narrator}")
+
+    # 摘要
     summary = getattr(style, "style_summary", "")
-    if not summary:
-        return "(无风格摘要，请保持中性文学风格)"
-    return summary
+    if summary:
+        sections.append(f"\n风格总述: {summary}")
+
+    return "\n".join(sections) if sections else "(无风格摘要，请保持中性文学风格)"
 
 
-def format_style_samples(style, max_samples: int = 2) -> str:
+def format_style_samples(style, max_samples: int = 3) -> str:
     """Format representative style samples for prompt injection.
 
     Args:

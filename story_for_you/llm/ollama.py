@@ -25,9 +25,9 @@ class OllamaProvider(LLMProvider):
         self.options = options or {}
         self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout)
 
-    def generate(self, prompt: str, system: str = "") -> LLMResponse:
+    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
         """Synchronously generate a response via Ollama."""
-        payload = self._build_payload(prompt, system, stream=False)
+        payload = self._build_payload(prompt, system, stream=False, call_options=options)
         try:
             response = self._client.post("/api/generate", json=payload)
             response.raise_for_status()
@@ -38,9 +38,9 @@ class OllamaProvider(LLMProvider):
         tokens_used = data.get("eval_count") or data.get("prompt_eval_count") or 0
         return LLMResponse(content=content, tokens_used=tokens_used)
 
-    def generate_stream(self, prompt: str, system: str = "") -> Iterator[str]:
+    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None) -> Iterator[str]:
         """Stream a response via Ollama's API."""
-        payload = self._build_payload(prompt, system, stream=True)
+        payload = self._build_payload(prompt, system, stream=True, call_options=options)
         with httpx.stream(
             "POST",
             f"{self.base_url}/api/generate",
@@ -63,14 +63,17 @@ class OllamaProvider(LLMProvider):
         """Dispose of the shared HTTP client."""
         self._client.close()
 
-    def _build_payload(self, prompt: str, system: str, stream: bool) -> dict:
+    def _build_payload(self, prompt: str, system: str, stream: bool, call_options: dict | None = None) -> dict:
         payload = {
             "model": self.model,
             "prompt": prompt,
             "system": system or None,
             "stream": stream,
         }
-        if self.options:
-            payload["options"] = self.options
+        merged_options = dict(self.options)
+        if call_options:
+            merged_options.update({key: value for key, value in call_options.items() if value is not None})
+        if merged_options:
+            payload["options"] = merged_options
         # Drop None values to keep payload compact.
         return {key: value for key, value in payload.items() if value is not None}
