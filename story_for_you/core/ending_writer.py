@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 
 from story_for_you.analysis.context import StoryContext, WritingStyle
@@ -38,6 +39,31 @@ class MultiStageEndingResult:
     draft: str
     final_content: str
     revision_notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class HintDirectives:
+    """归一化后的读者意图，便于在不同阶段复用。"""
+
+    normalized_text: str = "无特别要求"
+    ending_direction: str | None = None
+    emotional_tone: str | None = None
+    focus_characters: list[str] = field(default_factory=list)
+
+    def for_prompt(self) -> str:
+        """将结构化指令转成短句，用于 prompt 占位。"""
+
+        parts: list[str] = []
+        base = self.normalized_text.strip()
+        if base and base != "无特别要求":
+            parts.append(base)
+        if self.ending_direction:
+            parts.append(f"结局方向：{self.ending_direction}")
+        if self.emotional_tone:
+            parts.append(f"情感氛围：{self.emotional_tone}")
+        if self.focus_characters:
+            parts.append("重点人物：" + ", ".join(self.focus_characters))
+        return "；".join(parts) if parts else "无特别要求"
 
 
 class EndingWriter:
@@ -80,8 +106,8 @@ class EndingWriter:
 
         style = context.writing_style
         context_block = format_context_sections(context.for_prompt())
-        normalized_hint = (hint or "").strip()
-        hint_payload = normalized_hint or "无特别要求"
+        directives = self._interpret_hint(hint, context)
+        hint_payload = directives.for_prompt()
 
         try:
             # 阶段 1: 构思灵感
@@ -89,6 +115,8 @@ class EndingWriter:
 
             # 阶段 2: 规划大纲
             outline = self._phase_outline(context, inspiration, hint_payload)
+            if directives.ending_direction:
+                outline.ending_direction = directives.ending_direction
 
             # 阶段 3: 草稿写作
             draft = self._phase_draft(context, outline, style, context_block, hint_payload)
@@ -106,7 +134,7 @@ class EndingWriter:
                 hint_payload,
             )
 
-            return final
+            return self._post_process_final(final)
         except Exception as exc:
             logger.warning("Multi-stage continuation failed, falling back to legacy: %s", exc)
             return self._legacy_continue(text, context, hint)
@@ -201,6 +229,7 @@ class EndingWriter:
             hint=hint,
             required_characters=required_characters or "(未提供人物信息)",
             loose_threads=loose_threads or "(暂无伏笔)",
+            beat_constraints=self._draft_paragraph_plan(outline),
         )
 
         try:
@@ -268,6 +297,7 @@ class EndingWriter:
             style_samples=style_samples,
             context_block=context_block or "(无上下文)",
             hint=hint,
+            beat_constraints=self._draft_paragraph_plan(outline),
         )
 
         try:
@@ -368,6 +398,25 @@ class EndingWriter:
         for beat in outline.key_beats:
             lines.append(f"  - {beat}")
         lines.append(f"结尾意象: {outline.final_image}")
+        return "\n".join(lines)
+
+    def _draft_paragraph_plan(self, outline: EndingOutline) -> str:
+        """Create段落规划提示，确保情节点逐段落实。"""
+
+        beats = [
+            beat.strip()
+            for beat in outline.key_beats
+            if isinstance(beat, str) and beat and beat.strip()
+        ]
+        if not beats:
+            return "至少写满3段，每段120字以上，段落按因果衔接展开。"
+
+        lines: list[str] = []
+        for idx, beat in enumerate(beats[:4], start=1):
+            lines.append(f"- 段落{idx}: {beat}")
+        if len(beats) > 4:
+            lines.append(f"- 其余段落: 融合剩余{len(beats) - 4}个情节点，避免遗漏。")
+        lines.append("- 每段≥120字，首句承接上一段尾句，整体保持因果衔接。")
         return "\n".join(lines)
 
     def _revision_checklist(self, style: WritingStyle | None) -> str:
@@ -482,17 +531,18 @@ class EndingWriter:
         """Legacy single-stage continuation."""
         context_block = format_context_sections(context.for_prompt())
         recent_segments = self._recent_segment_digest(context)
+        directives = self._interpret_hint(hint, context)
         prompt = fill_template(
             self.legacy_template,
             context_block=context_block,
             recent_segments=recent_segments,
-            hint=hint or "无特别需求，按原作基调收束",
+            hint=directives.for_prompt(),
         )
         try:
             response = self.llm.generate(prompt=prompt, options=self._phase_options("legacy"))
             content = response.content.strip()
             if content:
-                return content
+                return self._post_process_final(content)
         except Exception as exc:
             logger.warning("Ending continuation failed, falling back to heuristic ending: %s", exc)
         return self._fallback(context, hint)
@@ -517,3 +567,85 @@ class EndingWriter:
         paragraphs.append("Loose threads are acknowledged, promising future tales without contradicting the past.")
         paragraphs.append("(本段为读者定制版本的兜底续写)")
         return "\n\n".join(paragraphs)
+
+    # Hint helpers -----------------------------------------------------------
+
+    def _interpret_hint(self, raw_hint: str, context: StoryContext) -> HintDirectives:
+        """Parse简写、情绪词汇以及人物指向，生成统一指令。"""
+
+        hint = (raw_hint or "").strip()
+        directives = HintDirectives(normalized_text=hint or "无特别要求")
+        if not hint:
+            directives.focus_characters = []
+            return directives
+
+        lowered = hint.lower()
+        upper_tokens = {token.upper() for token in re.findall(r"[A-Za-z]+", hint)}
+
+        direction_aliases = {
+            "HE": {"HE", "HAPPY", "HAPPY END", "HAPPY ENDING", "圆满", "大团圆", "皆大欢喜", "治愈", "希望", "甜"},
+            "BE": {"BE", "BAD", "BE结局", "悲", "刀", "虐", "悲剧", "凄凉"},
+            "OE": {"OE", "OPEN", "留白", "开放", "未知", "OE结局"},
+        }
+        for label, keywords in direction_aliases.items():
+            if label in upper_tokens:
+                directives.ending_direction = label
+                break
+            if any(keyword.lower() in lowered for keyword in keywords if keyword.isascii()):
+                directives.ending_direction = label
+                break
+            if any(keyword in hint for keyword in keywords if not keyword.isascii()):
+                directives.ending_direction = label
+                break
+
+        tone_aliases = {
+            "温暖": ["温暖", "治愈", "柔和", "明亮", "希望"],
+            "苍凉": ["苍凉", "萧瑟", "凄冷", "孤独"],
+            "热烈": ["热烈", "激昂", "燃", "热血"],
+            "哀伤": ["哀伤", "忧伤", "悲怆", "痛"],
+            "平静": ["平静", "克制", "淡然", "沉稳"],
+        }
+        for tone, keywords in tone_aliases.items():
+            if any(keyword in hint for keyword in keywords):
+                directives.emotional_tone = tone
+                break
+
+        focus: list[str] = []
+        for name in context.characters.keys():
+            if name and name in hint:
+                focus.append(name)
+        directives.focus_characters = focus[:4]
+        return directives
+
+    # Output cleanup --------------------------------------------------------
+
+    def _post_process_final(self, text: str) -> str:
+        """Deduplicate重复段落，保留终端标记。"""
+
+        if not text:
+            return text
+        marker = "（读者定制版本）"
+        working = text.rstrip()
+        marker_present = working.endswith(marker)
+        if marker_present:
+            working = working[: -len(marker)].rstrip()
+
+        paragraphs = [para for para in working.split("\n\n") if para.strip()]
+        if not paragraphs:
+            return text
+
+        normalized_seen: set[str] = set()
+        cleaned: list[str] = []
+        last_norm = ""
+        for para in paragraphs:
+            norm = re.sub(r"\s+", " ", para.strip())
+            if norm == last_norm or norm in normalized_seen:
+                continue
+            cleaned.append(para.strip())
+            normalized_seen.add(norm)
+            last_norm = norm
+
+        combined = "\n\n".join(cleaned) if cleaned else working
+        if marker_present:
+            combined = combined.rstrip() + "\n\n" + marker
+        return combined
