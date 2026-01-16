@@ -11,6 +11,7 @@ __all__ = [
     "format_context_sections",
     "format_style_guide",
     "format_style_samples",
+    "format_style_constraints",
 ]
 
 _TEMPLATE_DIR = Path(__file__).with_name("prompt_templates")
@@ -135,3 +136,33 @@ def format_style_samples(style, max_samples: int = 3) -> str:
         if content:
             lines.append(f"「{content}」")
     return "\n".join(lines) if lines else "(无示例片段)"
+
+
+def format_style_constraints(style) -> str:
+    """根据风格类型生成不同强度的写作约束。
+
+    Args:
+        style: WritingStyle object or None.
+
+    Returns:
+        风格感知的写作约束文本。literary/classical 风格使用严格约束，
+        colloquial/mixed 风格使用宽松约束。
+    """
+    if style is None:
+        return ""
+
+    register = getattr(style, "register", "mixed").lower()
+
+    if register in ("literary", "classical"):
+        # 文学/古典风格：严格约束
+        return """## 写作约束（文学风格）
+- 情绪必须**间接表达**：通过动作、景物、对话暗示，禁止直接陈述（如"心中满是xxx"、"眼中满是"）
+- 禁止网文套路：避免"脸上洋溢着"、"仿佛一切都有了新的开始"、"留下一个xxx的背影"等俗套
+- 禁止解释性叙述：如"这让她感到温暖"，改为通过场景展示
+- 对话要符合时代背景，避免现代口语"""
+    else:
+        # 通俗/网文风格：宽松约束
+        return """## 写作约束（通俗风格）
+- 情绪表达可以直接，但避免过度重复相同句式
+- 保持节奏流畅，情节推进明快
+- 避免同一段落内重复使用相同的表达方式"""

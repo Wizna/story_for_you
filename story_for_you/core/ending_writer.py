@@ -11,6 +11,7 @@ from story_for_you.llm.base import LLMProvider
 from story_for_you.core.prompting import (
     fill_template,
     format_context_sections,
+    format_style_constraints,
     format_style_guide,
     format_style_samples,
     load_template,
@@ -19,6 +20,22 @@ from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
+# 低质量写法黑名单（用于日志警告）
+LOW_QUALITY_PHRASES = [
+    "心中满是",
+    "内心充满",
+    "眼中满是",
+    "脸上洋溢",
+    "不由得",
+    "顿时",
+    "竟然",
+    "居然",
+    "仿佛一切",
+    "留下一个",
+    "这让她感到",
+    "这让他感到",
+]
+
 
 @dataclass
 class EndingOutline:
@@ -26,6 +43,7 @@ class EndingOutline:
 
     theme: str = ""
     ending_direction: str = ""  # HE/BE/OE
+    timeline: str = ""  # 时间跨度描述
     key_beats: list[str] = field(default_factory=list)
     emotional_arc: str = ""
     final_image: str = ""
@@ -134,7 +152,7 @@ class EndingWriter:
                 hint_payload,
             )
 
-            return self._post_process_final(final)
+            return self._post_process_final(final, style)
         except Exception as exc:
             logger.warning("Multi-stage continuation failed, falling back to legacy: %s", exc)
             return self._legacy_continue(text, context, hint)
@@ -188,6 +206,7 @@ class EndingWriter:
                 return EndingOutline(
                     theme=result.get("theme", ""),
                     ending_direction=result.get("ending_direction", "OE"),
+                    timeline=result.get("timeline", ""),
                     key_beats=result.get("key_beats", []),
                     emotional_arc=result.get("emotional_arc", ""),
                     final_image=result.get("final_image", ""),
@@ -198,6 +217,7 @@ class EndingWriter:
         return EndingOutline(
             theme="故事收束",
             ending_direction="OE",
+            timeline="当天",
             key_beats=["情节推进", "情感转折", "结局揭示"],
             emotional_arc="平稳→高潮→释然",
             final_image="留白意象",
@@ -215,6 +235,7 @@ class EndingWriter:
         outline_text = self._format_outline(outline)
         style_guide = format_style_guide(style)
         style_samples = format_style_samples(style)
+        style_constraints = format_style_constraints(style)
         recent_segments = self._recent_segment_digest(context)
         required_characters = self._format_main_characters(context)
         loose_threads = self._format_unresolved(context)
@@ -224,6 +245,7 @@ class EndingWriter:
             outline=outline_text,
             style_guide=style_guide,
             style_samples=style_samples,
+            style_constraints=style_constraints,
             recent_segments=recent_segments,
             context_block=context_block or "(无上下文)",
             hint=hint,
@@ -251,6 +273,7 @@ class EndingWriter:
     ) -> str:
         """阶段4: 检查并修订初稿，确保风格一致性。"""
         style_guide = format_style_guide(style)
+        style_constraints = format_style_constraints(style)
         characteristic_words = ", ".join(style.characteristic_words) if style and style.characteristic_words else ""
         tone_markers = ", ".join(style.tone_markers) if style and style.tone_markers else ""
         checklist = self._revision_checklist(style)
@@ -259,6 +282,7 @@ class EndingWriter:
             self.revision_template,
             draft=draft,
             style_guide=style_guide,
+            style_constraints=style_constraints,
             characteristic_words=characteristic_words,
             tone_markers=tone_markers,
             checklist=checklist,
@@ -287,6 +311,7 @@ class EndingWriter:
         """阶段5: 最终润色，强化意象和情感。"""
         style_guide = format_style_guide(style)
         style_samples = format_style_samples(style)
+        style_constraints = format_style_constraints(style)
 
         prompt = fill_template(
             self.polish_template,
@@ -295,6 +320,7 @@ class EndingWriter:
             emotional_arc=outline.emotional_arc or "情感收束",
             style_guide=style_guide,
             style_samples=style_samples,
+            style_constraints=style_constraints,
             context_block=context_block or "(无上下文)",
             hint=hint,
             beat_constraints=self._draft_paragraph_plan(outline),
@@ -542,7 +568,7 @@ class EndingWriter:
             response = self.llm.generate(prompt=prompt, options=self._phase_options("legacy"))
             content = response.content.strip()
             if content:
-                return self._post_process_final(content)
+                return self._post_process_final(content, context.writing_style)
         except Exception as exc:
             logger.warning("Ending continuation failed, falling back to heuristic ending: %s", exc)
         return self._fallback(context, hint)
@@ -619,8 +645,8 @@ class EndingWriter:
 
     # Output cleanup --------------------------------------------------------
 
-    def _post_process_final(self, text: str) -> str:
-        """Deduplicate重复段落，保留终端标记。"""
+    def _post_process_final(self, text: str, style: WritingStyle | None = None) -> str:
+        """Deduplicate重复段落，风格感知的低质量短语检测，保留终端标记。"""
 
         if not text:
             return text
@@ -646,6 +672,15 @@ class EndingWriter:
             last_norm = norm
 
         combined = "\n\n".join(cleaned) if cleaned else working
+
+        # 只对文学/古典风格进行低质量短语检测
+        register = getattr(style, "register", "mixed").lower() if style else "mixed"
+        if register in ("literary", "classical"):
+            for phrase in LOW_QUALITY_PHRASES:
+                count = combined.count(phrase)
+                if count > 0:
+                    logger.warning("检测到低质量短语 '%s' 出现 %d 次", phrase, count)
+
         if marker_present:
             combined = combined.rstrip() + "\n\n" + marker
         return combined
