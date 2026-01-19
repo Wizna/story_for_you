@@ -20,20 +20,39 @@ from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
-# 低质量写法黑名单（用于日志警告）
+# 低质量写法黑名单（用于后处理强制过滤）
 LOW_QUALITY_PHRASES = [
+    # 直接陈述情绪
     "心中满是",
     "内心充满",
+    "心中充满",
+    "心中涌起",
     "眼中满是",
+    "眼中泛着泪光",
+    "眼中闪烁",
+    # 网文俗套描写
     "脸上洋溢",
+    "脸上带着歉意",
+    "脸上带着温柔",
+    "手中捧着鲜花",
+    "手中提着",
+    # 情绪强调词
     "不由得",
     "顿时",
     "竟然",
     "居然",
+    "不禁",
+    # 廉价升华
     "仿佛一切",
+    "仿佛预示",
+    "充满了无限",
+    "一切困难都",
+    # 解释性叙述
     "留下一个",
     "这让她感到",
     "这让他感到",
+    "她感受到了",
+    "他感受到了",
 ]
 
 
@@ -124,6 +143,7 @@ class EndingWriter:
 
         style = context.writing_style
         context_block = format_context_sections(context.for_prompt())
+        style_anchors = self._build_style_anchors(context)
         directives = self._interpret_hint(hint, context)
         hint_payload = directives.for_prompt()
 
@@ -137,13 +157,22 @@ class EndingWriter:
                 outline.ending_direction = directives.ending_direction
 
             # 阶段 3: 草稿写作
-            draft = self._phase_draft(context, outline, style, context_block, hint_payload)
+            draft = self._phase_draft(
+                context, outline, style, context_block, hint_payload, style_anchors
+            )
 
             # 阶段 4: 修订编辑
-            revised = self._phase_revision(draft, style, context_block, hint_payload)
+            revised = self._phase_revision(draft, style, context_block, hint_payload, style_anchors)
 
             # 阶段 5: 反馈优化
-            final = self._phase_polish(revised, style, outline, context_block, hint_payload)
+            final = self._phase_polish(
+                revised,
+                style,
+                outline,
+                context_block,
+                hint_payload,
+                style_anchors,
+            )
             final = self._phase_resolution_review(
                 final,
                 context,
@@ -230,6 +259,7 @@ class EndingWriter:
         style: WritingStyle | None,
         context_block: str,
         hint: str,
+        style_anchors: str,
     ) -> str:
         """阶段3: 按大纲写作初稿，应用风格指南。"""
         outline_text = self._format_outline(outline)
@@ -252,6 +282,7 @@ class EndingWriter:
             required_characters=required_characters or "(未提供人物信息)",
             loose_threads=loose_threads or "(暂无伏笔)",
             beat_constraints=self._draft_paragraph_plan(outline),
+            style_anchors=style_anchors,
         )
 
         try:
@@ -270,6 +301,7 @@ class EndingWriter:
         style: WritingStyle | None,
         context_block: str,
         hint: str,
+        style_anchors: str,
     ) -> str:
         """阶段4: 检查并修订初稿，确保风格一致性。"""
         style_guide = format_style_guide(style)
@@ -288,6 +320,7 @@ class EndingWriter:
             checklist=checklist,
             context_block=context_block or "(无上下文)",
             hint=hint,
+            style_anchors=style_anchors,
         )
 
         try:
@@ -307,6 +340,7 @@ class EndingWriter:
         outline: EndingOutline,
         context_block: str,
         hint: str,
+        style_anchors: str,
     ) -> str:
         """阶段5: 最终润色，强化意象和情感。"""
         style_guide = format_style_guide(style)
@@ -324,6 +358,7 @@ class EndingWriter:
             context_block=context_block or "(无上下文)",
             hint=hint,
             beat_constraints=self._draft_paragraph_plan(outline),
+            style_anchors=style_anchors,
         )
 
         try:
@@ -531,6 +566,94 @@ class EndingWriter:
                 threads.append(f"世界: {item}")
         return threads
 
+    def _build_style_anchors(self, context: StoryContext) -> str:
+        """Assemble写作锚点，帮助模型抓住地域/意象。"""
+        anchors: list[str] = []
+        style = context.writing_style
+        if style and style.characteristic_words:
+            keywords = "、".join(style.characteristic_words[:6])
+            anchors.append(f"词汇锚点：{keywords}（至少使用其中2个）")
+
+        scene_images = self._scene_anchors(limit=3)
+        if scene_images:
+            anchors.append("场景意象：")
+            anchors.extend(f"  · {scene}" for scene in scene_images)
+
+        cast = [
+            char.name
+            for char in context.characters.values()
+            if char.role in ("main", "support")
+        ]
+        if cast:
+            anchors.append("关键人物：" + "、".join(cast[:4]))
+
+        state = context.story_state
+        if state:
+            if state.major_conflicts:
+                anchors.append("冲突焦点：" + " / ".join(state.major_conflicts[-2:]))
+            if state.unresolved_events:
+                anchors.append("伏笔提示：" + "；".join(state.unresolved_events[:2]))
+            if state.time_constraints:
+                anchors.append("时间线提示：" + state.time_constraints[0])
+
+        if not anchors:
+            return "(无锚点，保持对场景与人物细致描写)"
+
+        lines: list[str] = []
+        for item in anchors:
+            if item.startswith("  "):
+                lines.append(item)
+            else:
+                lines.append(f"- {item}")
+        return "\n".join(lines)
+
+    # 景物/意象关键词，用于筛选有风格特征的句子
+    _SCENE_KEYWORDS = frozenset([
+        "河", "溪", "水", "山", "塔", "船", "渡", "岸", "桥",
+        "月", "日", "风", "雨", "雾", "云", "天", "星",
+        "竹", "树", "花", "草", "鸟", "虫",
+        "静", "远", "近", "高", "低", "深", "浅",
+        "黄昏", "清晨", "夜", "暮", "晨", "午",
+    ])
+
+    def _scene_anchors(self, limit: int = 3) -> list[str]:
+        """Extract 有景物描写的短句作为 prompt 锚点。"""
+        scenes: list[str] = []
+        # 从后往前遍历，优先取靠近结尾的内容
+        for segment in reversed(self.segment_index.segments):
+            candidates = self._extract_scene_sentences(segment.content)
+            for sentence in candidates:
+                if sentence not in scenes:
+                    scenes.append(sentence)
+                    if len(scenes) >= limit:
+                        return scenes
+        return scenes
+
+    def _extract_scene_sentences(self, text: str) -> list[str]:
+        """从文本中提取有景物描写的完整句子。"""
+        normalized = text.strip()
+        if not normalized:
+            return []
+        # 按句号/感叹号/问号分割
+        parts = re.split(r"[。！？]", normalized)
+        results: list[str] = []
+        for part in parts:
+            sentence = part.strip()
+            # 跳过对话片段（以引号开头或包含引号）
+            if sentence.startswith('"') or sentence.startswith('"') or '："' in sentence:
+                continue
+            # 跳过省略号开头的片段
+            if sentence.startswith("…") or sentence.startswith("。"):
+                continue
+            # 句子长度在 15-80 字之间，且包含景物关键词
+            if 15 <= len(sentence) <= 80 and self._has_scene_keyword(sentence):
+                results.append(sentence)
+        return results
+
+    def _has_scene_keyword(self, text: str) -> bool:
+        """检查文本是否包含景物/意象关键词。"""
+        return any(kw in text for kw in self._SCENE_KEYWORDS)
+
     def _append_bridges(self, polished: str, bridges: list[str], notes: str | None = None) -> str:
         """Append bridge paragraphs while保留结尾标记。"""
         marker = "（读者定制版本）"
@@ -646,7 +769,7 @@ class EndingWriter:
     # Output cleanup --------------------------------------------------------
 
     def _post_process_final(self, text: str, style: WritingStyle | None = None) -> str:
-        """Deduplicate重复段落，风格感知的低质量短语检测，保留终端标记。"""
+        """Deduplicate重复段落，强制过滤低质量短语，保留终端标记。"""
 
         if not text:
             return text
@@ -660,6 +783,7 @@ class EndingWriter:
         if not paragraphs:
             return text
 
+        # 第一步：完全相同段落去重
         normalized_seen: set[str] = set()
         cleaned: list[str] = []
         last_norm = ""
@@ -671,16 +795,87 @@ class EndingWriter:
             normalized_seen.add(norm)
             last_norm = norm
 
-        combined = "\n\n".join(cleaned) if cleaned else working
+        # 第二步：高相似度段落去重（基于句子重叠）
+        cleaned = self._dedupe_similar_paragraphs(cleaned)
 
-        # 只对文学/古典风格进行低质量短语检测
+        # 第三步：对文学/古典风格强制过滤低质量短语
         register = getattr(style, "register", "mixed").lower() if style else "mixed"
         if register in ("literary", "classical"):
-            for phrase in LOW_QUALITY_PHRASES:
-                count = combined.count(phrase)
-                if count > 0:
-                    logger.warning("检测到低质量短语 '%s' 出现 %d 次", phrase, count)
+            cleaned = self._filter_low_quality_sentences(cleaned)
+
+        combined = "\n\n".join(cleaned) if cleaned else working
 
         if marker_present:
             combined = combined.rstrip() + "\n\n" + marker
         return combined
+
+    def _filter_low_quality_sentences(self, paragraphs: list[str]) -> list[str]:
+        """从段落中移除包含低质量短语的句子。"""
+        result: list[str] = []
+        for para in paragraphs:
+            # 按句号分割
+            sentences = re.split(r"(。|！|？)", para)
+            filtered_parts: list[str] = []
+            i = 0
+            while i < len(sentences):
+                sentence = sentences[i]
+                # 保留标点符号
+                punct = sentences[i + 1] if i + 1 < len(sentences) and sentences[i + 1] in "。！？" else ""
+
+                # 检查是否包含低质量短语
+                has_bad_phrase = any(phrase in sentence for phrase in LOW_QUALITY_PHRASES)
+                if has_bad_phrase:
+                    logger.info("移除低质量句子: %s", sentence[:30] + "...")
+                elif sentence.strip():
+                    filtered_parts.append(sentence + punct)
+
+                i += 2 if punct else 1
+
+            # 重新组合段落
+            if filtered_parts:
+                new_para = "".join(filtered_parts).strip()
+                if new_para:
+                    result.append(new_para)
+        return result
+
+    def _dedupe_similar_paragraphs(self, paragraphs: list[str], threshold: float = 0.3) -> list[str]:
+        """移除与之前段落高度相似的段落。
+
+        使用句子级别的 Jaccard 相似度检测重复。
+        threshold: 相似度阈值，超过此值则视为重复（默认 0.3）。
+        """
+        if len(paragraphs) <= 1:
+            return paragraphs
+
+        def extract_sentences(text: str) -> set[str]:
+            """提取段落中的句子集合。"""
+            parts = re.split(r"[。！？]", text)
+            return {s.strip() for s in parts if len(s.strip()) >= 8}
+
+        def jaccard_similarity(set1: set[str], set2: set[str]) -> float:
+            """计算两个集合的 Jaccard 相似度。"""
+            if not set1 or not set2:
+                return 0.0
+            intersection = len(set1 & set2)
+            union = len(set1 | set2)
+            return intersection / union if union > 0 else 0.0
+
+        result: list[str] = []
+        seen_sentences: list[set[str]] = []
+
+        for para in paragraphs:
+            current_sentences = extract_sentences(para)
+            is_duplicate = False
+
+            for prev_sentences in seen_sentences:
+                similarity = jaccard_similarity(current_sentences, prev_sentences)
+                if similarity >= threshold:
+                    logger.debug("检测到相似段落（相似度 %.2f），已移除", similarity)
+                    is_duplicate = True
+                    break
+
+            if not is_duplicate:
+                result.append(para)
+                seen_sentences.append(current_sentences)
+
+        return result
