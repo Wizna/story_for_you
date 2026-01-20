@@ -26,6 +26,10 @@ class CharacterExtractor:
         "calculating": "精明",
         "ambitious": "野心勃勃",
     }
+    # 常见排行/称呼后缀 (用于拆分复合名)
+    _RANKING_SUFFIXES = ("大老", "二老", "三老", "四老", "大佬", "二佬", "三佬")
+    _FAMILY_TERMS = ("祖父", "爷爷", "外公", "外婆", "奶奶", "姥姥", "姥爷", "父亲", "母亲", "爹", "娘")
+    _ROLE_SUFFIXES = ("船夫", "马兵", "乡绅", "老爷", "夫人", "小姐", "公子", "先生")
 
     def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
         self.llm = llm
@@ -139,9 +143,34 @@ class CharacterExtractor:
     def _find_character(self, roster: list[CharacterState], candidate: CharacterState) -> CharacterState | None:
         candidate_keys = self._alias_keys(candidate)
         for existing in roster:
+            # 第一步：精确 token 匹配
             if candidate_keys.intersection(self._alias_keys(existing)):
                 return existing
+
+        # 第二步：子串匹配（针对中文名）
+        candidate_names = [candidate.name] + candidate.aliases
+        for existing in roster:
+            existing_names = [existing.name] + existing.aliases
+            if self._names_have_overlap(candidate_names, existing_names):
+                return existing
+
         return None
+
+    def _names_have_overlap(self, names1: list[str], names2: list[str]) -> bool:
+        """检测两组名字是否有实质性重叠（子串匹配）。"""
+        for n1 in names1:
+            n1_clean = n1.strip().lower()
+            if len(n1_clean) < 2:
+                continue
+            for n2 in names2:
+                n2_clean = n2.strip().lower()
+                if len(n2_clean) < 2:
+                    continue
+                shorter, longer = (n1_clean, n2_clean) if len(n1_clean) <= len(n2_clean) else (n2_clean, n1_clean)
+                if len(shorter) >= 2 and shorter in longer:
+                    if len(shorter) >= len(longer) * 0.5 or (len(shorter) >= 2 and len(longer) <= 4):
+                        return True
+        return False
 
     def _merge_into(self, target: CharacterState, incoming: CharacterState) -> None:
         merged_aliases = set(target.aliases)
@@ -157,9 +186,56 @@ class CharacterExtractor:
             target.role = incoming.role
 
     def _alias_keys(self, character: CharacterState) -> set[str]:
-        keys = {character.name.lower()}
-        keys.update(alias.lower() for alias in character.aliases)
+        keys: set[str] = set()
+        all_names = [character.name] + character.aliases
+        for name in all_names:
+            # 添加原始名字
+            keys.add(name.lower())
+            # 添加拆分后的组成部分
+            for part in self._split_compound_chinese_name(name):
+                keys.add(part.lower())
         return keys
+
+    def _split_compound_chinese_name(self, name: str) -> list[str]:
+        """拆分复合中文名为组成部分。"""
+        if not name or len(name) < 3:
+            return []
+
+        parts: list[str] = []
+
+        # 检查是否以排行后缀结尾 (如 傩送二老)
+        for suffix in self._RANKING_SUFFIXES:
+            if name.endswith(suffix) and len(name) > len(suffix):
+                prefix = name[: -len(suffix)]
+                if prefix:
+                    parts.append(prefix)
+                    parts.append(suffix)
+                break
+
+        # 检查是否以"老"字开头 + 职业/身份 (如 老船夫)
+        if name.startswith("老") and len(name) >= 3:
+            suffix_part = name[1:]
+            if suffix_part:
+                parts.append(suffix_part)
+
+        # 检查是否包含家庭称呼 (如 祖父、爷爷)
+        for term in self._FAMILY_TERMS:
+            if term in name and name != term:
+                parts.append(term)
+                idx = name.find(term)
+                if idx > 0:
+                    parts.append(name[:idx])
+
+        # 检查是否以职业后缀结尾 (如 杨马兵)
+        for suffix in self._ROLE_SUFFIXES:
+            if name.endswith(suffix) and len(name) > len(suffix):
+                prefix = name[: -len(suffix)]
+                # 要求前缀至少2个字符，避免太短的通用词如"老"
+                if prefix and len(prefix) >= 2:
+                    parts.append(prefix)
+                break
+
+        return parts
 
     def _merge_list(self, base: list[str], incoming: list[str]) -> list[str]:
         merged = list(dict.fromkeys(item for item in base + incoming if item))

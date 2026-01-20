@@ -199,11 +199,44 @@ class StateStore:
         return instance
 
     def _resolve_owner(self, character: CharacterState) -> str | None:
+        # 第一步：精确 token 匹配
         for key in self._alias_keys(character):
             owner = self._alias_index.get(key)
             if owner:
                 return owner
+
+        # 第二步：子串匹配（针对中文名）
+        candidate_names = [character.name] + character.aliases
+        for existing_name in self._characters.keys():
+            existing_char = self._characters[existing_name]
+            existing_names = [existing_char.name] + existing_char.aliases
+            if self._names_have_overlap(candidate_names, existing_names):
+                return existing_name
+
         return None
+
+    def _names_have_overlap(self, names1: list[str], names2: list[str]) -> bool:
+        """检测两组名字是否有实质性重叠（子串匹配）。
+
+        对于中文名，如果一个名字是另一个的子串且长度>=2，视为匹配。
+        例如：傩送 ⊂ 傩送二老 → 匹配
+        """
+        for n1 in names1:
+            n1_clean = self._normalize_token(n1)
+            if len(n1_clean) < 2:
+                continue
+            for n2 in names2:
+                n2_clean = self._normalize_token(n2)
+                if len(n2_clean) < 2:
+                    continue
+                # 子串匹配：较短的名字是较长名字的子串
+                shorter, longer = (n1_clean, n2_clean) if len(n1_clean) <= len(n2_clean) else (n2_clean, n1_clean)
+                # 要求子串长度至少2个字符，且占较短名字的大部分
+                if len(shorter) >= 2 and shorter in longer:
+                    # 避免过于宽松的匹配（如"老"匹配一切含"老"的名字）
+                    if len(shorter) >= 2 and (len(shorter) >= len(longer) * 0.5 or len(shorter) >= 2 and len(longer) <= 4):
+                        return True
+        return False
 
     def _register_aliases(self, canonical_name: str, labels: Iterable[str]) -> None:
         for label in labels:
@@ -221,6 +254,11 @@ class StateStore:
                     keys.add(normalized)
         return keys
 
+    # 常见排行/称呼后缀 (用于拆分复合名)
+    _RANKING_SUFFIXES = ("大老", "二老", "三老", "四老", "大佬", "二佬", "三佬")
+    _FAMILY_TERMS = ("祖父", "爷爷", "外公", "外婆", "奶奶", "姥姥", "姥爷", "父亲", "母亲", "爹", "娘")
+    _ROLE_SUFFIXES = ("船夫", "马兵", "乡绅", "老爷", "夫人", "小姐", "公子", "先生")
+
     def _tokenize_label(self, label: str) -> list[str]:
         cleaned = (label or "").strip()
         if not cleaned:
@@ -229,7 +267,70 @@ class StateStore:
         pieces = re.split(r"[、,，/|]+", without_paren)
         tokens = [cleaned]
         tokens.extend(part.strip() for part in pieces if part and part.strip())
-        return tokens
+
+        # 对每个 token 尝试拆分复合中文名
+        expanded: list[str] = []
+        for token in tokens:
+            expanded.append(token)
+            expanded.extend(self._split_compound_chinese_name(token))
+
+        # 去重并保持顺序
+        seen: set[str] = set()
+        result: list[str] = []
+        for item in expanded:
+            if item and item not in seen:
+                seen.add(item)
+                result.append(item)
+        return result
+
+    def _split_compound_chinese_name(self, name: str) -> list[str]:
+        """拆分复合中文名为组成部分。
+
+        例如：
+        - 傩送二老 → [傩送, 二老]
+        - 天保大老 → [天保, 大老]
+        - 老船夫 → [船夫]
+        - 祖父（老船夫）→ [祖父, 老船夫]
+        """
+        if not name or len(name) < 3:
+            return []
+
+        parts: list[str] = []
+
+        # 检查是否以排行后缀结尾 (如 傩送二老)
+        for suffix in self._RANKING_SUFFIXES:
+            if name.endswith(suffix) and len(name) > len(suffix):
+                prefix = name[: -len(suffix)]
+                if prefix:
+                    parts.append(prefix)
+                    parts.append(suffix)
+                break
+
+        # 检查是否以"老"字开头 + 职业/身份 (如 老船夫)
+        if name.startswith("老") and len(name) >= 3:
+            suffix_part = name[1:]  # 去掉"老"
+            if suffix_part:
+                parts.append(suffix_part)
+
+        # 检查是否包含家庭称呼 (如 祖父、爷爷)
+        for term in self._FAMILY_TERMS:
+            if term in name and name != term:
+                parts.append(term)
+                # 如果不是以该称呼结尾，也提取前缀
+                idx = name.find(term)
+                if idx > 0:
+                    parts.append(name[:idx])
+
+        # 检查是否以职业后缀结尾 (如 杨马兵)
+        for suffix in self._ROLE_SUFFIXES:
+            if name.endswith(suffix) and len(name) > len(suffix):
+                prefix = name[: -len(suffix)]
+                # 要求前缀至少2个字符，避免太短的通用词如"老"
+                if prefix and len(prefix) >= 2:
+                    parts.append(prefix)
+                break
+
+        return parts
 
     def _normalize_token(self, token: str) -> str:
         return re.sub(r"\s+", "", token).lower()
