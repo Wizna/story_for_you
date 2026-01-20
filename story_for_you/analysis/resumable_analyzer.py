@@ -17,6 +17,7 @@ from story_for_you.analysis.extractors import (
     EventExtractor,
     RelationshipMapper,
     StateSynthesizer,
+    StyleExtractor,
 )
 from story_for_you.analysis.layers import ChapterSummaryWindow, EventLedger, StateStore
 from story_for_you.analysis.utils import compute_primary_cast
@@ -45,10 +46,16 @@ class ResumableStoryAnalyzer:
         self.chapter_window = ChapterSummaryWindow(self.window_size)
         self.event_ledger = EventLedger()
         self.state_store = StateStore()
-        self.character_extractor = CharacterExtractor(self.llm, prompt_budget=self.prompt_budget)
+        self.character_extractor = CharacterExtractor(
+            self.llm, prompt_budget=self.prompt_budget
+        )
         self.relationship_mapper = RelationshipMapper(self.llm)
-        self.chapter_summarizer = ChapterSummarizer(self.llm, prompt_budget=self.prompt_budget)
-        self.event_extractor = EventExtractor(self.llm, prompt_budget=self.prompt_budget)
+        self.chapter_summarizer = ChapterSummarizer(
+            self.llm, prompt_budget=self.prompt_budget
+        )
+        self.event_extractor = EventExtractor(
+            self.llm, prompt_budget=self.prompt_budget
+        )
         self.state_synthesizer = StateSynthesizer(self.llm)
 
     def analyze(
@@ -80,7 +87,9 @@ class ResumableStoryAnalyzer:
             character_names = [c.name for c in characters]
             relationships = self.relationship_mapper.map(chapter_text, character_names)
             recent_context = self._build_recent_context(chapter_no)
-            chapter_meta = self._build_chapter_meta(chapter_no, chapter_text, story_state)
+            chapter_meta = self._build_chapter_meta(
+                chapter_no, chapter_text, story_state
+            )
 
             summary = self.chapter_summarizer.summarize(
                 chapter_text,
@@ -97,7 +106,9 @@ class ResumableStoryAnalyzer:
             for event in events:
                 event.chapter = chapter_no
 
-            story_state = self.state_synthesizer.update(story_state, events, recent_context)
+            story_state = self.state_synthesizer.update(
+                story_state, events, recent_context
+            )
 
             self.chapter_window.append(summary)
             self.event_ledger.record(events)
@@ -112,12 +123,17 @@ class ResumableStoryAnalyzer:
 
         self.progress_store.clear_progress(file_hash)
 
+        style_extractor = StyleExtractor(self.llm, prompt_budget=self.prompt_budget)
+        summaries = self.chapter_window.dump()
+        writing_style = style_extractor.extract(chapters, summaries)
+
         context = StoryContext(
             metadata=self._build_metadata(),
-            chapter_window=self.chapter_window.dump(),
+            chapter_window=summaries,
             events=self.event_ledger.timeline(),
             characters=self.state_store.characters_snapshot(),
             story_state=self.state_store.story_snapshot(),
+            writing_style=writing_style,
         )
         self._enrich_metadata(context)
         return context
@@ -132,7 +148,9 @@ class ResumableStoryAnalyzer:
     def _restore_state(self, progress: AnalysisProgress) -> None:
         """Restore state from saved progress."""
         memory = progress.memory_state
-        self.chapter_window = ChapterSummaryWindow.from_dict(memory.get("chapter_window", {}))
+        self.chapter_window = ChapterSummaryWindow.from_dict(
+            memory.get("chapter_window", {})
+        )
         self.event_ledger = EventLedger.from_dict(memory.get("event_ledger", {}))
         self.state_store = StateStore.from_dict(memory.get("state_store", {}))
         self._chapter_results = list(progress.chapter_results)
@@ -174,11 +192,17 @@ class ResumableStoryAnalyzer:
         lines: list[str] = [f"Target chapter: {chapter_no}"]
         story_state = self.state_store.story_snapshot()
         if story_state:
-            lines.append(f"Arc={story_state.current_arc} | Tension={story_state.world_tension}")
+            lines.append(
+                f"Arc={story_state.current_arc} | Tension={story_state.world_tension}"
+            )
             if story_state.major_conflicts:
-                lines.append("Conflicts: " + "; ".join(story_state.major_conflicts[-3:]))
+                lines.append(
+                    "Conflicts: " + "; ".join(story_state.major_conflicts[-3:])
+                )
             if story_state.unresolved_events:
-                lines.append("Unresolved: " + "; ".join(story_state.unresolved_events[-3:]))
+                lines.append(
+                    "Unresolved: " + "; ".join(story_state.unresolved_events[-3:])
+                )
         recent_chapters = self.chapter_window.to_prompt_lines()[-3:]
         if recent_chapters:
             lines.append("Recent chapters:")
@@ -197,7 +221,9 @@ class ResumableStoryAnalyzer:
         self, chapter_no: int, chapter_text: str, story_state: StoryState | None
     ) -> dict[str, Any]:
         """Prepare chapter metadata payload for summarization prompts."""
-        first_line = next((line.strip() for line in chapter_text.splitlines() if line.strip()), "")
+        first_line = next(
+            (line.strip() for line in chapter_text.splitlines() if line.strip()), ""
+        )
         arc_hint = getattr(story_state, "current_arc", None) or "setup"
         return {
             "chapter_no": chapter_no,
