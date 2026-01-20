@@ -247,8 +247,10 @@ class StoryContext:
         for character in ordered[:6]:
             traits = ", ".join(character.personality[:3]) if character.personality else "traits unknown"
             unresolved = ", ".join(character.unresolved[:2]) if character.unresolved else ""
+            # Include aliases so LLM knows the name mappings
+            aliases_part = f" (别名: {', '.join(character.aliases[:3])})" if character.aliases else ""
             suffix = f" | unresolved: {unresolved}" if unresolved else ""
-            lines.append(f"- {character.name} ({character.role}): {traits}{suffix}")
+            lines.append(f"- {character.name}{aliases_part} ({character.role}): {traits}{suffix}")
         return "\n".join(lines)
 
     def _render_plot_section(self) -> str:

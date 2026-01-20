@@ -53,6 +53,16 @@ LOW_QUALITY_PHRASES = [
     "这让他感到",
     "她感受到了",
     "他感受到了",
+    # 直白道歉/表白（文学作品中应含蓄表达）
+    "对不起，我",
+    "我明白了，你",
+    "我一直太",
+    "我误会了你",
+    "原来你一直",
+    # 过于直白的情感陈述
+    "我终于明白",
+    "我现在知道",
+    "我应该早点",
 ]
 
 
@@ -408,6 +418,11 @@ class EndingWriter:
             bridges = [item.strip() for item in payload.get("bridges", []) if isinstance(item, str) and item.strip()]
             if not bridges:
                 return polished
+            # Filter out bridges that duplicate existing content
+            bridges = self._filter_duplicate_bridges(polished, bridges)
+            if not bridges:
+                logger.debug("All bridges filtered as duplicates")
+                return polished
             notes = payload.get("notes")
             note_text = notes.strip() if isinstance(notes, str) else None
             return self._append_bridges(polished, bridges, note_text)
@@ -431,14 +446,18 @@ class EndingWriter:
         return "\n".join(f"- {item}" for item in threads) if threads else "(无明显未解决伏笔)"
 
     def _format_main_characters(self, context: StoryContext) -> str:
-        """Format main characters for outline prompt."""
+        """Format main characters for outline prompt, including alias mappings."""
         if not context.characters:
             return "(无主要人物信息)"
         lines = []
         for char in context.characters.values():
             if char.role in ("main", "support"):
                 traits = ", ".join(char.personality[:3]) if char.personality else "特征未知"
-                lines.append(f"- {char.name} ({char.role}): {traits}")
+                # Include aliases so LLM knows the name mappings
+                alias_info = ""
+                if char.aliases:
+                    alias_info = f"，别名/称呼：{'、'.join(char.aliases[:3])}"
+                lines.append(f"- {char.name} ({char.role}): {traits}{alias_info}")
         return "\n".join(lines) if lines else "(无主要人物信息)"
 
     def _format_conflicts(self, context: StoryContext) -> str:
@@ -670,6 +689,62 @@ class EndingWriter:
             combined = combined.rstrip() + "\n\n" + marker
         return combined
 
+    def _filter_duplicate_bridges(self, polished: str, bridges: list[str]) -> list[str]:
+        """Filter out bridge paragraphs that are too similar to existing polished content.
+
+        Uses first-sentence matching and Jaccard similarity to detect duplicates.
+        """
+        if not bridges:
+            return []
+
+        # Extract existing sentences and first-sentences from polished content
+        existing_paragraphs = [p.strip() for p in polished.split("\n\n") if p.strip()]
+        existing_sentences = self._extract_sentences_for_dedup(polished)
+        existing_first_sentences: set[str] = set()
+        for para in existing_paragraphs:
+            first = para.split("。")[0].strip()
+            if first:
+                existing_first_sentences.add(first)
+
+        filtered: list[str] = []
+        for bridge in bridges:
+            bridge_stripped = bridge.strip()
+            if not bridge_stripped:
+                continue
+
+            # Check first-sentence overlap
+            bridge_first = bridge_stripped.split("。")[0].strip()
+            if bridge_first and bridge_first in existing_first_sentences:
+                logger.debug("Bridge被过滤（首句重复）: %s...", bridge_first[:30])
+                continue
+
+            # Check Jaccard similarity with existing content
+            bridge_sentences = self._extract_sentences_for_dedup(bridge_stripped)
+            if self._jaccard_similarity(bridge_sentences, existing_sentences) >= 0.25:
+                logger.debug("Bridge被过滤（相似度过高）: %s...", bridge_stripped[:30])
+                continue
+
+            filtered.append(bridge_stripped)
+            # Add this bridge's sentences to existing set to avoid inter-bridge duplicates
+            existing_sentences.update(bridge_sentences)
+            if bridge_first:
+                existing_first_sentences.add(bridge_first)
+
+        return filtered
+
+    def _extract_sentences_for_dedup(self, text: str) -> set[str]:
+        """Extract sentence set for deduplication checking."""
+        parts = re.split(r"[。！？]", text)
+        return {s.strip() for s in parts if len(s.strip()) >= 6}
+
+    def _jaccard_similarity(self, set1: set[str], set2: set[str]) -> float:
+        """Compute Jaccard similarity between two sets."""
+        if not set1 or not set2:
+            return 0.0
+        intersection = len(set1 & set2)
+        union = len(set1 | set2)
+        return intersection / union if union > 0 else 0.0
+
     def _phase_options(self, phase: str) -> dict | None:
         """Return LLM generation overrides for a specific phase."""
         return self._phase_llm_options.get(phase)
@@ -803,6 +878,9 @@ class EndingWriter:
         if register in ("literary", "classical"):
             cleaned = self._filter_low_quality_sentences(cleaned)
 
+        # 第四步：过滤非对话问句段落（可能是调试残余或草稿提问）
+        cleaned = self._filter_question_paragraphs(cleaned)
+
         combined = "\n\n".join(cleaned) if cleaned else working
 
         if marker_present:
@@ -838,11 +916,55 @@ class EndingWriter:
                     result.append(new_para)
         return result
 
-    def _dedupe_similar_paragraphs(self, paragraphs: list[str], threshold: float = 0.3) -> list[str]:
+    def _filter_question_paragraphs(self, paragraphs: list[str]) -> list[str]:
+        """过滤以问号结尾的非对话段落。
+
+        这类段落通常是调试残余、草稿提问或LLM的元叙述，不应出现在正文中。
+        保留对话中的问句（引号内的问句）。
+        """
+        # 问句段落特征词（通常表示元叙述或思考性问句）
+        question_markers = [
+            "究竟如何",
+            "到底怎样",
+            "又会如何",
+            "将会怎样",
+            "是否应该",
+            "难道真的",
+            "关系究竟",
+            "命运如何",
+        ]
+
+        result: list[str] = []
+        for para in paragraphs:
+            para_stripped = para.strip()
+            if not para_stripped:
+                continue
+
+            # 检查段落是否以问号结尾（非对话）
+            if para_stripped.endswith("？"):
+                # 检查是否是对话（引号内的内容）
+                # 对话格式：..."xxx？" 或 "xxx？"
+                is_dialogue = (
+                    para_stripped.endswith('"？"')
+                    or para_stripped.endswith('"')
+                    or '："' in para_stripped
+                    or ':"' in para_stripped
+                )
+                if not is_dialogue:
+                    # 检查是否包含问句特征词
+                    has_question_marker = any(marker in para_stripped for marker in question_markers)
+                    if has_question_marker:
+                        logger.debug("移除非对话问句段落: %s...", para_stripped[:30])
+                        continue
+
+            result.append(para_stripped)
+        return result
+
+    def _dedupe_similar_paragraphs(self, paragraphs: list[str], threshold: float = 0.2) -> list[str]:
         """移除与之前段落高度相似的段落。
 
-        使用句子级别的 Jaccard 相似度检测重复。
-        threshold: 相似度阈值，超过此值则视为重复（默认 0.3）。
+        使用首句匹配和句子级别的 Jaccard 相似度检测重复。
+        threshold: 相似度阈值，超过此值则视为重复（默认 0.2）。
         """
         if len(paragraphs) <= 1:
             return paragraphs
@@ -850,7 +972,15 @@ class EndingWriter:
         def extract_sentences(text: str) -> set[str]:
             """提取段落中的句子集合。"""
             parts = re.split(r"[。！？]", text)
-            return {s.strip() for s in parts if len(s.strip()) >= 8}
+            return {s.strip() for s in parts if len(s.strip()) >= 6}
+
+        def extract_first_sentence(text: str) -> str:
+            """提取段落的首句（用于快速去重）。"""
+            first = text.split("。")[0].strip()
+            # 如果首句过短，尝试取更长的开头
+            if len(first) < 10:
+                first = text[:30].strip()
+            return first
 
         def jaccard_similarity(set1: set[str], set2: set[str]) -> float:
             """计算两个集合的 Jaccard 相似度。"""
@@ -862,9 +992,20 @@ class EndingWriter:
 
         result: list[str] = []
         seen_sentences: list[set[str]] = []
+        seen_first_sentences: set[str] = set()
 
         for para in paragraphs:
-            current_sentences = extract_sentences(para)
+            para_stripped = para.strip()
+            if not para_stripped:
+                continue
+
+            # 首句去重：相同首句直接视为重复
+            first_sentence = extract_first_sentence(para_stripped)
+            if first_sentence and first_sentence in seen_first_sentences:
+                logger.debug("检测到首句重复段落，已移除: %s...", first_sentence[:20])
+                continue
+
+            current_sentences = extract_sentences(para_stripped)
             is_duplicate = False
 
             for prev_sentences in seen_sentences:
@@ -875,7 +1016,9 @@ class EndingWriter:
                     break
 
             if not is_duplicate:
-                result.append(para)
+                result.append(para_stripped)
                 seen_sentences.append(current_sentences)
+                if first_sentence:
+                    seen_first_sentences.add(first_sentence)
 
         return result
