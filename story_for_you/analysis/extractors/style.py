@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -24,17 +23,11 @@ class StyleExtractor:
         self.template = load_template("style_extraction")
 
     def extract(self, chapters: list[str], summaries: list[ChapterSummary]) -> WritingStyle:
-        """从已分析的章节摘要中提取风格（集成模式）。"""
+        """从已分析的章节摘要中提取风格。"""
         samples = self._select_samples(chapters)
         pov_summary = self._summarize_pov(summaries)
         mood_summary = self._summarize_mood(summaries)
         prompt = self._build_prompt(samples, pov_summary, mood_summary)
-        return self._execute_and_parse(prompt)
-
-    def extract_from_raw(self, chapters: list[str]) -> WritingStyle:
-        """直接从原始章节文本提取风格（独立模式）。"""
-        samples = self._select_samples(chapters)
-        prompt = self._build_standalone_prompt(samples)
         return self._execute_and_parse(prompt)
 
     def _select_samples(self, chapters: list[str]) -> list[tuple[int, str]]:
@@ -90,23 +83,13 @@ class StyleExtractor:
         return ", ".join(m[0] for m in top_moods)
 
     def _build_prompt(self, samples: list[tuple[int, str]], pov: str, mood: str) -> str:
-        """构建集成模式的提示词。"""
+        """构建提示词。"""
         chapter_samples = self._format_samples(samples)
         return fill_template(
             self.template,
             chapter_samples=chapter_samples,
             pov_summary=pov,
             mood_summary=mood,
-        )
-
-    def _build_standalone_prompt(self, samples: list[tuple[int, str]]) -> str:
-        """构建独立模式的提示词（无 ChapterSummary 信息）。"""
-        chapter_samples = self._format_samples(samples)
-        return fill_template(
-            self.template,
-            chapter_samples=chapter_samples,
-            pov_summary="（请从样本推断）",
-            mood_summary="（请从样本推断）",
         )
 
     def _format_samples(self, samples: list[tuple[int, str]]) -> str:

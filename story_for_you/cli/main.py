@@ -9,8 +9,7 @@ from typing import Iterable, Optional, Tuple
 import typer
 import yaml
 
-from story_for_you.analysis.context import StoryContext, WritingStyle
-from story_for_you.analysis.extractors import StyleExtractor
+from story_for_you.analysis.context import StoryContext
 from story_for_you.analysis.resumable_analyzer import ResumableStoryAnalyzer
 from story_for_you.analysis.story_analyzer import StoryAnalyzer
 from story_for_you.cache.progress_store import ProgressStore
@@ -420,98 +419,6 @@ def continue_story(
     target = output or input_file.with_name(f"{input_file.stem}_ending.txt")
     write_text_file(target, continuation)
     typer.echo(f"Continuation saved to {target}")
-
-
-def _serialize_style(style: WritingStyle) -> dict:
-    """Serialize WritingStyle to a JSON-compatible dictionary."""
-    return {
-        "avg_sentence_length": style.avg_sentence_length,
-        "sentence_variety": style.sentence_variety,
-        "paragraph_density": style.paragraph_density,
-        "register": style.register,
-        "characteristic_words": style.characteristic_words,
-        "idiom_frequency": style.idiom_frequency,
-        "metaphor_style": style.metaphor_style,
-        "description_focus": style.description_focus,
-        "parallelism_use": style.parallelism_use,
-        "tone_markers": style.tone_markers,
-        "narrator_style": style.narrator_style,
-        "representative_samples": [
-            {
-                "source_chapter": s.source_chapter,
-                "content": s.content,
-                "style_notes": s.style_notes,
-            }
-            for s in style.representative_samples
-        ],
-        "style_summary": style.style_summary,
-    }
-
-
-def _load_style(style_path: Path) -> WritingStyle:
-    """Load WritingStyle from a JSON file."""
-    from story_for_you.analysis.context import StyleSample
-
-    payload = json.loads(style_path.read_text(encoding="utf-8"))
-    samples = [
-        StyleSample(
-            source_chapter=s["source_chapter"],
-            content=s["content"],
-            style_notes=s["style_notes"],
-        )
-        for s in payload.get("representative_samples", [])
-    ]
-    return WritingStyle(
-        avg_sentence_length=payload.get("avg_sentence_length", 20),
-        sentence_variety=payload.get("sentence_variety", "mixed"),
-        paragraph_density=payload.get("paragraph_density", "medium"),
-        register=payload.get("register", "literary"),
-        characteristic_words=payload.get("characteristic_words", []),
-        idiom_frequency=payload.get("idiom_frequency", "sparse"),
-        metaphor_style=payload.get("metaphor_style", ""),
-        description_focus=payload.get("description_focus", []),
-        parallelism_use=payload.get("parallelism_use", "rare"),
-        tone_markers=payload.get("tone_markers", []),
-        narrator_style=payload.get("narrator_style", "detached"),
-        representative_samples=samples,
-        style_summary=payload.get("style_summary", ""),
-    )
-
-
-@app.command(name="style")
-def analyze_style(
-    input_file: Path,
-    output: Optional[Path] = typer.Option(None, "--output", "-o"),
-    context_path: Optional[Path] = typer.Option(None, "--context", help="Existing context file to inject style into"),
-    inject: bool = typer.Option(False, "--inject", help="Inject style into existing context file"),
-    config: Optional[Path] = typer.Option(None, "--config"),
-) -> None:
-    """Extract writing style from the input text without full analysis."""
-    settings = _load_settings(config)
-    llm = _build_llm(settings)
-    text = read_text_file(input_file)
-
-    chunks = _split_text(text, settings)
-    chapters = [chunk.content for chunk in chunks]
-    typer.echo(f"Extracting style from {len(chapters)} chapter(s)...")
-
-    extractor = StyleExtractor(llm)
-    style = extractor.extract_from_raw(chapters)
-
-    if inject and context_path and context_path.exists():
-        payload = json.loads(context_path.read_text(encoding="utf-8"))
-        context = StoryContext.from_dict(payload)
-        context.writing_style = style
-        output_payload = json.dumps(context.to_dict(), ensure_ascii=False, indent=2)
-        context_path.write_text(output_payload, encoding="utf-8")
-        typer.echo(f"Style injected into {context_path}")
-    else:
-        style_payload = json.dumps(_serialize_style(style), ensure_ascii=False, indent=2)
-        target = output or input_file.with_name(f"{input_file.stem}_style.json")
-        target.write_text(style_payload, encoding="utf-8")
-        typer.echo(f"Style saved to {target}")
-
-    typer.echo(f"Style summary: {style.style_summary[:100]}...")
 
 
 @cache_app.command()
