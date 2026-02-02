@@ -1,5 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from typing import Self
 
 
 @dataclass
@@ -20,3 +21,18 @@ class LLMProvider(ABC):
     def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
         """Yield a streaming response iterator."""
         raise NotImplementedError
+
+    def close(self) -> None:
+        """Release any resources held by the provider.
+
+        Subclasses should override this to clean up HTTP clients, connections, etc.
+        """
+        pass
+
+    def __enter__(self) -> Self:
+        """Enter the context manager."""
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
+        """Exit the context manager and release resources."""
+        self.close()

@@ -21,8 +21,14 @@ from story_for_you.core.compressor import StoryCompressor
 from story_for_you.core.ending_writer import EndingWriter
 from story_for_you.indexer import SegmentIndexService
 from story_for_you.indexer.retriever import SegmentRetriever
-from story_for_you.indexer.segment import Gap, Segment, SegmentIndex
-from story_for_you.llm.ollama import OllamaProvider
+from story_for_you.indexer.segment import Segment, SegmentIndex
+from story_for_you.indexer.serialization import (
+    deserialize_index,
+    deserialize_segments,
+    serialize_index,
+    serialize_segments,
+)
+from story_for_you.llm.factory import build_llm
 from story_for_you.parser.text_splitter import TextChunk, TextSplitter
 from story_for_you.utils.file_io import read_text_file, write_text_file
 
@@ -47,26 +53,8 @@ def _compute_file_hash(file_path: Path) -> str:
     return digest.hexdigest()[:24]
 
 
-def _build_llm(settings: Settings) -> OllamaProvider:
-    options = {
-        "temperature": settings.llm.temperature,
-        "seed": settings.llm.seed,
-    }
-    if settings.llm.max_tokens and settings.llm.max_tokens > 0:
-        options["num_ctx"] = settings.llm.max_tokens
-    options = {key: value for key, value in options.items() if value is not None}
-    return OllamaProvider(
-        model=settings.llm.model,
-        base_url=settings.llm.base_url,
-        timeout=settings.llm.timeout,
-        options=options,
-    )
-
-
 def _split_text(text: str, settings: Settings) -> list[TextChunk]:
-    prompt_margin = 2300  # Reserve space for instructions/context to avoid LLM truncation.
-    min_chunk = 800
-    chunk_budget = max(min_chunk, settings.llm.max_tokens - prompt_margin)
+    chunk_budget = max(settings.prompt.min_chunk, settings.llm.max_tokens - settings.prompt.margin)
     chunk_size = min(settings.parser.chunk_size, chunk_budget)
     splitter = TextSplitter(chunk_size=chunk_size, overlap=settings.parser.overlap)
     chunks = splitter.split(text)
@@ -95,56 +83,7 @@ def _chunks_to_segments(chunks: Iterable[TextChunk]) -> list[Segment]:
     return segments
 
 
-def _serialize_segments(segments: list[Segment]) -> list[dict]:
-    serialized: list[dict] = []
-    for segment in segments:
-        serialized.append(
-            {
-                "segment_id": segment.segment_id,
-                "content": segment.content,
-                "chapter": segment.chapter,
-                "characters": segment.characters,
-                "metadata": segment.metadata,
-            }
-        )
-    return serialized
-
-
-def _deserialize_segments(payload: list[dict]) -> list[Segment]:
-    return [
-        Segment(
-            segment_id=item["segment_id"],
-            content=item["content"],
-            chapter=item.get("chapter"),
-            characters=item.get("characters", []),
-            metadata=item.get("metadata", {}),
-        )
-        for item in payload
-    ]
-
-
-def _serialize_index(index: SegmentIndex) -> dict:
-    return {
-        "char_index": index.char_index,
-        "chapter_index": index.chapter_index,
-        "gap_map": {key: {"start_id": gap.start_id, "end_id": gap.end_id, "description": gap.description} for key, gap in index.gap_map.items()},
-    }
-
-
-def _deserialize_index(payload: dict, segments: list[Segment]) -> SegmentIndex:
-    gap_map = {
-        key: Gap(start_id=value["start_id"], end_id=value["end_id"], description=value.get("description", ""))
-        for key, value in payload.get("gap_map", {}).items()
-    }
-    return SegmentIndex(
-        segments=segments,
-        char_index=payload.get("char_index", {}),
-        chapter_index=payload.get("chapter_index", {}),
-        gap_map=gap_map,
-    )
-
-
-def _reanalyze(text: str, settings: Settings, llm: OllamaProvider):
+def _reanalyze(text: str, settings: Settings, llm):
     chunks = _split_text(text, settings)
     chapters = [chunk.content for chunk in chunks]
     total_chapters = len(chapters)
@@ -167,7 +106,7 @@ def _load_artifacts(
     input_file: Path,
     text: str,
     settings: Settings,
-    llm: OllamaProvider,
+    llm,
     context_path: Path | None = None,
     segments_path: Path | None = None,
     no_cache: bool = False,
@@ -179,7 +118,7 @@ def _load_artifacts(
         context = StoryContext.from_dict(payload)
         if segments_path and segments_path.exists():
             segments_payload = json.loads(segments_path.read_text(encoding="utf-8"))
-            segments = _deserialize_segments(segments_payload)
+            segments = deserialize_segments(segments_payload)
         else:
             segments = _chunks_to_segments(_split_text(text, settings))
         segment_index = SegmentIndexService().build(context, segments)
@@ -187,15 +126,15 @@ def _load_artifacts(
     if not no_cache and not reanalyze:
         cached = store.get(input_file, settings)
         if cached:
-            segments = _deserialize_segments(cached.segments)
-            segment_index = _deserialize_index(cached.index, segments)
+            segments = deserialize_segments(cached.segments)
+            segment_index = deserialize_index(cached.index, segments)
             return cached.context, segments, segment_index
     context, segments, segment_index = _reanalyze(text, settings, llm)
     if not no_cache:
         artifacts = CachedArtifacts(
             context=context,
-            segments=_serialize_segments(segments),
-            index=_serialize_index(segment_index),
+            segments=serialize_segments(segments),
+            index=serialize_index(segment_index),
             metadata={"input": str(input_file), "segments": len(segments)},
         )
         store.save(input_file, settings, artifacts)
@@ -222,7 +161,7 @@ def analyze(
 ) -> None:
     """Analyze the input story and persist a StoryContext artifact."""
     settings = _load_settings(config)
-    llm = _build_llm(settings)
+    llm = build_llm(settings)
     if format not in {"json", "yaml"}:
         raise typer.BadParameter("Format must be 'json' or 'yaml'.")
     text = read_text_file(input_file)
@@ -266,8 +205,8 @@ def analyze(
     if settings.cache.enabled and settings.cache.auto_save:
         artifacts = CachedArtifacts(
             context=context,
-            segments=_serialize_segments(segments),
-            index=_serialize_index(segment_index),
+            segments=serialize_segments(segments),
+            index=serialize_index(segment_index),
             metadata={"input": str(input_file), "segments": len(segments)},
         )
         store.save(input_file, settings, artifacts)
@@ -293,7 +232,7 @@ def compress(
     """Compress story beats according to the configured level."""
     settings = _load_settings(config)
     text = read_text_file(input_file)
-    llm = _build_llm(settings)
+    llm = build_llm(settings)
     context, segments, segment_index = _load_artifacts(
         input_file=input_file,
         text=text,
@@ -326,7 +265,7 @@ def filter_characters(
     """Filter story content by the provided character list."""
     settings = _load_settings(config)
     text = read_text_file(input_file)
-    llm = _build_llm(settings)
+    llm = build_llm(settings)
     targets = [item.strip() for item in characters.split(",") if item.strip()]
     if not targets:
         raise typer.BadParameter("Provide at least one character name.")
@@ -363,7 +302,7 @@ def remove(
     """Remove the given characters from the source text."""
     settings = _load_settings(config)
     text = read_text_file(input_file)
-    llm = _build_llm(settings)
+    llm = build_llm(settings)
     targets = [item.strip() for item in characters.split(",") if item.strip()]
     if not targets:
         raise typer.BadParameter("Provide at least one character name.")
@@ -403,7 +342,7 @@ def continue_story(
     """Continue the story with an optional hint about the desired ending."""
     settings = _load_settings(config)
     text = read_text_file(input_file)
-    llm = _build_llm(settings)
+    llm = build_llm(settings)
     context, segments, segment_index = _load_artifacts(
         input_file=input_file,
         text=text,

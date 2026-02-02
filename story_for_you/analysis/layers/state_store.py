@@ -12,6 +12,7 @@ from story_for_you.analysis.context import (
     Relationship,
     StoryState,
 )
+from story_for_you.utils.chinese_name_utils import split_compound_chinese_name
 
 
 class StateStore:
@@ -254,11 +255,6 @@ class StateStore:
                     keys.add(normalized)
         return keys
 
-    # 常见排行/称呼后缀 (用于拆分复合名)
-    _RANKING_SUFFIXES = ("大老", "二老", "三老", "四老", "大佬", "二佬", "三佬")
-    _FAMILY_TERMS = ("祖父", "爷爷", "外公", "外婆", "奶奶", "姥姥", "姥爷", "父亲", "母亲", "爹", "娘")
-    _ROLE_SUFFIXES = ("船夫", "马兵", "乡绅", "老爷", "夫人", "小姐", "公子", "先生")
-
     def _tokenize_label(self, label: str) -> list[str]:
         cleaned = (label or "").strip()
         if not cleaned:
@@ -272,7 +268,7 @@ class StateStore:
         expanded: list[str] = []
         for token in tokens:
             expanded.append(token)
-            expanded.extend(self._split_compound_chinese_name(token))
+            expanded.extend(split_compound_chinese_name(token))
 
         # 去重并保持顺序
         seen: set[str] = set()
@@ -282,55 +278,6 @@ class StateStore:
                 seen.add(item)
                 result.append(item)
         return result
-
-    def _split_compound_chinese_name(self, name: str) -> list[str]:
-        """拆分复合中文名为组成部分。
-
-        例如：
-        - 傩送二老 → [傩送, 二老]
-        - 天保大老 → [天保, 大老]
-        - 老船夫 → [船夫]
-        - 祖父（老船夫）→ [祖父, 老船夫]
-        """
-        if not name or len(name) < 3:
-            return []
-
-        parts: list[str] = []
-
-        # 检查是否以排行后缀结尾 (如 傩送二老)
-        for suffix in self._RANKING_SUFFIXES:
-            if name.endswith(suffix) and len(name) > len(suffix):
-                prefix = name[: -len(suffix)]
-                if prefix:
-                    parts.append(prefix)
-                    parts.append(suffix)
-                break
-
-        # 检查是否以"老"字开头 + 职业/身份 (如 老船夫)
-        if name.startswith("老") and len(name) >= 3:
-            suffix_part = name[1:]  # 去掉"老"
-            if suffix_part:
-                parts.append(suffix_part)
-
-        # 检查是否包含家庭称呼 (如 祖父、爷爷)
-        for term in self._FAMILY_TERMS:
-            if term in name and name != term:
-                parts.append(term)
-                # 如果不是以该称呼结尾，也提取前缀
-                idx = name.find(term)
-                if idx > 0:
-                    parts.append(name[:idx])
-
-        # 检查是否以职业后缀结尾 (如 杨马兵)
-        for suffix in self._ROLE_SUFFIXES:
-            if name.endswith(suffix) and len(name) > len(suffix):
-                prefix = name[: -len(suffix)]
-                # 要求前缀至少2个字符，避免太短的通用词如"老"
-                if prefix and len(prefix) >= 2:
-                    parts.append(prefix)
-                break
-
-        return parts
 
     def _normalize_token(self, token: str) -> str:
         return re.sub(r"\s+", "", token).lower()

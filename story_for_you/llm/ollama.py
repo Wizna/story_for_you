@@ -5,6 +5,11 @@ from typing import Iterator
 
 import httpx
 
+from story_for_you.core.exceptions import (
+    LLMConnectionError,
+    LLMResponseError,
+    LLMTimeoutError,
+)
 from story_for_you.llm.base import LLMProvider, LLMResponse
 
 
@@ -31,9 +36,20 @@ class OllamaProvider(LLMProvider):
         try:
             response = self._client.post("/api/generate", json=payload)
             response.raise_for_status()
+        except httpx.TimeoutException as exc:
+            raise LLMTimeoutError(f"Ollama request timed out: {exc}") from exc
+        except httpx.ConnectError as exc:
+            raise LLMConnectionError(f"Failed to connect to Ollama at {self.base_url}: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise LLMResponseError(f"Ollama returned error status {exc.response.status_code}: {exc}") from exc
         except httpx.HTTPError as exc:
-            raise RuntimeError(f"Ollama request failed: {exc}") from exc
-        data = response.json()
+            raise LLMConnectionError(f"Ollama request failed: {exc}") from exc
+
+        try:
+            data = response.json()
+        except json.JSONDecodeError as exc:
+            raise LLMResponseError(f"Invalid JSON response from Ollama: {exc}") from exc
+
         content = data.get("response", "").strip()
         tokens_used = data.get("eval_count") or data.get("prompt_eval_count") or 0
         return LLMResponse(content=content, tokens_used=tokens_used)
@@ -41,23 +57,32 @@ class OllamaProvider(LLMProvider):
     def generate_stream(self, prompt: str, system: str = "", options: dict | None = None) -> Iterator[str]:
         """Stream a response via Ollama's API."""
         payload = self._build_payload(prompt, system, stream=True, call_options=options)
-        with httpx.stream(
-            "POST",
-            f"{self.base_url}/api/generate",
-            json=payload,
-            timeout=self.timeout,
-        ) as response:
-            response.raise_for_status()
-            for line in response.iter_lines():
-                if not line:
-                    continue
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                chunk = data.get("response")
-                if chunk:
-                    yield chunk
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.base_url}/api/generate",
+                json=payload,
+                timeout=self.timeout,
+            ) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line:
+                        continue
+                    try:
+                        data = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    chunk = data.get("response")
+                    if chunk:
+                        yield chunk
+        except httpx.TimeoutException as exc:
+            raise LLMTimeoutError(f"Ollama stream timed out: {exc}") from exc
+        except httpx.ConnectError as exc:
+            raise LLMConnectionError(f"Failed to connect to Ollama at {self.base_url}: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise LLMResponseError(f"Ollama returned error status {exc.response.status_code}: {exc}") from exc
+        except httpx.HTTPError as exc:
+            raise LLMConnectionError(f"Ollama stream failed: {exc}") from exc
 
     def close(self) -> None:
         """Dispose of the shared HTTP client."""

@@ -6,8 +6,13 @@ import re
 from dataclasses import dataclass, field
 
 from story_for_you.analysis.context import StoryContext, WritingStyle
-from story_for_you.indexer.segment import Segment, SegmentIndex
-from story_for_you.llm.base import LLMProvider
+from story_for_you.core.ending import (
+    SCENE_KEYWORDS,
+    HintDirectives,
+    HintInterpreter,
+    StyleEnforcer,
+)
+from story_for_you.core.exceptions import GenerationError, LLMError
 from story_for_you.core.prompting import (
     fill_template,
     format_context_sections,
@@ -16,54 +21,11 @@ from story_for_you.core.prompting import (
     format_style_samples,
     load_template,
 )
+from story_for_you.indexer.segment import Segment, SegmentIndex
+from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
-
-# 低质量写法黑名单（用于后处理强制过滤）
-LOW_QUALITY_PHRASES = [
-    # 直接陈述情绪
-    "心中满是",
-    "内心充满",
-    "心中充满",
-    "心中涌起",
-    "眼中满是",
-    "眼中泛着泪光",
-    "眼中闪烁",
-    # 网文俗套描写
-    "脸上洋溢",
-    "脸上带着歉意",
-    "脸上带着温柔",
-    "手中捧着鲜花",
-    "手中提着",
-    # 情绪强调词
-    "不由得",
-    "顿时",
-    "竟然",
-    "居然",
-    "不禁",
-    # 廉价升华
-    "仿佛一切",
-    "仿佛预示",
-    "充满了无限",
-    "一切困难都",
-    # 解释性叙述
-    "留下一个",
-    "这让她感到",
-    "这让他感到",
-    "她感受到了",
-    "他感受到了",
-    # 直白道歉/表白（文学作品中应含蓄表达）
-    "对不起，我",
-    "我明白了，你",
-    "我一直太",
-    "我误会了你",
-    "原来你一直",
-    # 过于直白的情感陈述
-    "我终于明白",
-    "我现在知道",
-    "我应该早点",
-]
 
 
 @dataclass
@@ -88,43 +50,19 @@ class MultiStageEndingResult:
     revision_notes: list[str] = field(default_factory=list)
 
 
-@dataclass
-class HintDirectives:
-    """归一化后的读者意图，便于在不同阶段复用。"""
-
-    normalized_text: str = "无特别要求"
-    ending_direction: str | None = None
-    emotional_tone: str | None = None
-    focus_characters: list[str] = field(default_factory=list)
-
-    def for_prompt(self) -> str:
-        """将结构化指令转成短句，用于 prompt 占位。"""
-
-        parts: list[str] = []
-        base = self.normalized_text.strip()
-        if base and base != "无特别要求":
-            parts.append(base)
-        if self.ending_direction:
-            parts.append(f"结局方向：{self.ending_direction}")
-        if self.emotional_tone:
-            parts.append(f"情感氛围：{self.emotional_tone}")
-        if self.focus_characters:
-            parts.append("重点人物：" + ", ".join(self.focus_characters))
-        return "；".join(parts) if parts else "无特别要求"
-
-
 class EndingWriter:
     """多阶段续写器，模拟人类作者创作流程。"""
 
     def __init__(self, llm: LLMProvider, segment_index: SegmentIndex):
         self.llm = llm
         self.segment_index = segment_index
+        self._hint_interpreter = HintInterpreter()
         self._phase_llm_options = {
             "inspiration": {"temperature": 0.55},
             "outline": {"temperature": 0.55},
-            "draft": {"temperature": 0.65},  # 降低以减少创意偏离
+            "draft": {"temperature": 0.65},
             "revision": {"temperature": 0.35},
-            "polish": {"temperature": 0.35},  # 降低以更严格遵循风格
+            "polish": {"temperature": 0.35},
             "resolution": {"temperature": 0.35},
             "legacy": {"temperature": 0.7},
         }
@@ -141,7 +79,6 @@ class EndingWriter:
             self.resolution_template = load_template("ending_resolution")
             self._multi_stage_enabled = True
         except FileNotFoundError:
-            # Fallback to legacy single-stage template
             self.legacy_template = load_template("ending")
             self._multi_stage_enabled = False
             logger.info("Multi-stage templates not found, using legacy single-stage mode")
@@ -154,45 +91,27 @@ class EndingWriter:
         style = context.writing_style
         context_block = format_context_sections(context.for_prompt())
         style_anchors = self._build_style_anchors(context)
-        directives = self._interpret_hint(hint, context)
+        directives = self._hint_interpreter.interpret(hint, context)
         hint_payload = directives.for_prompt()
 
         try:
-            # 阶段 1: 构思灵感
             inspiration = self._phase_inspiration(context, context_block, hint_payload)
-
-            # 阶段 2: 规划大纲
             outline = self._phase_outline(context, inspiration, hint_payload)
             if directives.ending_direction:
                 outline.ending_direction = directives.ending_direction
 
-            # 阶段 3: 草稿写作
             draft = self._phase_draft(
                 context, outline, style, context_block, hint_payload, style_anchors
             )
-
-            # 阶段 4: 修订编辑
             revised = self._phase_revision(draft, style, context_block, hint_payload, style_anchors)
-
-            # 阶段 5: 反馈优化
             final = self._phase_polish(
-                revised,
-                style,
-                outline,
-                context_block,
-                hint_payload,
-                style_anchors,
+                revised, style, outline, context_block, hint_payload, style_anchors
             )
-            final = self._phase_resolution_review(
-                final,
-                context,
-                context_block,
-                style,
-                hint_payload,
-            )
+            final = self._phase_resolution_review(final, context, context_block, style, hint_payload)
 
-            return self._post_process_final(final, style)
-        except Exception as exc:
+            enforcer = StyleEnforcer(style)
+            return enforcer.post_process(final)
+        except (LLMError, GenerationError) as exc:
             logger.warning("Multi-stage continuation failed, falling back to legacy: %s", exc)
             return self._legacy_continue(text, context, hint)
 
@@ -214,7 +133,7 @@ class EndingWriter:
             result = load_json_response(response.content)
             if result:
                 return result
-        except Exception as exc:
+        except LLMError as exc:
             logger.warning("Inspiration phase failed: %s", exc)
 
         return {
@@ -250,7 +169,7 @@ class EndingWriter:
                     emotional_arc=result.get("emotional_arc", ""),
                     final_image=result.get("final_image", ""),
                 )
-        except Exception as exc:
+        except LLMError as exc:
             logger.warning("Outline phase failed: %s", exc)
 
         return EndingOutline(
@@ -300,7 +219,7 @@ class EndingWriter:
             content = response.content.strip()
             if content:
                 return content
-        except Exception as exc:
+        except LLMError as exc:
             logger.warning("Draft phase failed: %s", exc)
 
         return f"[初稿生成失败] 基于大纲「{outline.theme}」的续写内容。"
@@ -338,10 +257,10 @@ class EndingWriter:
             content = response.content.strip()
             if content:
                 return content
-        except Exception as exc:
+        except LLMError as exc:
             logger.warning("Revision phase failed: %s", exc)
 
-        return draft  # Fallback to draft if revision fails
+        return draft
 
     def _phase_polish(
         self,
@@ -376,10 +295,10 @@ class EndingWriter:
             content = response.content.strip()
             if content:
                 return content
-        except Exception as exc:
+        except LLMError as exc:
             logger.warning("Polish phase failed: %s", exc)
 
-        return revised  # Fallback to revised if polish fails
+        return revised
 
     def _phase_resolution_review(
         self,
@@ -418,22 +337,21 @@ class EndingWriter:
             bridges = [item.strip() for item in payload.get("bridges", []) if isinstance(item, str) and item.strip()]
             if not bridges:
                 return polished
-            # Filter out bridges that duplicate existing content
-            bridges = self._filter_duplicate_bridges(polished, bridges)
+            enforcer = StyleEnforcer(style)
+            bridges = enforcer.filter_duplicate_bridges(polished, bridges)
             if not bridges:
                 logger.debug("All bridges filtered as duplicates")
                 return polished
             notes = payload.get("notes")
             note_text = notes.strip() if isinstance(notes, str) else None
             return self._append_bridges(polished, bridges, note_text)
-        except Exception as exc:
+        except LLMError as exc:
             logger.warning("Resolution phase failed: %s", exc)
             return polished
 
     # Helper methods ---------------------------------------------------------
 
     def _format_recent_events(self, context: StoryContext) -> str:
-        """Format recent plot events for prompts."""
         if not context.events:
             return "(无近期重要事件)"
         events = context.events[-5:]
@@ -441,19 +359,16 @@ class EndingWriter:
         return "\n".join(lines)
 
     def _format_unresolved(self, context: StoryContext) -> str:
-        """Format unresolved threads from characters and story state."""
         threads = self._collect_unresolved_threads(context)
         return "\n".join(f"- {item}" for item in threads) if threads else "(无明显未解决伏笔)"
 
     def _format_main_characters(self, context: StoryContext) -> str:
-        """Format main characters for outline prompt, including alias mappings."""
         if not context.characters:
             return "(无主要人物信息)"
         lines = []
         for char in context.characters.values():
             if char.role in ("main", "support"):
                 traits = ", ".join(char.personality[:3]) if char.personality else "特征未知"
-                # Include aliases so LLM knows the name mappings
                 alias_info = ""
                 if char.aliases:
                     alias_info = f"，别名/称呼：{'、'.join(char.aliases[:3])}"
@@ -461,14 +376,12 @@ class EndingWriter:
         return "\n".join(lines) if lines else "(无主要人物信息)"
 
     def _format_conflicts(self, context: StoryContext) -> str:
-        """Format major conflicts for outline prompt."""
         if not context.story_state or not context.story_state.major_conflicts:
             return "(无明确核心冲突)"
         conflicts = context.story_state.major_conflicts[-3:]
         return "\n".join(f"- {c}" for c in conflicts)
 
     def _format_outline(self, outline: EndingOutline) -> str:
-        """Format outline for draft prompt."""
         lines = [
             f"主题: {outline.theme}",
             f"结局方向: {outline.ending_direction}",
@@ -481,8 +394,6 @@ class EndingWriter:
         return "\n".join(lines)
 
     def _draft_paragraph_plan(self, outline: EndingOutline) -> str:
-        """Create段落规划提示，确保情节点逐段落实。"""
-
         beats = [
             beat.strip()
             for beat in outline.key_beats
@@ -500,7 +411,6 @@ class EndingWriter:
         return "\n".join(lines)
 
     def _revision_checklist(self, style: WritingStyle | None) -> str:
-        """Generate revision checklist based on style."""
         items = [
             "□ 句式节奏与原作一致",
             "□ 段落间过渡自然",
@@ -516,7 +426,6 @@ class EndingWriter:
         return "\n".join(items)
 
     def _recent_segment_digest(self, context: StoryContext) -> str:
-        """Build a digest covering核心人物与最近事件，供各阶段 prompt 使用。"""
         if not self.segment_index.segments:
             return "(无可参考片段)"
 
@@ -575,7 +484,6 @@ class EndingWriter:
         return context.events[-1] if context.events else None
 
     def _collect_unresolved_threads(self, context: StoryContext) -> list[str]:
-        """Collect unresolved items from character and world state."""
         threads: list[str] = []
         for char in context.characters.values():
             for item in char.unresolved[:2]:
@@ -586,7 +494,6 @@ class EndingWriter:
         return threads
 
     def _build_style_anchors(self, context: StoryContext) -> str:
-        """Assemble写作锚点，帮助模型抓住地域/意象。"""
         anchors: list[str] = []
         style = context.writing_style
         if style and style.characteristic_words:
@@ -626,19 +533,8 @@ class EndingWriter:
                 lines.append(f"- {item}")
         return "\n".join(lines)
 
-    # 景物/意象关键词，用于筛选有风格特征的句子
-    _SCENE_KEYWORDS = frozenset([
-        "河", "溪", "水", "山", "塔", "船", "渡", "岸", "桥",
-        "月", "日", "风", "雨", "雾", "云", "天", "星",
-        "竹", "树", "花", "草", "鸟", "虫",
-        "静", "远", "近", "高", "低", "深", "浅",
-        "黄昏", "清晨", "夜", "暮", "晨", "午",
-    ])
-
     def _scene_anchors(self, limit: int = 3) -> list[str]:
-        """Extract 有景物描写的短句作为 prompt 锚点。"""
         scenes: list[str] = []
-        # 从后往前遍历，优先取靠近结尾的内容
         for segment in reversed(self.segment_index.segments):
             candidates = self._extract_scene_sentences(segment.content)
             for sentence in candidates:
@@ -649,32 +545,25 @@ class EndingWriter:
         return scenes
 
     def _extract_scene_sentences(self, text: str) -> list[str]:
-        """从文本中提取有景物描写的完整句子。"""
         normalized = text.strip()
         if not normalized:
             return []
-        # 按句号/感叹号/问号分割
         parts = re.split(r"[。！？]", normalized)
         results: list[str] = []
         for part in parts:
             sentence = part.strip()
-            # 跳过对话片段（以引号开头或包含引号）
             if sentence.startswith('"') or sentence.startswith('"') or '："' in sentence:
                 continue
-            # 跳过省略号开头的片段
             if sentence.startswith("…") or sentence.startswith("。"):
                 continue
-            # 句子长度在 15-80 字之间，且包含景物关键词
             if 15 <= len(sentence) <= 80 and self._has_scene_keyword(sentence):
                 results.append(sentence)
         return results
 
     def _has_scene_keyword(self, text: str) -> bool:
-        """检查文本是否包含景物/意象关键词。"""
-        return any(kw in text for kw in self._SCENE_KEYWORDS)
+        return any(kw in text for kw in SCENE_KEYWORDS)
 
     def _append_bridges(self, polished: str, bridges: list[str], notes: str | None = None) -> str:
-        """Append bridge paragraphs while保留结尾标记。"""
         marker = "（读者定制版本）"
         baseline = polished.rstrip()
         marker_present = baseline.endswith(marker)
@@ -689,73 +578,15 @@ class EndingWriter:
             combined = combined.rstrip() + "\n\n" + marker
         return combined
 
-    def _filter_duplicate_bridges(self, polished: str, bridges: list[str]) -> list[str]:
-        """Filter out bridge paragraphs that are too similar to existing polished content.
-
-        Uses first-sentence matching and Jaccard similarity to detect duplicates.
-        """
-        if not bridges:
-            return []
-
-        # Extract existing sentences and first-sentences from polished content
-        existing_paragraphs = [p.strip() for p in polished.split("\n\n") if p.strip()]
-        existing_sentences = self._extract_sentences_for_dedup(polished)
-        existing_first_sentences: set[str] = set()
-        for para in existing_paragraphs:
-            first = para.split("。")[0].strip()
-            if first:
-                existing_first_sentences.add(first)
-
-        filtered: list[str] = []
-        for bridge in bridges:
-            bridge_stripped = bridge.strip()
-            if not bridge_stripped:
-                continue
-
-            # Check first-sentence overlap
-            bridge_first = bridge_stripped.split("。")[0].strip()
-            if bridge_first and bridge_first in existing_first_sentences:
-                logger.debug("Bridge被过滤（首句重复）: %s...", bridge_first[:30])
-                continue
-
-            # Check Jaccard similarity with existing content
-            bridge_sentences = self._extract_sentences_for_dedup(bridge_stripped)
-            if self._jaccard_similarity(bridge_sentences, existing_sentences) >= 0.25:
-                logger.debug("Bridge被过滤（相似度过高）: %s...", bridge_stripped[:30])
-                continue
-
-            filtered.append(bridge_stripped)
-            # Add this bridge's sentences to existing set to avoid inter-bridge duplicates
-            existing_sentences.update(bridge_sentences)
-            if bridge_first:
-                existing_first_sentences.add(bridge_first)
-
-        return filtered
-
-    def _extract_sentences_for_dedup(self, text: str) -> set[str]:
-        """Extract sentence set for deduplication checking."""
-        parts = re.split(r"[。！？]", text)
-        return {s.strip() for s in parts if len(s.strip()) >= 6}
-
-    def _jaccard_similarity(self, set1: set[str], set2: set[str]) -> float:
-        """Compute Jaccard similarity between two sets."""
-        if not set1 or not set2:
-            return 0.0
-        intersection = len(set1 & set2)
-        union = len(set1 | set2)
-        return intersection / union if union > 0 else 0.0
-
     def _phase_options(self, phase: str) -> dict | None:
-        """Return LLM generation overrides for a specific phase."""
         return self._phase_llm_options.get(phase)
 
     # Legacy fallback --------------------------------------------------------
 
     def _legacy_continue(self, text: str, context: StoryContext, hint: str) -> str:
-        """Legacy single-stage continuation."""
         context_block = format_context_sections(context.for_prompt())
         recent_segments = self._recent_segment_digest(context)
-        directives = self._interpret_hint(hint, context)
+        directives = self._hint_interpreter.interpret(hint, context)
         prompt = fill_template(
             self.legacy_template,
             context_block=context_block,
@@ -766,13 +597,13 @@ class EndingWriter:
             response = self.llm.generate(prompt=prompt, options=self._phase_options("legacy"))
             content = response.content.strip()
             if content:
-                return self._post_process_final(content, context.writing_style)
-        except Exception as exc:
+                enforcer = StyleEnforcer(context.writing_style)
+                return enforcer.post_process(content)
+        except LLMError as exc:
             logger.warning("Ending continuation failed, falling back to heuristic ending: %s", exc)
         return self._fallback(context, hint)
 
     def _fallback(self, context: StoryContext, hint: str) -> str:
-        """Fallback heuristic ending when all else fails."""
         last_summary = context.chapter_window[-1] if context.chapter_window else None
         recent_events = context.events[-3:]
         tone = context.story_state.world_tension if context.story_state else "medium"
@@ -791,234 +622,3 @@ class EndingWriter:
         paragraphs.append("Loose threads are acknowledged, promising future tales without contradicting the past.")
         paragraphs.append("(本段为读者定制版本的兜底续写)")
         return "\n\n".join(paragraphs)
-
-    # Hint helpers -----------------------------------------------------------
-
-    def _interpret_hint(self, raw_hint: str, context: StoryContext) -> HintDirectives:
-        """Parse简写、情绪词汇以及人物指向，生成统一指令。"""
-
-        hint = (raw_hint or "").strip()
-        directives = HintDirectives(normalized_text=hint or "无特别要求")
-        if not hint:
-            directives.focus_characters = []
-            return directives
-
-        lowered = hint.lower()
-        upper_tokens = {token.upper() for token in re.findall(r"[A-Za-z]+", hint)}
-
-        direction_aliases = {
-            "HE": {"HE", "HAPPY", "HAPPY END", "HAPPY ENDING", "圆满", "大团圆", "皆大欢喜", "治愈", "希望", "甜"},
-            "BE": {"BE", "BAD", "BE结局", "悲", "刀", "虐", "悲剧", "凄凉"},
-            "OE": {"OE", "OPEN", "留白", "开放", "未知", "OE结局"},
-        }
-        for label, keywords in direction_aliases.items():
-            if label in upper_tokens:
-                directives.ending_direction = label
-                break
-            if any(keyword.lower() in lowered for keyword in keywords if keyword.isascii()):
-                directives.ending_direction = label
-                break
-            if any(keyword in hint for keyword in keywords if not keyword.isascii()):
-                directives.ending_direction = label
-                break
-
-        tone_aliases = {
-            "温暖": ["温暖", "治愈", "柔和", "明亮", "希望"],
-            "苍凉": ["苍凉", "萧瑟", "凄冷", "孤独"],
-            "热烈": ["热烈", "激昂", "燃", "热血"],
-            "哀伤": ["哀伤", "忧伤", "悲怆", "痛"],
-            "平静": ["平静", "克制", "淡然", "沉稳"],
-        }
-        for tone, keywords in tone_aliases.items():
-            if any(keyword in hint for keyword in keywords):
-                directives.emotional_tone = tone
-                break
-
-        focus: list[str] = []
-        for name in context.characters.keys():
-            if name and name in hint:
-                focus.append(name)
-        directives.focus_characters = focus[:4]
-        return directives
-
-    # Output cleanup --------------------------------------------------------
-
-    def _post_process_final(self, text: str, style: WritingStyle | None = None) -> str:
-        """Deduplicate重复段落，强制过滤低质量短语，保留终端标记。"""
-
-        if not text:
-            return text
-        marker = "（读者定制版本）"
-        working = text.rstrip()
-        marker_present = working.endswith(marker)
-        if marker_present:
-            working = working[: -len(marker)].rstrip()
-
-        paragraphs = [para for para in working.split("\n\n") if para.strip()]
-        if not paragraphs:
-            return text
-
-        # 第一步：完全相同段落去重
-        normalized_seen: set[str] = set()
-        cleaned: list[str] = []
-        last_norm = ""
-        for para in paragraphs:
-            norm = re.sub(r"\s+", " ", para.strip())
-            if norm == last_norm or norm in normalized_seen:
-                continue
-            cleaned.append(para.strip())
-            normalized_seen.add(norm)
-            last_norm = norm
-
-        # 第二步：高相似度段落去重（基于句子重叠）
-        cleaned = self._dedupe_similar_paragraphs(cleaned)
-
-        # 第三步：对文学/古典风格强制过滤低质量短语
-        register = getattr(style, "register", "mixed").lower() if style else "mixed"
-        if register in ("literary", "classical"):
-            cleaned = self._filter_low_quality_sentences(cleaned)
-
-        # 第四步：过滤非对话问句段落（可能是调试残余或草稿提问）
-        cleaned = self._filter_question_paragraphs(cleaned)
-
-        combined = "\n\n".join(cleaned) if cleaned else working
-
-        if marker_present:
-            combined = combined.rstrip() + "\n\n" + marker
-        return combined
-
-    def _filter_low_quality_sentences(self, paragraphs: list[str]) -> list[str]:
-        """从段落中移除包含低质量短语的句子。"""
-        result: list[str] = []
-        for para in paragraphs:
-            # 按句号分割
-            sentences = re.split(r"(。|！|？)", para)
-            filtered_parts: list[str] = []
-            i = 0
-            while i < len(sentences):
-                sentence = sentences[i]
-                # 保留标点符号
-                punct = sentences[i + 1] if i + 1 < len(sentences) and sentences[i + 1] in "。！？" else ""
-
-                # 检查是否包含低质量短语
-                has_bad_phrase = any(phrase in sentence for phrase in LOW_QUALITY_PHRASES)
-                if has_bad_phrase:
-                    logger.info("移除低质量句子: %s", sentence[:30] + "...")
-                elif sentence.strip():
-                    filtered_parts.append(sentence + punct)
-
-                i += 2 if punct else 1
-
-            # 重新组合段落
-            if filtered_parts:
-                new_para = "".join(filtered_parts).strip()
-                if new_para:
-                    result.append(new_para)
-        return result
-
-    def _filter_question_paragraphs(self, paragraphs: list[str]) -> list[str]:
-        """过滤以问号结尾的非对话段落。
-
-        这类段落通常是调试残余、草稿提问或LLM的元叙述，不应出现在正文中。
-        保留对话中的问句（引号内的问句）。
-        """
-        # 问句段落特征词（通常表示元叙述或思考性问句）
-        question_markers = [
-            "究竟如何",
-            "到底怎样",
-            "又会如何",
-            "将会怎样",
-            "是否应该",
-            "难道真的",
-            "关系究竟",
-            "命运如何",
-        ]
-
-        result: list[str] = []
-        for para in paragraphs:
-            para_stripped = para.strip()
-            if not para_stripped:
-                continue
-
-            # 检查段落是否以问号结尾（非对话）
-            if para_stripped.endswith("？"):
-                # 检查是否是对话（引号内的内容）
-                # 对话格式：..."xxx？" 或 "xxx？"
-                is_dialogue = (
-                    para_stripped.endswith('"？"')
-                    or para_stripped.endswith('"')
-                    or '："' in para_stripped
-                    or ':"' in para_stripped
-                )
-                if not is_dialogue:
-                    # 检查是否包含问句特征词
-                    has_question_marker = any(marker in para_stripped for marker in question_markers)
-                    if has_question_marker:
-                        logger.debug("移除非对话问句段落: %s...", para_stripped[:30])
-                        continue
-
-            result.append(para_stripped)
-        return result
-
-    def _dedupe_similar_paragraphs(self, paragraphs: list[str], threshold: float = 0.2) -> list[str]:
-        """移除与之前段落高度相似的段落。
-
-        使用首句匹配和句子级别的 Jaccard 相似度检测重复。
-        threshold: 相似度阈值，超过此值则视为重复（默认 0.2）。
-        """
-        if len(paragraphs) <= 1:
-            return paragraphs
-
-        def extract_sentences(text: str) -> set[str]:
-            """提取段落中的句子集合。"""
-            parts = re.split(r"[。！？]", text)
-            return {s.strip() for s in parts if len(s.strip()) >= 6}
-
-        def extract_first_sentence(text: str) -> str:
-            """提取段落的首句（用于快速去重）。"""
-            first = text.split("。")[0].strip()
-            # 如果首句过短，尝试取更长的开头
-            if len(first) < 10:
-                first = text[:30].strip()
-            return first
-
-        def jaccard_similarity(set1: set[str], set2: set[str]) -> float:
-            """计算两个集合的 Jaccard 相似度。"""
-            if not set1 or not set2:
-                return 0.0
-            intersection = len(set1 & set2)
-            union = len(set1 | set2)
-            return intersection / union if union > 0 else 0.0
-
-        result: list[str] = []
-        seen_sentences: list[set[str]] = []
-        seen_first_sentences: set[str] = set()
-
-        for para in paragraphs:
-            para_stripped = para.strip()
-            if not para_stripped:
-                continue
-
-            # 首句去重：相同首句直接视为重复
-            first_sentence = extract_first_sentence(para_stripped)
-            if first_sentence and first_sentence in seen_first_sentences:
-                logger.debug("检测到首句重复段落，已移除: %s...", first_sentence[:20])
-                continue
-
-            current_sentences = extract_sentences(para_stripped)
-            is_duplicate = False
-
-            for prev_sentences in seen_sentences:
-                similarity = jaccard_similarity(current_sentences, prev_sentences)
-                if similarity >= threshold:
-                    logger.debug("检测到相似段落（相似度 %.2f），已移除", similarity)
-                    is_duplicate = True
-                    break
-
-            if not is_duplicate:
-                result.append(para_stripped)
-                seen_sentences.append(current_sentences)
-                if first_sentence:
-                    seen_first_sentences.add(first_sentence)
-
-        return result

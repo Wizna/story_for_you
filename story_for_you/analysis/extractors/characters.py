@@ -9,6 +9,7 @@ import re
 from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
 from story_for_you.llm.base import LLMProvider
+from story_for_you.utils.chinese_name_utils import split_compound_chinese_name
 from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
@@ -26,10 +27,6 @@ class CharacterExtractor:
         "calculating": "精明",
         "ambitious": "野心勃勃",
     }
-    # 常见排行/称呼后缀 (用于拆分复合名)
-    _RANKING_SUFFIXES = ("大老", "二老", "三老", "四老", "大佬", "二佬", "三佬")
-    _FAMILY_TERMS = ("祖父", "爷爷", "外公", "外婆", "奶奶", "姥姥", "姥爷", "父亲", "母亲", "爹", "娘")
-    _ROLE_SUFFIXES = ("船夫", "马兵", "乡绅", "老爷", "夫人", "小姐", "公子", "先生")
 
     def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
         self.llm = llm
@@ -192,50 +189,9 @@ class CharacterExtractor:
             # 添加原始名字
             keys.add(name.lower())
             # 添加拆分后的组成部分
-            for part in self._split_compound_chinese_name(name):
+            for part in split_compound_chinese_name(name):
                 keys.add(part.lower())
         return keys
-
-    def _split_compound_chinese_name(self, name: str) -> list[str]:
-        """拆分复合中文名为组成部分。"""
-        if not name or len(name) < 3:
-            return []
-
-        parts: list[str] = []
-
-        # 检查是否以排行后缀结尾 (如 傩送二老)
-        for suffix in self._RANKING_SUFFIXES:
-            if name.endswith(suffix) and len(name) > len(suffix):
-                prefix = name[: -len(suffix)]
-                if prefix:
-                    parts.append(prefix)
-                    parts.append(suffix)
-                break
-
-        # 检查是否以"老"字开头 + 职业/身份 (如 老船夫)
-        if name.startswith("老") and len(name) >= 3:
-            suffix_part = name[1:]
-            if suffix_part:
-                parts.append(suffix_part)
-
-        # 检查是否包含家庭称呼 (如 祖父、爷爷)
-        for term in self._FAMILY_TERMS:
-            if term in name and name != term:
-                parts.append(term)
-                idx = name.find(term)
-                if idx > 0:
-                    parts.append(name[:idx])
-
-        # 检查是否以职业后缀结尾 (如 杨马兵)
-        for suffix in self._ROLE_SUFFIXES:
-            if name.endswith(suffix) and len(name) > len(suffix):
-                prefix = name[: -len(suffix)]
-                # 要求前缀至少2个字符，避免太短的通用词如"老"
-                if prefix and len(prefix) >= 2:
-                    parts.append(prefix)
-                break
-
-        return parts
 
     def _merge_list(self, base: list[str], incoming: list[str]) -> list[str]:
         merged = list(dict.fromkeys(item for item in base + incoming if item))
