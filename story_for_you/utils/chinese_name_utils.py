@@ -6,11 +6,47 @@ particularly those with honorific prefixes/suffixes, family terms, or titles.
 
 from __future__ import annotations
 
+import re
+
 __all__ = [
     "HONORIFIC_PREFIXES",
     "HONORIFIC_SUFFIXES",
+    "ROLE_PRIORITY",
+    "names_have_overlap",
     "split_compound_chinese_name",
 ]
+
+ROLE_PRIORITY: dict[str, int] = {"main": 3, "support": 2, "minor": 1}
+
+
+def _normalize_name(name: str) -> str:
+    """统一名字格式：去除空白并转小写。"""
+    return re.sub(r"\s+", "", name).lower()
+
+
+def names_have_overlap(names1: list[str], names2: list[str]) -> bool:
+    """检测两组名字是否有实质性重叠（子串匹配）。
+
+    对于中文名，较短名字是较长名字的子串且长度 >= 2，视为匹配。
+    例如：傩送 ⊂ 傩送二老 → 匹配
+    """
+    for n1 in names1:
+        n1_clean = _normalize_name(n1)
+        if len(n1_clean) < 2:
+            continue
+        for n2 in names2:
+            n2_clean = _normalize_name(n2)
+            if len(n2_clean) < 2:
+                continue
+            shorter, longer = (
+                (n1_clean, n2_clean)
+                if len(n1_clean) <= len(n2_clean)
+                else (n2_clean, n1_clean)
+            )
+            if shorter in longer:
+                if len(shorter) >= len(longer) * 0.5 or len(longer) <= 4:
+                    return True
+    return False
 
 # 通用称谓前缀（适用于各类网文）
 HONORIFIC_PREFIXES = ("老", "小", "阿", "大", "二", "三")

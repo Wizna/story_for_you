@@ -12,13 +12,15 @@ from story_for_you.analysis.context import (
     Relationship,
     StoryState,
 )
-from story_for_you.utils.chinese_name_utils import split_compound_chinese_name
+from story_for_you.utils.chinese_name_utils import (
+    ROLE_PRIORITY,
+    names_have_overlap,
+    split_compound_chinese_name,
+)
 
 
 class StateStore:
     """Aggregates character and world state over time."""
-
-    ROLE_PRIORITY = {"main": 3, "support": 2, "minor": 1}
 
     def __init__(self) -> None:
         self._characters: dict[str, CharacterState] = {}
@@ -88,7 +90,7 @@ class StateStore:
             existing.personality = list(dict.fromkeys(existing.personality + character.personality))
         if character.unresolved:
             existing.unresolved = list(dict.fromkeys(existing.unresolved + character.unresolved))
-        if self.ROLE_PRIORITY.get(character.role, 0) > self.ROLE_PRIORITY.get(existing.role, 0):
+        if ROLE_PRIORITY.get(character.role, 0) > ROLE_PRIORITY.get(existing.role, 0):
             existing.role = character.role
         existing.realm = existing.realm or character.realm
         self._register_aliases(existing.name, [existing.name, *existing.aliases, character.name])
@@ -139,7 +141,7 @@ class StateStore:
             return []
         ordered = sorted(
             self._characters.values(),
-            key=lambda item: (self.ROLE_PRIORITY.get(item.role, 0), item.name.lower()),
+            key=lambda item: (ROLE_PRIORITY.get(item.role, 0), item.name.lower()),
             reverse=True,
         )
         lines: list[str] = []
@@ -222,22 +224,7 @@ class StateStore:
         对于中文名，如果一个名字是另一个的子串且长度>=2，视为匹配。
         例如：傩送 ⊂ 傩送二老 → 匹配
         """
-        for n1 in names1:
-            n1_clean = self._normalize_token(n1)
-            if len(n1_clean) < 2:
-                continue
-            for n2 in names2:
-                n2_clean = self._normalize_token(n2)
-                if len(n2_clean) < 2:
-                    continue
-                # 子串匹配：较短的名字是较长名字的子串
-                shorter, longer = (n1_clean, n2_clean) if len(n1_clean) <= len(n2_clean) else (n2_clean, n1_clean)
-                # 要求子串长度至少2个字符，且占较短名字的大部分
-                if len(shorter) >= 2 and shorter in longer:
-                    # 避免过于宽松的匹配（如"老"匹配一切含"老"的名字）
-                    if len(shorter) >= 2 and (len(shorter) >= len(longer) * 0.5 or len(shorter) >= 2 and len(longer) <= 4):
-                        return True
-        return False
+        return names_have_overlap(names1, names2)
 
     def _register_aliases(self, canonical_name: str, labels: Iterable[str]) -> None:
         for label in labels:

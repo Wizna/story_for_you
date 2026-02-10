@@ -6,10 +6,24 @@ Contains blacklists and keyword sets used for quality filtering and style enforc
 from __future__ import annotations
 
 __all__ = [
+    "BANNED_EXPRESSIONS_PROMPT",
     "LOW_QUALITY_PHRASES",
     "SCENE_KEYWORDS",
     "QUESTION_MARKERS",
 ]
+
+BANNED_EXPRESSIONS_PROMPT = """\
+以下表达是网文俗套，与本作品风格严重不符，必须完全避免：
+- "眼中满是"、"心中满是"、"内心充满"、"心中涌起"
+- "脸上洋溢"、"仿佛一切都"、"留下一个xxx的背影"
+- "眼中泛着泪光"、"眼中满是温柔/思念/坚定"
+- "手中捧着鲜花"、"脸上带着歉意/温柔的笑容"
+- "不由得"、"顿时"、"竟然"、"居然"（作为情绪强调词）
+- "这让她/他感到"、"她/他感受到了"（解释性叙述）
+- "仿佛预示着新的希望"、"一切困难都已过去"（廉价升华）
+- 任何直接陈述情绪的句子，如"她很伤心"、"他很高兴"、"她心中温暖"
+
+正确做法：通过景物、动作、对话间接表达情感。"""
 
 # 低质量写法黑名单（用于后处理强制过滤）
 LOW_QUALITY_PHRASES = [

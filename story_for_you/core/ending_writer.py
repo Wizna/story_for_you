@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 
 from story_for_you.analysis.context import StoryContext, WritingStyle
 from story_for_you.core.ending import (
+    BANNED_EXPRESSIONS_PROMPT,
     SCENE_KEYWORDS,
     HintDirectives,
     HintInterpreter,
@@ -38,16 +39,6 @@ class EndingOutline:
     key_beats: list[str] = field(default_factory=list)
     emotional_arc: str = ""
     final_image: str = ""
-
-
-@dataclass
-class MultiStageEndingResult:
-    """多阶段续写结果"""
-
-    outline: EndingOutline
-    draft: str
-    final_content: str
-    revision_notes: list[str] = field(default_factory=list)
 
 
 class EndingWriter:
@@ -212,6 +203,7 @@ class EndingWriter:
             loose_threads=loose_threads or "(暂无伏笔)",
             beat_constraints=self._draft_paragraph_plan(outline),
             style_anchors=style_anchors,
+            banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
 
         try:
@@ -250,6 +242,7 @@ class EndingWriter:
             context_block=context_block or "(无上下文)",
             hint=hint,
             style_anchors=style_anchors,
+            banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
 
         try:
@@ -288,6 +281,7 @@ class EndingWriter:
             hint=hint,
             beat_constraints=self._draft_paragraph_plan(outline),
             style_anchors=style_anchors,
+            banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
 
         try:
@@ -385,6 +379,7 @@ class EndingWriter:
         lines = [
             f"主题: {outline.theme}",
             f"结局方向: {outline.ending_direction}",
+            f"时间跨度: {outline.timeline}",
             f"情感曲线: {outline.emotional_arc}",
             "关键情节点:",
         ]

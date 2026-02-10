@@ -7,6 +7,7 @@ Provides utilities for multi-stage story continuation:
 """
 
 from story_for_you.core.ending.constants import (
+    BANNED_EXPRESSIONS_PROMPT,
     LOW_QUALITY_PHRASES,
     QUESTION_MARKERS,
     SCENE_KEYWORDS,
@@ -15,6 +16,7 @@ from story_for_you.core.ending.hint_interpreter import HintDirectives, HintInter
 from story_for_you.core.ending.style_enforcer import StyleEnforcer
 
 __all__ = [
+    "BANNED_EXPRESSIONS_PROMPT",
     "LOW_QUALITY_PHRASES",
     "QUESTION_MARKERS",
     "SCENE_KEYWORDS",

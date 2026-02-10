@@ -1,4 +1,5 @@
 import codecs
+import hashlib
 import logging
 from collections.abc import Iterable
 from pathlib import Path
@@ -54,6 +55,15 @@ def _detect_encoding(data: bytes) -> str | None:
     if result.encoding.lower() == "ascii":
         return "utf-8"
     return _normalize_encoding_label(result.encoding)
+
+
+def compute_file_hash(file_path: Path, length: int = 16) -> str:
+    """Compute a truncated SHA-256 hex digest of the file content."""
+    digest = hashlib.sha256()
+    with file_path.open("rb") as fh:
+        for chunk in iter(lambda: fh.read(65536), b""):
+            digest.update(chunk)
+    return digest.hexdigest()[:length]
 
 
 def read_text_file(file_path: Path, encoding: str | None = None) -> str:

@@ -8,6 +8,7 @@ import hashlib
 import json
 
 from story_for_you.analysis.context import StoryContext
+from story_for_you.utils.file_io import compute_file_hash
 
 
 @dataclass
@@ -99,13 +100,7 @@ class ContextStore:
         return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
     def _get_file_hash(self, file_path: Path) -> str:
-        digest = hashlib.sha256()
-        with file_path.open("rb") as fh:
-            for chunk in iter(lambda: fh.read(65536), b""):
-                if not chunk:
-                    break
-                digest.update(chunk)
-        return digest.hexdigest()[:16]
+        return compute_file_hash(file_path, length=16)
 
     def _get_config_hash(self, settings: dict[str, Any]) -> str:
         payload = json.dumps(settings, sort_keys=True)

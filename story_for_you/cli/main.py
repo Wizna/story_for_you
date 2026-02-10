@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -28,9 +28,10 @@ from story_for_you.indexer.serialization import (
     serialize_index,
     serialize_segments,
 )
+from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.factory import build_llm
 from story_for_you.parser.text_splitter import TextChunk, TextSplitter
-from story_for_you.utils.file_io import read_text_file, write_text_file
+from story_for_you.utils.file_io import compute_file_hash, read_text_file, write_text_file
 
 app = typer.Typer(help="Story For You command line interface.")
 cache_app = typer.Typer(help="Cache management commands.")
@@ -40,17 +41,6 @@ app.add_typer(cache_app, name="cache")
 def _load_settings(config: Optional[Path]) -> Settings:
     loader = SettingsLoader(config_path=config)
     return loader.load()
-
-
-def _compute_file_hash(file_path: Path) -> str:
-    """Compute a hash of the file content for progress tracking."""
-    digest = hashlib.sha256()
-    with file_path.open("rb") as fh:
-        for chunk in iter(lambda: fh.read(65536), b""):
-            if not chunk:
-                break
-            digest.update(chunk)
-    return digest.hexdigest()[:24]
 
 
 def _split_text(text: str, settings: Settings) -> list[TextChunk]:
@@ -141,6 +131,56 @@ def _load_artifacts(
     return context, segments, segment_index
 
 
+@dataclass
+class _CommandContext:
+    """四个核心命令共享的准备产物。"""
+
+    settings: Settings
+    text: str
+    llm: LLMProvider
+    context: StoryContext
+    segments: list[Segment]
+    segment_index: SegmentIndex
+
+
+def _prepare(
+    input_file: Path,
+    config: Path | None,
+    context_path: Path | None = None,
+    segments_path: Path | None = None,
+    no_cache: bool = False,
+    reanalyze: bool = False,
+) -> _CommandContext:
+    settings = _load_settings(config)
+    text = read_text_file(input_file)
+    llm = build_llm(settings)
+    context, segments, segment_index = _load_artifacts(
+        input_file=input_file,
+        text=text,
+        settings=settings,
+        llm=llm,
+        context_path=context_path,
+        segments_path=segments_path,
+        no_cache=no_cache,
+        reanalyze=reanalyze,
+    )
+    return _CommandContext(
+        settings=settings,
+        text=text,
+        llm=llm,
+        context=context,
+        segments=segments,
+        segment_index=segment_index,
+    )
+
+
+def _parse_character_names(characters: str) -> list[str]:
+    targets = [item.strip() for item in characters.split(",") if item.strip()]
+    if not targets:
+        raise typer.BadParameter("Provide at least one character name.")
+    return targets
+
+
 def _write_analysis_output(context: StoryContext, output_path: Path, fmt: str) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "yaml":
@@ -167,7 +207,7 @@ def analyze(
     text = read_text_file(input_file)
 
     if resume:
-        file_hash = _compute_file_hash(input_file)
+        file_hash = compute_file_hash(input_file, length=24)
         cache_dir = Path(settings.cache.directory) if settings.cache.directory else Path(".story_cache")
         progress_store = ProgressStore(cache_dir)
 
@@ -230,21 +270,11 @@ def compress(
     reanalyze: bool = typer.Option(False, "--reanalyze"),
 ) -> None:
     """Compress story beats according to the configured level."""
-    settings = _load_settings(config)
-    text = read_text_file(input_file)
-    llm = build_llm(settings)
-    context, segments, segment_index = _load_artifacts(
-        input_file=input_file,
-        text=text,
-        settings=settings,
-        llm=llm,
-        context_path=context_path,
-        segments_path=segments_path,
-        no_cache=no_cache,
-        reanalyze=reanalyze,
+    cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
+    compressor = StoryCompressor(
+        cc.llm, cc.segment_index, level=level, levels=cc.settings.compress.levels.__dict__
     )
-    compressor = StoryCompressor(llm, segment_index, level=level, levels=settings.compress.levels.__dict__)
-    compressed = compressor.compress(text, context)
+    compressed = compressor.compress(cc.text, cc.context)
     target = output or input_file.with_name(f"{input_file.stem}_compressed.txt")
     write_text_file(target, compressed)
     typer.echo(f"Compressed story saved to {target}")
@@ -263,25 +293,11 @@ def filter_characters(
     reanalyze: bool = typer.Option(False, "--reanalyze"),
 ) -> None:
     """Filter story content by the provided character list."""
-    settings = _load_settings(config)
-    text = read_text_file(input_file)
-    llm = build_llm(settings)
-    targets = [item.strip() for item in characters.split(",") if item.strip()]
-    if not targets:
-        raise typer.BadParameter("Provide at least one character name.")
-    context, segments, segment_index = _load_artifacts(
-        input_file=input_file,
-        text=text,
-        settings=settings,
-        llm=llm,
-        context_path=context_path,
-        segments_path=segments_path,
-        no_cache=no_cache,
-        reanalyze=reanalyze,
-    )
-    retriever = SegmentRetriever(segment_index)
-    filterer = CharacterFilter(llm, retriever)
-    result = filterer.filter(text, targets, context, mode)
+    targets = _parse_character_names(characters)
+    cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
+    retriever = SegmentRetriever(cc.segment_index)
+    filterer = CharacterFilter(cc.llm, retriever)
+    result = filterer.filter(cc.text, targets, cc.context, mode)
     target = output or input_file.with_name(f"{input_file.stem}_filtered.txt")
     write_text_file(target, result.content)
     typer.echo(f"Filtered story saved to {target} (original ratio {result.original_ratio:.2f})")
@@ -300,25 +316,11 @@ def remove(
     reanalyze: bool = typer.Option(False, "--reanalyze"),
 ) -> None:
     """Remove the given characters from the source text."""
-    settings = _load_settings(config)
-    text = read_text_file(input_file)
-    llm = build_llm(settings)
-    targets = [item.strip() for item in characters.split(",") if item.strip()]
-    if not targets:
-        raise typer.BadParameter("Provide at least one character name.")
-    context, segments, segment_index = _load_artifacts(
-        input_file=input_file,
-        text=text,
-        settings=settings,
-        llm=llm,
-        context_path=context_path,
-        segments_path=segments_path,
-        no_cache=no_cache,
-        reanalyze=reanalyze,
-    )
-    retriever = SegmentRetriever(segment_index)
-    remover = CharacterRemover(llm, retriever)
-    result = remover.remove(text, targets, context, mode)
+    targets = _parse_character_names(characters)
+    cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
+    retriever = SegmentRetriever(cc.segment_index)
+    remover = CharacterRemover(cc.llm, retriever)
+    result = remover.remove(cc.text, targets, cc.context, mode)
     target = output or input_file.with_name(f"{input_file.stem}_rewritten.txt")
     write_text_file(target, result.content)
     typer.echo(
@@ -340,21 +342,9 @@ def continue_story(
     reanalyze: bool = typer.Option(False, "--reanalyze"),
 ) -> None:
     """Continue the story with an optional hint about the desired ending."""
-    settings = _load_settings(config)
-    text = read_text_file(input_file)
-    llm = build_llm(settings)
-    context, segments, segment_index = _load_artifacts(
-        input_file=input_file,
-        text=text,
-        settings=settings,
-        llm=llm,
-        context_path=context_path,
-        segments_path=segments_path,
-        no_cache=no_cache,
-        reanalyze=reanalyze,
-    )
-    writer = EndingWriter(llm, segment_index)
-    continuation = writer.continue_story(text, context, hint)
+    cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
+    writer = EndingWriter(cc.llm, cc.segment_index)
+    continuation = writer.continue_story(cc.text, cc.context, hint)
     target = output or input_file.with_name(f"{input_file.stem}_ending.txt")
     write_text_file(target, continuation)
     typer.echo(f"Continuation saved to {target}")

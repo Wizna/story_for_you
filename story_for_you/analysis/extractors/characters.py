@@ -9,7 +9,11 @@ import re
 from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
 from story_for_you.llm.base import LLMProvider
-from story_for_you.utils.chinese_name_utils import split_compound_chinese_name
+from story_for_you.utils.chinese_name_utils import (
+    ROLE_PRIORITY,
+    names_have_overlap,
+    split_compound_chinese_name,
+)
 from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
@@ -18,7 +22,6 @@ logger = logging.getLogger(__name__)
 class CharacterExtractor:
     """Identifies characters present in the supplied text."""
 
-    ROLE_PRIORITY = {"main": 3, "support": 2, "minor": 1}
     TRAIT_TRANSLATIONS = {
         "resolute": "坚毅",
         "protective": "守护欲强",
@@ -115,7 +118,7 @@ class CharacterExtractor:
 
     def _normalize_role(self, value: str | None) -> str:
         lowered = (value or "").lower()
-        if lowered in self.ROLE_PRIORITY:
+        if lowered in ROLE_PRIORITY:
             return lowered
         return "minor"
 
@@ -155,19 +158,7 @@ class CharacterExtractor:
 
     def _names_have_overlap(self, names1: list[str], names2: list[str]) -> bool:
         """检测两组名字是否有实质性重叠（子串匹配）。"""
-        for n1 in names1:
-            n1_clean = n1.strip().lower()
-            if len(n1_clean) < 2:
-                continue
-            for n2 in names2:
-                n2_clean = n2.strip().lower()
-                if len(n2_clean) < 2:
-                    continue
-                shorter, longer = (n1_clean, n2_clean) if len(n1_clean) <= len(n2_clean) else (n2_clean, n1_clean)
-                if len(shorter) >= 2 and shorter in longer:
-                    if len(shorter) >= len(longer) * 0.5 or (len(shorter) >= 2 and len(longer) <= 4):
-                        return True
-        return False
+        return names_have_overlap(names1, names2)
 
     def _merge_into(self, target: CharacterState, incoming: CharacterState) -> None:
         merged_aliases = set(target.aliases)
@@ -179,7 +170,7 @@ class CharacterExtractor:
         )
         target.unresolved = self._merge_list(target.unresolved, incoming.unresolved)
         target.realm = target.realm or incoming.realm
-        if self.ROLE_PRIORITY[incoming.role] > self.ROLE_PRIORITY[target.role]:
+        if ROLE_PRIORITY[incoming.role] > ROLE_PRIORITY[target.role]:
             target.role = incoming.role
 
     def _alias_keys(self, character: CharacterState) -> set[str]:
