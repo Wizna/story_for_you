@@ -9,7 +9,6 @@ from story_for_you.analysis.context import StoryContext, WritingStyle
 from story_for_you.core.ending import (
     BANNED_EXPRESSIONS_PROMPT,
     SCENE_KEYWORDS,
-    HintDirectives,
     HintInterpreter,
     StyleEnforcer,
 )

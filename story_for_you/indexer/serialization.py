@@ -9,7 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from story_for_you.indexer.segment import Gap, Segment, SegmentIndex
+    from story_for_you.indexer.segment import Segment, SegmentIndex
 
 __all__ = [
     "serialize_segments",
