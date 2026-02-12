@@ -18,6 +18,7 @@ class LLMSettings:
     max_tokens: int = 4096
     timeout: float = 300.0
     seed: int = 42
+    api_key: str = ""
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.temperature <= 2.0:

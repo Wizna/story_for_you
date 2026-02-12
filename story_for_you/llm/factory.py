@@ -7,6 +7,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Dict
 
+from story_for_you.core.exceptions import ConfigurationError
+
 if TYPE_CHECKING:
     from story_for_you.config.settings import Settings
     from story_for_you.llm.base import LLMProvider
@@ -40,8 +42,33 @@ def _build_ollama_provider(settings: Settings) -> "LLMProvider":
     )
 
 
+def _build_openai_compat_provider(settings: Settings) -> "LLMProvider":
+    """Build an OpenAICompatibleProvider from settings."""
+    from story_for_you.llm.openai_compat import OpenAICompatibleProvider
+
+    if not settings.llm.api_key:
+        raise ConfigurationError(
+            "api_key is required for the openai provider. "
+            "Set STORY_LLM__API_KEY environment variable."
+        )
+    options: Dict[str, Any] = {
+        "temperature": settings.llm.temperature,
+        "max_tokens": settings.llm.max_tokens,
+        "seed": settings.llm.seed,
+    }
+    options = {k: v for k, v in options.items() if v is not None}
+    return OpenAICompatibleProvider(
+        model=settings.llm.model,
+        base_url=settings.llm.base_url,
+        api_key=settings.llm.api_key,
+        timeout=settings.llm.timeout,
+        options=options,
+    )
+
+
 # Register default providers
 _PROVIDERS["ollama"] = _build_ollama_provider
+_PROVIDERS["openai"] = _build_openai_compat_provider
 
 
 def register_provider(
@@ -66,7 +93,7 @@ def build_llm(settings: Settings, provider: str | None = None) -> "LLMProvider":
 
     Args:
         settings: Application settings containing LLM configuration.
-        provider: Optional provider name. If not specified, defaults to "ollama".
+        provider: Optional provider name override. If not specified, uses settings.llm.provider.
 
     Returns:
         A configured LLMProvider instance.
@@ -74,7 +101,7 @@ def build_llm(settings: Settings, provider: str | None = None) -> "LLMProvider":
     Raises:
         ValueError: If the specified provider is not registered.
     """
-    provider_name = provider or "ollama"
+    provider_name = provider or settings.llm.provider
     factory = _PROVIDERS.get(provider_name)
     if factory is None:
         available = ", ".join(sorted(_PROVIDERS.keys()))
