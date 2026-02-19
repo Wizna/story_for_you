@@ -29,6 +29,9 @@ def _build_ollama_provider(settings: Settings) -> "LLMProvider":
 
     options: Dict[str, Any] = {
         "temperature": settings.llm.temperature,
+        "top_p": settings.llm.top_p,
+        "top_k": settings.llm.top_k,
+        "repeat_penalty": settings.llm.repeat_penalty,
         "seed": settings.llm.seed,
     }
     if settings.llm.max_tokens and settings.llm.max_tokens > 0:
@@ -53,6 +56,7 @@ def _build_openai_compat_provider(settings: Settings) -> "LLMProvider":
         )
     options: Dict[str, Any] = {
         "temperature": settings.llm.temperature,
+        "top_p": settings.llm.top_p,
         "max_tokens": settings.llm.max_tokens,
         "seed": settings.llm.seed,
     }

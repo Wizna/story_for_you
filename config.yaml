@@ -1,4 +1,4 @@
 llm:
-  model: qwen2.5:7b-instruct
+  model: qwen3:8b
   max_tokens: 32768
   timeout: 420

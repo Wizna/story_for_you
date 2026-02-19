@@ -18,7 +18,7 @@ class OllamaProvider(LLMProvider):
 
     def __init__(
         self,
-        model: str = "qwen2.5:7b-instruct",
+        model: str = "qwen3:8b",
         base_url: str = "http://localhost:11434",
         *,
         timeout: float | httpx.Timeout | None = 300.0,

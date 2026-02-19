@@ -12,9 +12,12 @@ import yaml
 @dataclass
 class LLMSettings:
     provider: str = "ollama"
-    model: str = "qwen2.5:7b-instruct"
+    model: str = "qwen3:8b"
     base_url: str = "http://localhost:11434"
     temperature: float = 0.7
+    top_p: float = 0.9
+    top_k: int = 40
+    repeat_penalty: float = 1.1
     max_tokens: int = 4096
     timeout: float = 300.0
     seed: int = 42
@@ -23,6 +26,12 @@ class LLMSettings:
     def __post_init__(self) -> None:
         if not 0.0 <= self.temperature <= 2.0:
             raise ValueError(f"temperature must be between 0.0 and 2.0, got {self.temperature}")
+        if not 0.0 <= self.top_p <= 1.0:
+            raise ValueError(f"top_p must be between 0.0 and 1.0, got {self.top_p}")
+        if self.top_k < 0:
+            raise ValueError(f"top_k must be non-negative, got {self.top_k}")
+        if self.repeat_penalty < 0.0:
+            raise ValueError(f"repeat_penalty must be non-negative, got {self.repeat_penalty}")
         if self.max_tokens <= 0:
             raise ValueError(f"max_tokens must be positive, got {self.max_tokens}")
         if self.timeout <= 0:
