@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import logging
 
 from story_for_you.analysis.context import StoryContext
+from story_for_you.core.exceptions import LLMError
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment
 from story_for_you.llm.base import LLMProvider
@@ -91,7 +92,7 @@ class CharacterFilter:
             text = response.content.strip()
             if text:
                 return text
-        except Exception as exc:  # pragma: no cover
+        except LLMError as exc:  # pragma: no cover
             logger.warning("Bridge generation failed, falling back to marker: %s", exc)
         fallback_name = characters[0] if characters else "人物"
         return f"[Bridge] 期间与 {fallback_name} 相关的情节被省略。"

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 
 from story_for_you.analysis.context import PlotEvent, StoryContext
+from story_for_you.core.exceptions import LLMError
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
 from story_for_you.core.prompting import (
@@ -57,7 +58,7 @@ class StoryCompressor:
             content = response.content.strip()
             if content:
                 return content
-        except Exception as exc:  # pragma: no cover - defensive
+        except LLMError as exc:  # pragma: no cover - defensive
             logger.warning("Story compression failed, falling back to raw segments: %s", exc)
         return self._fallback_content(ordered, context)
 

@@ -7,7 +7,6 @@ from typing import Any, Iterable
 
 from story_for_you.analysis.context import (
     CharacterState,
-    EventImpact,
     PlotEvent,
     Relationship,
     StoryState,
@@ -171,34 +170,14 @@ class StateStore:
         """Restore store state from a dictionary."""
         instance = cls()
         for name, char_data in payload.get("characters", {}).items():
-            relationships = [Relationship.from_dict(r) for r in char_data.get("relationships", [])]
-            character = CharacterState(
-                name=char_data.get("name", name),
-                aliases=char_data.get("aliases", []),
-                realm=char_data.get("realm"),
-                role=char_data.get("role", "minor"),
-                personality=char_data.get("personality", []),
-                relationships=relationships,
-                unresolved=char_data.get("unresolved", []),
-            )
+            character = CharacterState.from_dict(char_data, name_hint=name)
             instance._characters[name] = character
             instance._register_aliases(character.name, [character.name, *character.aliases])
         story_state_data = payload.get("story_state")
         if story_state_data:
             instance._story_state = StoryState(**story_state_data)
         for event_data in payload.get("event_log", []):
-            impact_data = event_data.get("impact", {})
-            impact = EventImpact(**impact_data)
-            event = PlotEvent(
-                event_id=event_data.get("event_id", ""),
-                chapter=event_data.get("chapter", 0),
-                type=event_data.get("type", "progress"),
-                participants=event_data.get("participants", []),
-                summary=event_data.get("summary", ""),
-                impact=impact,
-                is_irreversible=event_data.get("is_irreversible", False),
-            )
-            instance._event_log.append(event)
+            instance._event_log.append(PlotEvent.from_dict(event_data))
         return instance
 
     def _resolve_owner(self, character: CharacterState) -> str | None:
@@ -213,18 +192,10 @@ class StateStore:
         for existing_name in self._characters.keys():
             existing_char = self._characters[existing_name]
             existing_names = [existing_char.name] + existing_char.aliases
-            if self._names_have_overlap(candidate_names, existing_names):
+            if names_have_overlap(candidate_names, existing_names):
                 return existing_name
 
         return None
-
-    def _names_have_overlap(self, names1: list[str], names2: list[str]) -> bool:
-        """检测两组名字是否有实质性重叠（子串匹配）。
-
-        对于中文名，如果一个名字是另一个的子串且长度>=2，视为匹配。
-        例如：傩送 ⊂ 傩送二老 → 匹配
-        """
-        return names_have_overlap(names1, names2)
 
     def _register_aliases(self, canonical_name: str, labels: Iterable[str]) -> None:
         for label in labels:

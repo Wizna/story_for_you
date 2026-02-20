@@ -8,6 +8,7 @@ import re
 
 from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
+from story_for_you.core.exceptions import LLMError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.chinese_name_utils import (
     ROLE_PRIORITY,
@@ -80,7 +81,7 @@ class CharacterExtractor:
         """Use the configured LLM to extract structured characters."""
         try:
             response = self.llm.generate(prompt=prompt)
-        except Exception as exc:  # pragma: no cover - defensive against provider issues
+        except LLMError as exc:  # pragma: no cover - defensive against provider issues
             logger.warning("Character extraction prompt failed: %s", exc)
             return []
         payload = load_json_response(response.content)
@@ -151,14 +152,10 @@ class CharacterExtractor:
         candidate_names = [candidate.name] + candidate.aliases
         for existing in roster:
             existing_names = [existing.name] + existing.aliases
-            if self._names_have_overlap(candidate_names, existing_names):
+            if names_have_overlap(candidate_names, existing_names):
                 return existing
 
         return None
-
-    def _names_have_overlap(self, names1: list[str], names2: list[str]) -> bool:
-        """检测两组名字是否有实质性重叠（子串匹配）。"""
-        return names_have_overlap(names1, names2)
 
     def _merge_into(self, target: CharacterState, incoming: CharacterState) -> None:
         merged_aliases = set(target.aliases)
@@ -226,9 +223,4 @@ class PersonalityAnalyzer:
         return enriched
 
     def _guess_traits(self, name: str) -> list[str]:
-        bucket = sum(ord(ch) for ch in name) % 3
-        if bucket == 0:
-            return ["坚毅", "守护欲强"]
-        if bucket == 1:
-            return ["好奇", "善解人意"]
-        return ["精明", "野心勃勃"]
+        return []

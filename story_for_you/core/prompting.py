@@ -5,10 +5,15 @@ Provides template loading and style formatting functions for content generation.
 
 from __future__ import annotations
 
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Dict
+from typing import TYPE_CHECKING, Dict
 
 from story_for_you.utils.prompting import TemplateLoader, fill_template
+
+if TYPE_CHECKING:
+    from story_for_you.analysis.context import WritingStyle
 
 __all__ = [
     "load_template",
@@ -39,7 +44,7 @@ def format_context_sections(sections: Dict[str, str]) -> str:
     return "\n\n".join(chunks)
 
 
-def format_style_guide(style) -> str:
+def format_style_guide(style: WritingStyle | None) -> str:
     """Format structured style guide for prompt injection.
 
     Args:
@@ -102,7 +107,7 @@ def format_style_guide(style) -> str:
     return "\n".join(sections) if sections else "(无风格摘要，请保持中性文学风格)"
 
 
-def format_style_samples(style, max_samples: int = 3) -> str:
+def format_style_samples(style: WritingStyle | None, max_samples: int = 3) -> str:
     """Format representative style samples for prompt injection.
 
     Args:
@@ -125,7 +130,7 @@ def format_style_samples(style, max_samples: int = 3) -> str:
     return "\n".join(lines) if lines else "(无示例片段)"
 
 
-def format_style_constraints(style) -> str:
+def format_style_constraints(style: WritingStyle | None) -> str:
     """根据风格类型生成不同强度的写作约束。
 
     Args:

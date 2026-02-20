@@ -79,12 +79,6 @@ class CompressSettings:
 
 
 @dataclass
-class OutputSettings:
-    add_ai_marker: bool = True
-    marker_text: str = "【本文经 AI 处理】"
-
-
-@dataclass
 class AnalysisSettings:
     window_size: int = 12
 
@@ -139,7 +133,6 @@ class Settings:
     parser: ParserSettings = field(default_factory=ParserSettings)
     cache: CacheSettings = field(default_factory=CacheSettings)
     compress: CompressSettings = field(default_factory=CompressSettings)
-    output: OutputSettings = field(default_factory=OutputSettings)
     analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
     prompt: PromptSettings = field(default_factory=PromptSettings)
     ending: EndingSettings = field(default_factory=EndingSettings)

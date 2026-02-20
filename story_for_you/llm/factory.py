@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable, Dict
 
-from story_for_you.core.exceptions import ConfigurationError
+from story_for_you.exceptions import ConfigurationError
 
 if TYPE_CHECKING:
     from story_for_you.config.settings import Settings
@@ -103,13 +103,13 @@ def build_llm(settings: Settings, provider: str | None = None) -> "LLMProvider":
         A configured LLMProvider instance.
 
     Raises:
-        ValueError: If the specified provider is not registered.
+        ConfigurationError: If the specified provider is not registered.
     """
     provider_name = provider or settings.llm.provider
     factory = _PROVIDERS.get(provider_name)
     if factory is None:
         available = ", ".join(sorted(_PROVIDERS.keys()))
-        raise ValueError(
+        raise ConfigurationError(
             f"Unknown LLM provider '{provider_name}'. Available: {available}"
         )
     return factory(settings)

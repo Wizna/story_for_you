@@ -5,7 +5,7 @@ from typing import Iterator
 
 import httpx
 
-from story_for_you.core.exceptions import (
+from story_for_you.exceptions import (
     LLMConnectionError,
     LLMResponseError,
     LLMTimeoutError,
@@ -18,7 +18,7 @@ class OllamaProvider(LLMProvider):
 
     def __init__(
         self,
-        model: str = "qwen3:8b",
+        model: str,
         base_url: str = "http://localhost:11434",
         *,
         timeout: float | httpx.Timeout | None = 300.0,
@@ -58,11 +58,10 @@ class OllamaProvider(LLMProvider):
         """Stream a response via Ollama's API."""
         payload = self._build_payload(prompt, system, stream=True, call_options=options)
         try:
-            with httpx.stream(
+            with self._client.stream(
                 "POST",
-                f"{self.base_url}/api/generate",
+                "/api/generate",
                 json=payload,
-                timeout=self.timeout,
             ) as response:
                 response.raise_for_status()
                 for line in response.iter_lines():

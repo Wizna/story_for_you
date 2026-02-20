@@ -73,10 +73,7 @@ class TextSplitter:
             r"^chapter\s+\d+",
             r"^第.+章",
         ]
-        lowered = first_line.lower()
         for pattern in patterns:
             if re.match(pattern, first_line, flags=re.IGNORECASE):
                 return first_line
-        if lowered.startswith("chapter"):
-            return first_line
         return None

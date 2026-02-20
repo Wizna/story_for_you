@@ -238,9 +238,9 @@ class TestFactory:
         provider = build_llm(settings, provider="ollama")
         assert isinstance(provider, OllamaProvider)
 
-    def test_unknown_provider_raises_value_error(self):
+    def test_unknown_provider_raises_configuration_error(self):
         settings = Settings()
-        with pytest.raises(ValueError, match="Unknown LLM provider"):
+        with pytest.raises(ConfigurationError, match="Unknown LLM provider"):
             build_llm(settings, provider="nonexistent")
 
 

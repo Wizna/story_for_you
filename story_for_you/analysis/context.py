@@ -67,6 +67,21 @@ class PlotEvent:
     impact: EventImpact
     is_irreversible: bool = False
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "PlotEvent":
+        """Instantiate a PlotEvent from a dictionary payload."""
+        impact_data = payload.get("impact", {})
+        impact = EventImpact(**impact_data)
+        return cls(
+            event_id=payload.get("event_id", ""),
+            chapter=payload.get("chapter", 0),
+            type=payload.get("type", "progress"),
+            participants=payload.get("participants", []),
+            summary=payload.get("summary", ""),
+            impact=impact,
+            is_irreversible=payload.get("is_irreversible", False),
+        )
+
 
 @dataclass
 class Relationship:
@@ -116,6 +131,20 @@ class CharacterState:
     relationships: list[Relationship] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any], name_hint: str = "") -> "CharacterState":
+        """Instantiate a CharacterState from a dictionary payload."""
+        relationships = [Relationship.from_dict(r) for r in payload.get("relationships", [])]
+        return cls(
+            name=payload.get("name", name_hint),
+            aliases=payload.get("aliases", []),
+            realm=payload.get("realm"),
+            role=payload.get("role", "minor"),
+            personality=payload.get("personality", []),
+            relationships=relationships,
+            unresolved=payload.get("unresolved", []),
+        )
+
 
 @dataclass
 class StoryState:
@@ -154,33 +183,11 @@ class StoryContext:
     def from_dict(cls, payload: dict[str, Any]) -> "StoryContext":
         """Instantiate a StoryContext from a dictionary payload."""
         chapter_window = [ChapterSummary(**item) for item in payload.get("chapter_window", [])]
-        events = []
-        for item in payload.get("events", []):
-            impact_payload = item.get("impact", {})
-            impact = EventImpact(**impact_payload)
-            events.append(
-                PlotEvent(
-                    event_id=item.get("event_id", ""),
-                    chapter=item.get("chapter", 0),
-                    type=item.get("type", "progress"),
-                    participants=item.get("participants", []),
-                    summary=item.get("summary", ""),
-                    impact=impact,
-                    is_irreversible=item.get("is_irreversible", False),
-                )
-            )
-        characters = {}
-        for name, value in payload.get("characters", {}).items():
-            relationships = [Relationship.from_dict(rel) for rel in value.get("relationships", [])]
-            characters[name] = CharacterState(
-                name=value.get("name", name),
-                aliases=value.get("aliases", []),
-                realm=value.get("realm"),
-                role=value.get("role", "minor"),
-                personality=value.get("personality", []),
-                relationships=relationships,
-                unresolved=value.get("unresolved", []),
-            )
+        events = [PlotEvent.from_dict(item) for item in payload.get("events", [])]
+        characters = {
+            name: CharacterState.from_dict(value, name_hint=name)
+            for name, value in payload.get("characters", {}).items()
+        }
         story_state_payload = payload.get("story_state")
         story_state = None
         if story_state_payload:

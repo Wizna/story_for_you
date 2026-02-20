@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 
 from story_for_you.analysis.context import StoryContext, WritingStyle
+from story_for_you.config.settings import EndingPhaseTemperatures
 from story_for_you.core.ending import (
     BANNED_EXPRESSIONS_PROMPT,
     SCENE_KEYWORDS,
@@ -43,18 +44,24 @@ class EndingOutline:
 class EndingWriter:
     """多阶段续写器，模拟人类作者创作流程。"""
 
-    def __init__(self, llm: LLMProvider, segment_index: SegmentIndex):
+    def __init__(
+        self,
+        llm: LLMProvider,
+        segment_index: SegmentIndex,
+        temperatures: EndingPhaseTemperatures | None = None,
+    ):
         self.llm = llm
         self.segment_index = segment_index
         self._hint_interpreter = HintInterpreter()
+        temps = temperatures or EndingPhaseTemperatures()
         self._phase_llm_options = {
-            "inspiration": {"temperature": 0.55},
-            "outline": {"temperature": 0.55},
-            "draft": {"temperature": 0.65},
-            "revision": {"temperature": 0.35},
-            "polish": {"temperature": 0.35},
-            "resolution": {"temperature": 0.35},
-            "legacy": {"temperature": 0.7},
+            "inspiration": {"temperature": temps.inspiration},
+            "outline": {"temperature": temps.outline},
+            "draft": {"temperature": temps.draft},
+            "revision": {"temperature": temps.revision},
+            "polish": {"temperature": temps.polish},
+            "resolution": {"temperature": temps.resolution},
+            "legacy": {"temperature": temps.legacy},
         }
         self._load_templates()
 

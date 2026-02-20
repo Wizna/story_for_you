@@ -5,7 +5,7 @@ from typing import Iterator
 
 import httpx
 
-from story_for_you.core.exceptions import (
+from story_for_you.exceptions import (
     LLMConnectionError,
     LLMResponseError,
     LLMTimeoutError,

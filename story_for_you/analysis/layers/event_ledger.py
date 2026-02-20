@@ -4,7 +4,7 @@ from collections import defaultdict
 from dataclasses import asdict
 from typing import Any, Iterable, List
 
-from story_for_you.analysis.context import EventImpact, PlotEvent
+from story_for_you.analysis.context import PlotEvent
 
 
 class EventLedger:
@@ -61,19 +61,6 @@ class EventLedger:
     def from_dict(cls, payload: dict[str, Any]) -> EventLedger:
         """Restore ledger state from a dictionary."""
         instance = cls()
-        events: list[PlotEvent] = []
-        for item in payload.get("events", []):
-            impact_data = item.get("impact", {})
-            impact = EventImpact(**impact_data)
-            event = PlotEvent(
-                event_id=item.get("event_id", ""),
-                chapter=item.get("chapter", 0),
-                type=item.get("type", "progress"),
-                participants=item.get("participants", []),
-                summary=item.get("summary", ""),
-                impact=impact,
-                is_irreversible=item.get("is_irreversible", False),
-            )
-            events.append(event)
+        events = [PlotEvent.from_dict(item) for item in payload.get("events", [])]
         instance.record(events)
         return instance

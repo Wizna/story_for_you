@@ -1,6 +1,6 @@
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Self
+from typing import Iterator, Self
 
 
 @dataclass
@@ -18,7 +18,7 @@ class LLMProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None) -> Iterator[str]:
         """Yield a streaming response iterator."""
         raise NotImplementedError
 

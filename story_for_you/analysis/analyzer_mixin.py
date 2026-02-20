@@ -11,8 +11,20 @@ from typing import TYPE_CHECKING, Any
 import uuid
 
 if TYPE_CHECKING:
-    from story_for_you.analysis.context import StoryContext, StoryState
+    from story_for_you.analysis.context import (
+        ChapterSummary,
+        StoryContext,
+        StoryState,
+    )
+    from story_for_you.analysis.extractors import (
+        ChapterSummarizer,
+        CharacterExtractor,
+        EventExtractor,
+        RelationshipMapper,
+        StateSynthesizer,
+    )
     from story_for_you.analysis.layers import ChapterSummaryWindow, EventLedger, StateStore
+    from story_for_you.llm.base import LLMProvider
 
 
 class AnalyzerMixin:
@@ -20,19 +32,32 @@ class AnalyzerMixin:
 
     Requires the following attributes on the class:
     - llm: LLMProvider
+    - prompt_budget: int | None
     - chapter_window: ChapterSummaryWindow
     - event_ledger: EventLedger
     - state_store: StateStore
+    - character_extractor: CharacterExtractor
+    - relationship_mapper: RelationshipMapper
+    - chapter_summarizer: ChapterSummarizer
+    - event_extractor: EventExtractor
+    - state_synthesizer: StateSynthesizer
     """
 
     # These attributes are expected to be defined in the concrete class
+    llm: LLMProvider
+    prompt_budget: int | None
     chapter_window: ChapterSummaryWindow
     event_ledger: EventLedger
     state_store: StateStore
+    character_extractor: CharacterExtractor
+    relationship_mapper: RelationshipMapper
+    chapter_summarizer: ChapterSummarizer
+    event_extractor: EventExtractor
+    state_synthesizer: StateSynthesizer
 
     def _build_metadata(self) -> dict[str, Any]:
         """Assemble metadata describing the analysis session."""
-        model_name = getattr(self.llm, "model", "unknown")  # type: ignore[attr-defined]
+        model_name = getattr(self.llm, "model", "unknown")
         return {
             "window_size": self.chapter_window.window_size,
             "model": model_name,
@@ -83,6 +108,58 @@ class AnalyzerMixin:
             "title_hint": first_line[:40] or f"Chapter {chapter_no}",
             "arc_hint": arc_hint,
         }
+
+    def _process_chapter(
+        self, chapter_no: int, chapter_text: str, story_state: StoryState | None
+    ) -> tuple[StoryState | None, ChapterSummary]:
+        """Run the full extraction pipeline for a single chapter.
+
+        Returns the updated story state and the chapter summary.
+        """
+        characters = self.character_extractor.extract(chapter_text)
+        character_names = [character.name for character in characters]
+        relationships = self.relationship_mapper.map(chapter_text, character_names)
+        recent_context = self._build_recent_context(chapter_no)
+        chapter_meta = self._build_chapter_meta(chapter_no, chapter_text, story_state)
+
+        summary = self.chapter_summarizer.summarize(
+            chapter_text, chapter_no, recent_context, chapter_meta
+        )
+        events = self.event_extractor.extract(
+            chapter_text, character_names, chapter_no, recent_context
+        )
+        for event in events:
+            event.chapter = chapter_no
+
+        story_state = self.state_synthesizer.update(story_state, events, recent_context)
+
+        self.chapter_window.append(summary)
+        self.event_ledger.record(events)
+        self.state_store.update(characters, relationships, events)
+        if story_state:
+            self.state_store.set_story_state(story_state)
+
+        return story_state, summary
+
+    def _assemble_context(self, chapters: list[str]) -> StoryContext:
+        """Extract writing style and assemble the final StoryContext."""
+        from story_for_you.analysis.context import StoryContext
+        from story_for_you.analysis.extractors import StyleExtractor
+
+        style_extractor = StyleExtractor(self.llm, prompt_budget=self.prompt_budget)
+        summaries = self.chapter_window.dump()
+        writing_style = style_extractor.extract(chapters, summaries)
+
+        context = StoryContext(
+            metadata=self._build_metadata(),
+            chapter_window=summaries,
+            events=self.event_ledger.timeline(),
+            characters=self.state_store.characters_snapshot(),
+            story_state=self.state_store.story_snapshot(),
+            writing_style=writing_style,
+        )
+        self._enrich_metadata(context)
+        return context
 
     def _enrich_metadata(self, context: StoryContext) -> None:
         """Add derived metadata to the context."""

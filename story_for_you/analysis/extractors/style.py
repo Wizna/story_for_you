@@ -5,6 +5,7 @@ from typing import Any
 
 from story_for_you.analysis.context import ChapterSummary, StyleSample, WritingStyle
 from story_for_you.analysis.prompting import fill_template, load_template
+from story_for_you.core.exceptions import LLMError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
 
@@ -106,7 +107,7 @@ class StyleExtractor:
         try:
             response = self.llm.generate(prompt=prompt)
             return self._parse_response(response.content)
-        except Exception as exc:
+        except LLMError as exc:
             logger.warning("Style extraction failed, using fallback: %s", exc)
             return self._fallback_style()
 

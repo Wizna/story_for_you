@@ -13,6 +13,7 @@ from story_for_you.analysis.prompting import (
     load_template,
     render_prompt_with_budget,
 )
+from story_for_you.core.exceptions import LLMError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
 
@@ -147,7 +148,7 @@ class EventExtractor:
         )
         try:
             repaired = self.llm.generate(prompt=prompt)
-        except Exception as exc:
+        except LLMError as exc:
             logger.warning("Event extraction repair attempt failed: %s", exc)
             return None
         return repaired.content

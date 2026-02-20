@@ -343,7 +343,7 @@ def continue_story(
 ) -> None:
     """Continue the story with an optional hint about the desired ending."""
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
-    writer = EndingWriter(cc.llm, cc.segment_index)
+    writer = EndingWriter(cc.llm, cc.segment_index, temperatures=cc.settings.ending.temperatures)
     continuation = writer.continue_story(cc.text, cc.context, hint)
     target = output or input_file.with_name(f"{input_file.stem}_ending.txt")
     write_text_file(target, continuation)
