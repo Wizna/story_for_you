@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 
 from story_for_you.core.ending.constants import (
     LOW_QUALITY_PHRASES,
+    META_PATTERNS,
     QUESTION_MARKERS,
 )
 
@@ -33,15 +34,13 @@ class StyleEnforcer:
         self.style = style
 
     def post_process(self, text: str) -> str:
-        """Deduplicate重复段落，强制过滤低质量短语，保留终端标记。"""
+        """Deduplicate重复段落，过滤元内容和低质量短语。"""
 
         if not text:
             return text
-        marker = "（读者定制版本）"
-        working = text.rstrip()
-        marker_present = working.endswith(marker)
-        if marker_present:
-            working = working[: -len(marker)].rstrip()
+
+        # 第零步：剥离元内容（编辑提示、标记等）
+        working = self._strip_meta_content(text)
 
         paragraphs = [para for para in working.split("\n\n") if para.strip()]
         if not paragraphs:
@@ -70,11 +69,7 @@ class StyleEnforcer:
         # 第四步：过滤非对话问句段落（可能是调试残余或草稿提问）
         cleaned = self._filter_question_paragraphs(cleaned)
 
-        combined = "\n\n".join(cleaned) if cleaned else working
-
-        if marker_present:
-            combined = combined.rstrip() + "\n\n" + marker
-        return combined
+        return "\n\n".join(cleaned) if cleaned else working
 
     def filter_duplicate_bridges(self, polished: str, bridges: list[str]) -> list[str]:
         """Filter out bridge paragraphs that are too similar to existing polished content.
@@ -179,6 +174,18 @@ class StyleEnforcer:
 
             result.append(para_stripped)
         return result
+
+    def _strip_meta_content(self, text: str) -> str:
+        """剥离 LLM 生成的元内容标注（编辑提示、版本标记等）。
+
+        对每一行应用 META_PATTERNS 正则，将匹配到的元内容替换为空。
+        """
+        result = text
+        for pattern in META_PATTERNS:
+            result = re.sub(pattern, "", result, flags=re.MULTILINE)
+        # 清理多余空行（合并连续空行为最多两个换行）
+        result = re.sub(r"\n{3,}", "\n\n", result)
+        return result.strip()
 
     def _dedupe_similar_paragraphs(self, paragraphs: list[str], threshold: float = DEDUP_SIMILARITY_THRESHOLD) -> list[str]:
         """移除与之前段落高度相似的段落。

@@ -8,8 +8,19 @@ from __future__ import annotations
 __all__ = [
     "BANNED_EXPRESSIONS_PROMPT",
     "LOW_QUALITY_PHRASES",
+    "META_PATTERNS",
     "SCENE_KEYWORDS",
     "QUESTION_MARKERS",
+]
+
+# 元内容正则模式，匹配 LLM 生成的出戏标注
+# 每个模式匹配一整行/段落级别的元内容
+META_PATTERNS = [
+    r"【[^】]*(?:编辑|提示|注释|说明|备注)[^】]*】[^\n]*",  # 【编辑提示】...
+    r"（[^）]*(?:读者|定制|版本|编辑|提示)[^）]*）",  # （读者定制版本）
+    r"\([^)]*(?:读者|定制|版本|编辑|提示)[^)]*\)",  # 半角括号变体
+    r"^\[(?:编辑|注|备注|说明)[^\]]*\][^\n]*",  # [编辑说明]...
+    r"^(?:注[：:]|备注[：:]|说明[：:]).*",  # 注：... / 备注：...
 ]
 
 BANNED_EXPRESSIONS_PROMPT = """\

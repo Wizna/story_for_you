@@ -580,19 +580,12 @@ class EndingWriter:
         return any(kw in text for kw in SCENE_KEYWORDS)
 
     def _append_bridges(self, polished: str, bridges: list[str], notes: str | None = None) -> str:
-        marker = "（读者定制版本）"
         baseline = polished.rstrip()
-        marker_present = baseline.endswith(marker)
-        if marker_present:
-            baseline = baseline[: -len(marker)].rstrip()
         bridge_text = "\n\n".join(bridges)
         combined_parts = [baseline, bridge_text.strip()]
         if notes:
-            combined_parts.append(f"【编辑提示】{notes.strip()}")
-        combined = "\n\n".join(part for part in combined_parts if part)
-        if marker_present or not combined.rstrip().endswith(marker):
-            combined = combined.rstrip() + "\n\n" + marker
-        return combined
+            logger.debug("Resolution notes (not included in output): %s", notes.strip())
+        return "\n\n".join(part for part in combined_parts if part)
 
     def _phase_options(self, phase: str) -> dict | None:
         return self._phase_llm_options.get(phase)
@@ -636,5 +629,5 @@ class EndingWriter:
         tension_line = "The atmosphere eases." if tone == "low" else "Tension peaks before dissolving."
         paragraphs.append(tension_line)
         paragraphs.append("Loose threads are acknowledged, promising future tales without contradicting the past.")
-        paragraphs.append("(本段为读者定制版本的兜底续写)")
+        paragraphs.append("余音袅袅，故事就此落幕。")
         return "\n\n".join(paragraphs)
