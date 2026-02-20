@@ -1,5 +1,10 @@
+from __future__ import annotations
+
 from dataclasses import asdict, dataclass, field
-from typing import Any, Literal
+from typing import Any, Literal, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from story_for_you.config.settings import RenderingLimits
 
 
 @dataclass
@@ -164,14 +169,17 @@ class StoryContext:
     story_state: StoryState | None = None
     writing_style: WritingStyle | None = None
 
-    def for_prompt(self) -> dict[str, Any]:
+    def for_prompt(self, limits: RenderingLimits | None = None) -> dict[str, Any]:
         """Serialize the context into prompt-ready textual sections."""
+        if limits is None:
+            from story_for_you.config.settings import RenderingLimits
+            limits = RenderingLimits()
         sections = {
-            "world": self._render_world_section(),
-            "characters": self._render_character_section(),
-            "plot": self._render_plot_section(),
-            "chapters": self._render_chapter_section(),
-            "style": self._render_style_section(),
+            "world": self._render_world_section(limits),
+            "characters": self._render_character_section(limits),
+            "plot": self._render_plot_section(limits),
+            "chapters": self._render_chapter_section(limits),
+            "style": self._render_style_section(limits),
         }
         return {key: value for key, value in sections.items() if value}
 
@@ -227,7 +235,7 @@ class StoryContext:
         self.metadata[key] = value
 
     # Prompt helpers ---------------------------------------------------
-    def _render_world_section(self) -> str:
+    def _render_world_section(self, limits: RenderingLimits) -> str:
         if not self.story_state:
             return ""
         lines = [
@@ -235,14 +243,14 @@ class StoryContext:
             f"Tension: {self.story_state.world_tension}",
         ]
         if self.story_state.major_conflicts:
-            lines.append("Major conflicts: " + "; ".join(self.story_state.major_conflicts[-5:]))
+            lines.append("Major conflicts: " + "; ".join(self.story_state.major_conflicts[-limits.max_major_conflicts:]))
         if self.story_state.time_constraints:
-            lines.append("Time constraints: " + "; ".join(self.story_state.time_constraints[-3:]))
+            lines.append("Time constraints: " + "; ".join(self.story_state.time_constraints[-limits.max_time_constraints:]))
         if self.story_state.unresolved_events:
-            lines.append("World-level unresolved: " + "; ".join(self.story_state.unresolved_events[-5:]))
+            lines.append("World-level unresolved: " + "; ".join(self.story_state.unresolved_events[-limits.max_unresolved_events:]))
         return "\n".join(lines)
 
-    def _render_character_section(self) -> str:
+    def _render_character_section(self, limits: RenderingLimits) -> str:
         if not self.characters:
             return ""
         role_order = {"main": 0, "support": 1, "minor": 2}
@@ -251,36 +259,36 @@ class StoryContext:
             key=lambda char: (role_order.get(char.role, 3), char.name.lower()),
         )
         lines: list[str] = []
-        for character in ordered[:6]:
-            traits = ", ".join(character.personality[:3]) if character.personality else "traits unknown"
-            unresolved = ", ".join(character.unresolved[:2]) if character.unresolved else ""
+        for character in ordered[:limits.max_characters]:
+            traits = ", ".join(character.personality[:limits.max_personality_traits]) if character.personality else "traits unknown"
+            unresolved = ", ".join(character.unresolved[:limits.max_unresolved_per_char]) if character.unresolved else ""
             # Include aliases so LLM knows the name mappings
-            aliases_part = f" (别名: {', '.join(character.aliases[:3])})" if character.aliases else ""
+            aliases_part = f" (别名: {', '.join(character.aliases[:limits.max_aliases])})" if character.aliases else ""
             suffix = f" | unresolved: {unresolved}" if unresolved else ""
             lines.append(f"- {character.name}{aliases_part} ({character.role}): {traits}{suffix}")
         return "\n".join(lines)
 
-    def _render_plot_section(self) -> str:
+    def _render_plot_section(self, limits: RenderingLimits) -> str:
         if not self.events:
             return ""
         lines: list[str] = []
-        for event in self.events[-5:]:
+        for event in self.events[-limits.max_events:]:
             scope = f"[CH{event.chapter:03d}]" if event.chapter else "[??]"
             flag = " [irreversible]" if event.is_irreversible else ""
-            participants = ", ".join(event.participants[:3]) if event.participants else "unknown actors"
+            participants = ", ".join(event.participants[:limits.max_event_participants]) if event.participants else "unknown actors"
             lines.append(f"{scope} {event.type}: {event.summary} ({participants}){flag}")
         return "\n".join(lines)
 
-    def _render_chapter_section(self) -> str:
+    def _render_chapter_section(self, limits: RenderingLimits) -> str:
         if not self.chapter_window:
             return ""
         lines = []
-        for summary in self.chapter_window[-5:]:
+        for summary in self.chapter_window[-limits.max_chapters:]:
             flags = f" | flags: {', '.join(summary.irreversible_flags)}" if summary.irreversible_flags else ""
             lines.append(f"Chapter {summary.chapter} - {summary.title}: {summary.synopsis}{flags}")
         return "\n".join(lines)
 
-    def _render_style_section(self) -> str:
+    def _render_style_section(self, limits: RenderingLimits) -> str:
         if not self.writing_style:
             return ""
         ws = self.writing_style
@@ -290,7 +298,7 @@ class StoryContext:
             f"用词: {ws.register}风格",
         ]
         if ws.characteristic_words:
-            lines.append(f"特征词: {', '.join(ws.characteristic_words[:5])}")
+            lines.append(f"特征词: {', '.join(ws.characteristic_words[:limits.max_characteristic_words])}")
         if ws.tone_markers:
-            lines.append(f"语气词: {', '.join(ws.tone_markers[:5])}")
+            lines.append(f"语气词: {', '.join(ws.tone_markers[:limits.max_tone_markers])}")
         return "\n".join(line for line in lines if line)

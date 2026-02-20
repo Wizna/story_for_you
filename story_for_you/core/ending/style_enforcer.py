@@ -27,6 +27,8 @@ logger = logging.getLogger(__name__)
 class StyleEnforcer:
     """Enforces style consistency and quality in generated text."""
 
+    DEDUP_SIMILARITY_THRESHOLD = 0.25
+
     def __init__(self, style: WritingStyle | None = None):
         self.style = style
 
@@ -105,7 +107,7 @@ class StyleEnforcer:
 
             # Check Jaccard similarity with existing content
             bridge_sentences = self._extract_sentences_for_dedup(bridge_stripped)
-            if self._jaccard_similarity(bridge_sentences, existing_sentences) >= 0.25:
+            if self._jaccard_similarity(bridge_sentences, existing_sentences) >= self.DEDUP_SIMILARITY_THRESHOLD:
                 logger.debug("Bridge被过滤（相似度过高）: %s...", bridge_stripped[:30])
                 continue
 
@@ -178,11 +180,11 @@ class StyleEnforcer:
             result.append(para_stripped)
         return result
 
-    def _dedupe_similar_paragraphs(self, paragraphs: list[str], threshold: float = 0.2) -> list[str]:
+    def _dedupe_similar_paragraphs(self, paragraphs: list[str], threshold: float = DEDUP_SIMILARITY_THRESHOLD) -> list[str]:
         """移除与之前段落高度相似的段落。
 
         使用首句匹配和句子级别的 Jaccard 相似度检测重复。
-        threshold: 相似度阈值，超过此值则视为重复（默认 0.2）。
+        threshold: 相似度阈值，超过此值则视为重复。
         """
         if len(paragraphs) <= 1:
             return paragraphs

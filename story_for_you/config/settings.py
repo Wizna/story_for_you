@@ -102,6 +102,28 @@ class PromptSettings:
 
 
 @dataclass
+class RenderingLimits:
+    """Limits for prompt-rendering slices across all context renderers.
+
+    Defaults match the established StoryContext rendering values.
+    """
+
+    max_characters: int = 6
+    max_personality_traits: int = 3
+    max_aliases: int = 3
+    max_unresolved_per_char: int = 2
+    max_total_unresolved_threads: int = 5
+    max_events: int = 5
+    max_event_participants: int = 3
+    max_chapters: int = 5
+    max_major_conflicts: int = 5
+    max_time_constraints: int = 3
+    max_unresolved_events: int = 5
+    max_characteristic_words: int = 5
+    max_tone_markers: int = 5
+
+
+@dataclass
 class EndingPhaseTemperatures:
     """Temperature settings for each ending writer phase."""
 
@@ -136,6 +158,7 @@ class Settings:
     analysis: AnalysisSettings = field(default_factory=AnalysisSettings)
     prompt: PromptSettings = field(default_factory=PromptSettings)
     ending: EndingSettings = field(default_factory=EndingSettings)
+    rendering: RenderingLimits = field(default_factory=RenderingLimits)
 
 
 class SettingsLoader:

@@ -19,6 +19,8 @@ from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
+_MAX_LLM_CHARACTERS = 8
+
 
 class CharacterExtractor:
     """Identifies characters present in the supplied text."""
@@ -92,7 +94,7 @@ class CharacterExtractor:
             logger.warning("Character extractor payload is not a list.")
             return []
         characters: list[CharacterState] = []
-        for item in payload[:8]:
+        for item in payload[:_MAX_LLM_CHARACTERS]:
             character = self._to_character(item)
             if character:
                 characters.append(character)
@@ -128,7 +130,7 @@ class CharacterExtractor:
         if not candidates:
             return []
         characters: list[CharacterState] = []
-        for idx, (name, _) in enumerate(candidates.most_common(8)):
+        for idx, (name, _) in enumerate(candidates.most_common(_MAX_LLM_CHARACTERS)):
             role = "main" if idx < 2 else "support" if idx < 5 else "minor"
             characters.append(
                 CharacterState(
@@ -213,14 +215,4 @@ class PersonalityAnalyzer:
         self.llm = llm
 
     def analyze(self, characters: Iterable[CharacterState]) -> list[CharacterState]:
-        """Enrich characters with additional traits."""
-        enriched: list[CharacterState] = []
-        for character in characters:
-            if not character.personality:
-                traits = self._guess_traits(character.name)
-                character.personality = traits
-            enriched.append(character)
-        return enriched
-
-    def _guess_traits(self, name: str) -> list[str]:
-        return []
+        return list(characters)

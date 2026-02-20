@@ -11,6 +11,8 @@ from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
+_MAX_STYLE_LIST_ITEMS = 8
+
 
 class StyleExtractor:
     """Extracts writing style characteristics from chapter samples."""
@@ -150,7 +152,7 @@ class StyleExtractor:
     def _normalize_list(self, value: Any) -> list[str]:
         """确保返回字符串列表。"""
         if isinstance(value, list):
-            return [str(item) for item in value if item][:8]
+            return [str(item) for item in value if item][:_MAX_STYLE_LIST_ITEMS]
         if isinstance(value, str):
             return [value]
         return []

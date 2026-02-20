@@ -15,7 +15,10 @@ __all__ = [
     "fill_template",
     "clamp_text_middle",
     "PLACEHOLDER_PATTERN",
+    "SNIPPET_EXCERPT_LEN",
 ]
+
+SNIPPET_EXCERPT_LEN = 280
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{(\w+)\}\}")
 

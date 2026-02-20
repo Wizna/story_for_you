@@ -272,7 +272,8 @@ def compress(
     """Compress story beats according to the configured level."""
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
     compressor = StoryCompressor(
-        cc.llm, cc.segment_index, level=level, levels=cc.settings.compress.levels.__dict__
+        cc.llm, cc.segment_index, level=level, levels=cc.settings.compress.levels.__dict__,
+        rendering_limits=cc.settings.rendering,
     )
     compressed = compressor.compress(cc.text, cc.context)
     target = output or input_file.with_name(f"{input_file.stem}_compressed.txt")
@@ -296,7 +297,7 @@ def filter_characters(
     targets = _parse_character_names(characters)
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
     retriever = SegmentRetriever(cc.segment_index)
-    filterer = CharacterFilter(cc.llm, retriever)
+    filterer = CharacterFilter(cc.llm, retriever, rendering_limits=cc.settings.rendering)
     result = filterer.filter(cc.text, targets, cc.context, mode)
     target = output or input_file.with_name(f"{input_file.stem}_filtered.txt")
     write_text_file(target, result.content)
@@ -319,7 +320,7 @@ def remove(
     targets = _parse_character_names(characters)
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
     retriever = SegmentRetriever(cc.segment_index)
-    remover = CharacterRemover(cc.llm, retriever)
+    remover = CharacterRemover(cc.llm, retriever, rendering_limits=cc.settings.rendering)
     result = remover.remove(cc.text, targets, cc.context, mode)
     target = output or input_file.with_name(f"{input_file.stem}_rewritten.txt")
     write_text_file(target, result.content)
@@ -343,7 +344,11 @@ def continue_story(
 ) -> None:
     """Continue the story with an optional hint about the desired ending."""
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
-    writer = EndingWriter(cc.llm, cc.segment_index, temperatures=cc.settings.ending.temperatures)
+    writer = EndingWriter(
+        cc.llm, cc.segment_index,
+        temperatures=cc.settings.ending.temperatures,
+        rendering_limits=cc.settings.rendering,
+    )
     continuation = writer.continue_story(cc.text, cc.context, hint)
     target = output or input_file.with_name(f"{input_file.stem}_ending.txt")
     write_text_file(target, continuation)

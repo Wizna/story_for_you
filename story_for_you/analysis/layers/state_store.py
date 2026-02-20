@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from copy import deepcopy
 from dataclasses import asdict
-from typing import Any, Iterable
+from typing import Any, Iterable, TYPE_CHECKING
 
 from story_for_you.analysis.context import (
     CharacterState,
@@ -16,6 +16,9 @@ from story_for_you.utils.chinese_name_utils import (
     names_have_overlap,
     split_compound_chinese_name,
 )
+
+if TYPE_CHECKING:
+    from story_for_you.config.settings import RenderingLimits
 
 
 class StateStore:
@@ -52,11 +55,14 @@ class StateStore:
         """Return the latest synthesized story state."""
         return deepcopy(self._story_state) if self._story_state else None
 
-    def get_prompt_sections(self) -> dict[str, str]:
+    def get_prompt_sections(self, limits: RenderingLimits | None = None) -> dict[str, str]:
         """Render character/world state summaries for downstream prompts."""
-        world_lines = self._render_world_state()
-        character_lines = self._render_character_state()
-        unresolved_lines = self._render_unresolved_threads()
+        if limits is None:
+            from story_for_you.config.settings import RenderingLimits
+            limits = RenderingLimits()
+        world_lines = self._render_world_state(limits)
+        character_lines = self._render_character_state(limits)
+        unresolved_lines = self._render_unresolved_threads(limits)
         sections: dict[str, str] = {}
         if world_lines:
             sections["world"] = "\n".join(world_lines)
@@ -123,19 +129,19 @@ class StateStore:
         cleaned = [target.strip() for target in targets if target]
         return sorted(dict.fromkeys(cleaned))
 
-    def _render_world_state(self) -> list[str]:
+    def _render_world_state(self, limits: RenderingLimits) -> list[str]:
         if not self._story_state:
             return []
         lines = [
             f"Arc: {self._story_state.current_arc} | Tension: {self._story_state.world_tension}",
         ]
         if self._story_state.major_conflicts:
-            lines.append("Major conflicts: " + "; ".join(self._story_state.major_conflicts[-5:]))
+            lines.append("Major conflicts: " + "; ".join(self._story_state.major_conflicts[-limits.max_major_conflicts:]))
         if self._story_state.time_constraints:
-            lines.append("Time constraints: " + "; ".join(self._story_state.time_constraints[-3:]))
+            lines.append("Time constraints: " + "; ".join(self._story_state.time_constraints[-limits.max_time_constraints:]))
         return lines
 
-    def _render_character_state(self) -> list[str]:
+    def _render_character_state(self, limits: RenderingLimits) -> list[str]:
         if not self._characters:
             return []
         ordered = sorted(
@@ -144,18 +150,18 @@ class StateStore:
             reverse=True,
         )
         lines: list[str] = []
-        for character in ordered[:6]:
-            traits = ", ".join(character.personality[:3]) if character.personality else "traits unknown"
+        for character in ordered[:limits.max_characters]:
+            traits = ", ".join(character.personality[:limits.max_personality_traits]) if character.personality else "traits unknown"
             realm = character.realm or "unaffiliated"
             lines.append(f"- {character.name} ({character.role}, {realm}): {traits}")
         return lines
 
-    def _render_unresolved_threads(self) -> list[str]:
+    def _render_unresolved_threads(self, limits: RenderingLimits) -> list[str]:
         unresolved: list[str] = []
         for character in self._characters.values():
             if character.unresolved:
-                unresolved.append(f"{character.name}: {', '.join(character.unresolved[:2])}")
-        return unresolved[:5]
+                unresolved.append(f"{character.name}: {', '.join(character.unresolved[:limits.max_unresolved_per_char])}")
+        return unresolved[:limits.max_total_unresolved_threads]
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the store state to a dictionary."""

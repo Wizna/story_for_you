@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import logging
 
 from story_for_you.analysis.context import StoryContext
+from story_for_you.config.settings import RenderingLimits
 from story_for_you.core.exceptions import LLMError
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment
@@ -13,6 +14,7 @@ from story_for_you.core.prompting import (
     format_style_guide,
     load_template,
 )
+from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN
 
 logger = logging.getLogger(__name__)
 
@@ -36,9 +38,10 @@ class FilterResult:
 class CharacterFilter:
     """Filters story segments for selected characters."""
 
-    def __init__(self, llm: LLMProvider, retriever: SegmentRetriever):
+    def __init__(self, llm: LLMProvider, retriever: SegmentRetriever, rendering_limits: RenderingLimits | None = None):
         self.llm = llm
         self.retriever = retriever
+        self._limits = rendering_limits or RenderingLimits()
         self.bridge_template = load_template("filter_bridge")
 
     def filter(self, text: str, characters: list[str], context: StoryContext, mode: str = "soft") -> FilterResult:
@@ -47,7 +50,7 @@ class CharacterFilter:
         if not segments:
             return FilterResult(content="", original_ratio=0.0)
         gaps = self._find_gaps(segments)
-        context_block = format_context_sections(context.for_prompt())
+        context_block = format_context_sections(context.for_prompt(limits=self._limits))
         style_guide = format_style_guide(context.writing_style)
         bridges: list[BridgeInfo] = []
         for gap in gaps:
@@ -99,9 +102,9 @@ class CharacterFilter:
 
     def _excerpt(self, content: str, tail: bool) -> str:
         snippet = content.strip()
-        if len(snippet) <= 280:
+        if len(snippet) <= SNIPPET_EXCERPT_LEN:
             return snippet
-        return snippet[-280:] if tail else snippet[:280]
+        return snippet[-SNIPPET_EXCERPT_LEN:] if tail else snippet[:SNIPPET_EXCERPT_LEN]
 
     def _assemble(self, segments: list[Segment], bridges: list[BridgeInfo]) -> str:
         ordered = sorted(segments, key=lambda seg: seg.segment_id)

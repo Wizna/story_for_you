@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 
 from story_for_you.analysis.context import StoryContext, WritingStyle
-from story_for_you.config.settings import EndingPhaseTemperatures
+from story_for_you.config.settings import EndingPhaseTemperatures, RenderingLimits
 from story_for_you.core.ending import (
     BANNED_EXPRESSIONS_PROMPT,
     SCENE_KEYWORDS,
@@ -25,8 +25,21 @@ from story_for_you.core.prompting import (
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
+from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN
 
 logger = logging.getLogger(__name__)
+
+_MAX_FOCUS_CHARACTERS = 4
+_FOCUS_CHARACTERS_FALLBACK = 2
+_MAX_SEGMENT_SNIPPETS = 4
+_MAX_CAST_IN_ANCHORS = 4
+_MAX_CONFLICT_ANCHORS = 2
+_MAX_SCENE_ANCHORS = 3
+_MIN_SCENE_SENTENCE_LEN = 15
+_MAX_SCENE_SENTENCE_LEN = 80
+_MIN_DRAFT_PARAGRAPHS = 3
+_MIN_PARAGRAPH_CHARS = 120
+_MAX_BEAT_PARAGRAPHS = 4
 
 
 @dataclass
@@ -49,9 +62,11 @@ class EndingWriter:
         llm: LLMProvider,
         segment_index: SegmentIndex,
         temperatures: EndingPhaseTemperatures | None = None,
+        rendering_limits: RenderingLimits | None = None,
     ):
         self.llm = llm
         self.segment_index = segment_index
+        self._limits = rendering_limits or RenderingLimits()
         self._hint_interpreter = HintInterpreter()
         temps = temperatures or EndingPhaseTemperatures()
         self._phase_llm_options = {
@@ -86,7 +101,7 @@ class EndingWriter:
             return self._legacy_continue(text, context, hint)
 
         style = context.writing_style
-        context_block = format_context_sections(context.for_prompt())
+        context_block = format_context_sections(context.for_prompt(limits=self._limits))
         style_anchors = self._build_style_anchors(context)
         directives = self._hint_interpreter.interpret(hint, context)
         hint_payload = directives.for_prompt()
@@ -354,7 +369,7 @@ class EndingWriter:
     def _format_recent_events(self, context: StoryContext) -> str:
         if not context.events:
             return "(无近期重要事件)"
-        events = context.events[-5:]
+        events = context.events[-self._limits.max_events:]
         lines = [f"- {event.summary}" for event in events]
         return "\n".join(lines)
 
@@ -368,17 +383,17 @@ class EndingWriter:
         lines = []
         for char in context.characters.values():
             if char.role in ("main", "support"):
-                traits = ", ".join(char.personality[:3]) if char.personality else "特征未知"
+                traits = ", ".join(char.personality[:self._limits.max_personality_traits]) if char.personality else "特征未知"
                 alias_info = ""
                 if char.aliases:
-                    alias_info = f"，别名/称呼：{'、'.join(char.aliases[:3])}"
+                    alias_info = f"，别名/称呼：{'、'.join(char.aliases[:self._limits.max_aliases])}"
                 lines.append(f"- {char.name} ({char.role}): {traits}{alias_info}")
         return "\n".join(lines) if lines else "(无主要人物信息)"
 
     def _format_conflicts(self, context: StoryContext) -> str:
         if not context.story_state or not context.story_state.major_conflicts:
             return "(无明确核心冲突)"
-        conflicts = context.story_state.major_conflicts[-3:]
+        conflicts = context.story_state.major_conflicts[-self._limits.max_major_conflicts:]
         return "\n".join(f"- {c}" for c in conflicts)
 
     def _format_outline(self, outline: EndingOutline) -> str:
@@ -401,14 +416,14 @@ class EndingWriter:
             if isinstance(beat, str) and beat and beat.strip()
         ]
         if not beats:
-            return "至少写满3段，每段120字以上，段落按因果衔接展开。"
+            return f"至少写满{_MIN_DRAFT_PARAGRAPHS}段，每段{_MIN_PARAGRAPH_CHARS}字以上，段落按因果衔接展开。"
 
         lines: list[str] = []
-        for idx, beat in enumerate(beats[:4], start=1):
+        for idx, beat in enumerate(beats[:_MAX_BEAT_PARAGRAPHS], start=1):
             lines.append(f"- 段落{idx}: {beat}")
-        if len(beats) > 4:
-            lines.append(f"- 其余段落: 融合剩余{len(beats) - 4}个情节点，避免遗漏。")
-        lines.append("- 每段≥120字，首句承接上一段尾句，整体保持因果衔接。")
+        if len(beats) > _MAX_BEAT_PARAGRAPHS:
+            lines.append(f"- 其余段落: 融合剩余{len(beats) - _MAX_BEAT_PARAGRAPHS}个情节点，避免遗漏。")
+        lines.append(f"- 每段≥{_MIN_PARAGRAPH_CHARS}字，首句承接上一段尾句，整体保持因果衔接。")
         return "\n".join(lines)
 
     def _revision_checklist(self, style: WritingStyle | None) -> str:
@@ -436,12 +451,12 @@ class EndingWriter:
             if char.role in ("main", "support")
         ]
         if not focus_characters and context.characters:
-            focus_characters = list(context.characters.keys())[:2]
+            focus_characters = list(context.characters.keys())[:_FOCUS_CHARACTERS_FALLBACK]
 
         snippets: list[str] = []
         seen_segments: set[int] = set()
 
-        for name in focus_characters[:4]:
+        for name in focus_characters[:_MAX_FOCUS_CHARACTERS]:
             segment = self._latest_segment_for_character(name)
             if not segment:
                 continue
@@ -452,7 +467,7 @@ class EndingWriter:
             if segment.segment_id in seen_segments:
                 continue
             snippets.append(self._format_segment_snippet(segment))
-            if len(snippets) >= 4:
+            if len(snippets) >= _MAX_SEGMENT_SNIPPETS:
                 break
 
         recent_event = self._latest_irreversible_event(context)
@@ -474,7 +489,7 @@ class EndingWriter:
 
     def _format_segment_snippet(self, segment: Segment, prefix: str | None = None) -> str:
         content = segment.content.strip().replace("\n", " ")
-        snippet = content[:280]
+        snippet = content[:SNIPPET_EXCERPT_LEN]
         label = prefix or f"[Segment {segment.segment_id}]"
         return f"{label} {snippet}"
 
@@ -487,10 +502,10 @@ class EndingWriter:
     def _collect_unresolved_threads(self, context: StoryContext) -> list[str]:
         threads: list[str] = []
         for char in context.characters.values():
-            for item in char.unresolved[:2]:
+            for item in char.unresolved[:self._limits.max_unresolved_per_char]:
                 threads.append(f"{char.name}: {item}")
         if context.story_state and context.story_state.unresolved_events:
-            for item in context.story_state.unresolved_events[:3]:
+            for item in context.story_state.unresolved_events[-self._limits.max_unresolved_events:]:
                 threads.append(f"世界: {item}")
         return threads
 
@@ -498,10 +513,10 @@ class EndingWriter:
         anchors: list[str] = []
         style = context.writing_style
         if style and style.characteristic_words:
-            keywords = "、".join(style.characteristic_words[:6])
+            keywords = "、".join(style.characteristic_words[:self._limits.max_characteristic_words])
             anchors.append(f"词汇锚点：{keywords}（至少使用其中2个）")
 
-        scene_images = self._scene_anchors(limit=3)
+        scene_images = self._scene_anchors(limit=_MAX_SCENE_ANCHORS)
         if scene_images:
             anchors.append("场景意象：")
             anchors.extend(f"  · {scene}" for scene in scene_images)
@@ -512,14 +527,14 @@ class EndingWriter:
             if char.role in ("main", "support")
         ]
         if cast:
-            anchors.append("关键人物：" + "、".join(cast[:4]))
+            anchors.append("关键人物：" + "、".join(cast[:_MAX_CAST_IN_ANCHORS]))
 
         state = context.story_state
         if state:
             if state.major_conflicts:
-                anchors.append("冲突焦点：" + " / ".join(state.major_conflicts[-2:]))
+                anchors.append("冲突焦点：" + " / ".join(state.major_conflicts[-_MAX_CONFLICT_ANCHORS:]))
             if state.unresolved_events:
-                anchors.append("伏笔提示：" + "；".join(state.unresolved_events[:2]))
+                anchors.append("伏笔提示：" + "；".join(state.unresolved_events[:_MAX_CONFLICT_ANCHORS]))
             if state.time_constraints:
                 anchors.append("时间线提示：" + state.time_constraints[0])
 
@@ -534,7 +549,7 @@ class EndingWriter:
                 lines.append(f"- {item}")
         return "\n".join(lines)
 
-    def _scene_anchors(self, limit: int = 3) -> list[str]:
+    def _scene_anchors(self, limit: int = _MAX_SCENE_ANCHORS) -> list[str]:
         scenes: list[str] = []
         for segment in reversed(self.segment_index.segments):
             candidates = self._extract_scene_sentences(segment.content)
@@ -557,7 +572,7 @@ class EndingWriter:
                 continue
             if sentence.startswith("…") or sentence.startswith("。"):
                 continue
-            if 15 <= len(sentence) <= 80 and self._has_scene_keyword(sentence):
+            if _MIN_SCENE_SENTENCE_LEN <= len(sentence) <= _MAX_SCENE_SENTENCE_LEN and self._has_scene_keyword(sentence):
                 results.append(sentence)
         return results
 
@@ -585,7 +600,7 @@ class EndingWriter:
     # Legacy fallback --------------------------------------------------------
 
     def _legacy_continue(self, text: str, context: StoryContext, hint: str) -> str:
-        context_block = format_context_sections(context.for_prompt())
+        context_block = format_context_sections(context.for_prompt(limits=self._limits))
         recent_segments = self._recent_segment_digest(context)
         directives = self._hint_interpreter.interpret(hint, context)
         prompt = fill_template(

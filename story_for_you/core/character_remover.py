@@ -4,6 +4,7 @@ from typing import Literal
 import logging
 
 from story_for_you.analysis.context import StoryContext
+from story_for_you.config.settings import RenderingLimits
 from story_for_you.core.exceptions import LLMError
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment
@@ -30,9 +31,10 @@ class RemoveResult:
 class CharacterRemover:
     """Removes or rewrites characters from story segments."""
 
-    def __init__(self, llm: LLMProvider, retriever: SegmentRetriever):
+    def __init__(self, llm: LLMProvider, retriever: SegmentRetriever, rendering_limits: RenderingLimits | None = None):
         self.llm = llm
         self.retriever = retriever
+        self._limits = rendering_limits or RenderingLimits()
         self.rewrite_template = load_template("remove_rewrite")
 
     def remove(self, text: str, characters: list[str], context: StoryContext, mode: str = "hard") -> RemoveResult:
@@ -41,7 +43,7 @@ class CharacterRemover:
         affected_segments = self.retriever.retrieve_by_characters(include=characters, mode="strict")
         processed: list[Segment] = []
         deleted = rewritten = replaced = 0
-        context_block = format_context_sections(context.for_prompt())
+        context_block = format_context_sections(context.for_prompt(limits=self._limits))
         style_guide = format_style_guide(context.writing_style)
         for segment in affected_segments:
             action = self._evaluate_segment(segment, characters, context, mode)

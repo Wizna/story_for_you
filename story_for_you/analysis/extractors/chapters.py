@@ -12,6 +12,8 @@ from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
+_MAX_BEATS = 6
+
 
 class ChapterSummarizer:
     """LLM-backed chapter summarizer using structured prompt templates."""
@@ -59,7 +61,7 @@ class ChapterSummarizer:
             )
             beats = [
                 self._clamp_text(str(item), self.MAX_BEAT_LEN) for item in data.get("beats", [])
-            ][:6]
+            ][:_MAX_BEATS]
             synopsis = self._clamp_text(
                 str(data.get("synopsis", "")).strip() or chapter_text[:200].strip(),
                 self.MAX_SYNOPSIS_LEN,
@@ -105,7 +107,7 @@ class ChapterSummarizer:
     def _extract_beats(self, text: str) -> list[str]:
         sentences = re.split(r"(?<=[。.!?])\s+", text.strip())
         beats = [sentence.strip() for sentence in sentences if sentence.strip()]
-        return beats[:6]
+        return beats[:_MAX_BEATS]
 
     def _infer_mood(self, text: str) -> str:
         heuristics = {

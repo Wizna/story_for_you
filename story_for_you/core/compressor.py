@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import logging
 
 from story_for_you.analysis.context import PlotEvent, StoryContext
+from story_for_you.config.settings import RenderingLimits
 from story_for_you.core.exceptions import LLMError
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
@@ -18,6 +19,11 @@ from story_for_you.core.prompting import (
 
 logger = logging.getLogger(__name__)
 
+_SCORE_MAIN_CHARACTER = 2.0
+_SCORE_SUPPORT_CHARACTER = 1.0
+_SCORE_IRREVERSIBLE_EVENT = 3.0
+_SCORE_NORMAL_EVENT = 1.0
+
 
 class StoryCompressor:
     """Compresses story content while respecting StoryContext cues."""
@@ -30,18 +36,20 @@ class StoryCompressor:
         segment_index: SegmentIndex,
         level: str = "medium",
         levels: dict[str, float] | None = None,
+        rendering_limits: RenderingLimits | None = None,
     ):
         self.llm = llm
         self.segment_index = segment_index
         self.level = level
         self.levels = levels or self.DEFAULT_LEVELS
+        self._limits = rendering_limits or RenderingLimits()
         self.template = load_template("compress")
 
     def compress(self, text: str, context: StoryContext) -> str:
         """Return a compressed version of the provided text."""
         targets = self._select_segments(context)
         ordered = sorted(targets, key=lambda item: item.segment.segment_id)
-        context_block = format_context_sections(context.for_prompt())
+        context_block = format_context_sections(context.for_prompt(limits=self._limits))
         style_guide = format_style_guide(context.writing_style)
         style_samples = format_style_samples(context.writing_style)
         segments_payload = "\n---\n".join(item.segment.content.strip() for item in ordered)
@@ -78,12 +86,12 @@ class StoryCompressor:
         score = 1.0
         for character in context.characters.values():
             if character.name in segment.characters:
-                score += 2.0 if character.role == "main" else 1.0
+                score += _SCORE_MAIN_CHARACTER if character.role == "main" else _SCORE_SUPPORT_CHARACTER
         for event in self._events_for_segment(context, segment):
             if event.is_irreversible:
-                score += 3.0
+                score += _SCORE_IRREVERSIBLE_EVENT
             else:
-                score += 1.0
+                score += _SCORE_NORMAL_EVENT
         return score
 
     def _events_for_segment(self, context: StoryContext, segment: Segment) -> list[PlotEvent]:
