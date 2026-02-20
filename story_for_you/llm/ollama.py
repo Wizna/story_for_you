@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Iterator
 
 import httpx
@@ -51,12 +52,14 @@ class OllamaProvider(LLMProvider):
             raise LLMResponseError(f"Invalid JSON response from Ollama: {exc}") from exc
 
         content = data.get("response", "").strip()
+        content = self._strip_thinking(content)
         tokens_used = data.get("eval_count") or data.get("prompt_eval_count") or 0
         return LLMResponse(content=content, tokens_used=tokens_used)
 
     def generate_stream(self, prompt: str, system: str = "", options: dict | None = None) -> Iterator[str]:
         """Stream a response via Ollama's API."""
         payload = self._build_payload(prompt, system, stream=True, call_options=options)
+        is_qwen = "qwen" in self.model.lower()
         try:
             with self._client.stream(
                 "POST",
@@ -64,6 +67,7 @@ class OllamaProvider(LLMProvider):
                 json=payload,
             ) as response:
                 response.raise_for_status()
+                buf = [] if is_qwen else None
                 for line in response.iter_lines():
                     if not line:
                         continue
@@ -73,7 +77,14 @@ class OllamaProvider(LLMProvider):
                         continue
                     chunk = data.get("response")
                     if chunk:
-                        yield chunk
+                        if buf is not None:
+                            buf.append(chunk)
+                        else:
+                            yield chunk
+                if buf is not None:
+                    cleaned = self._strip_thinking("".join(buf))
+                    if cleaned:
+                        yield cleaned
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError(f"Ollama stream timed out: {exc}") from exc
         except httpx.ConnectError as exc:
@@ -86,6 +97,12 @@ class OllamaProvider(LLMProvider):
     def close(self) -> None:
         """Dispose of the shared HTTP client."""
         self._client.close()
+
+    def _strip_thinking(self, text: str) -> str:
+        """Remove ``<think>...</think>`` blocks emitted by Qwen models."""
+        if "qwen" not in self.model.lower():
+            return text
+        return re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
 
     def _build_payload(self, prompt: str, system: str, stream: bool, call_options: dict | None = None) -> dict:
         payload = {
