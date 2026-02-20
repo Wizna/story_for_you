@@ -82,7 +82,7 @@ class CharacterExtractor:
     def _prompt_characters(self, prompt: str) -> list[CharacterState]:
         """Use the configured LLM to extract structured characters."""
         try:
-            response = self.llm.generate(prompt=prompt)
+            response = self.llm.generate(prompt=prompt, options={"no_think": True})
         except LLMError as exc:  # pragma: no cover - defensive against provider issues
             logger.warning("Character extraction prompt failed: %s", exc)
             return []

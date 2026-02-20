@@ -23,5 +23,3 @@
   "key_resolution": "最需要解决的核心矛盾"
 }
 ```
-
-/no_think

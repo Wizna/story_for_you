@@ -105,15 +105,21 @@ class OllamaProvider(LLMProvider):
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
 
     def _build_payload(self, prompt: str, system: str, stream: bool, call_options: dict | None = None) -> dict:
+        merged_options = dict(self.options)
+        if call_options:
+            merged_options.update({key: value for key, value in call_options.items() if value is not None})
+
+        # Pop no_think before sending to Ollama; append directive to prompt for Qwen models.
+        no_think = merged_options.pop("no_think", False)
+        if no_think and "qwen" in self.model.lower():
+            prompt = prompt + "\n\n/no_think"
+
         payload = {
             "model": self.model,
             "prompt": prompt,
             "system": system or None,
             "stream": stream,
         }
-        merged_options = dict(self.options)
-        if call_options:
-            merged_options.update({key: value for key, value in call_options.items() if value is not None})
         if merged_options:
             payload["options"] = merged_options
         # Drop None values to keep payload compact.

@@ -70,12 +70,12 @@ class EndingWriter:
         self._hint_interpreter = HintInterpreter()
         temps = temperatures or EndingPhaseTemperatures()
         self._phase_llm_options = {
-            "inspiration": {"temperature": temps.inspiration},
-            "outline": {"temperature": temps.outline},
+            "inspiration": {"temperature": temps.inspiration, "no_think": True},
+            "outline": {"temperature": temps.outline, "no_think": True},
             "draft": {"temperature": temps.draft},
             "revision": {"temperature": temps.revision},
             "polish": {"temperature": temps.polish},
-            "resolution": {"temperature": temps.resolution},
+            "resolution": {"temperature": temps.resolution, "no_think": True},
             "legacy": {"temperature": temps.legacy},
         }
         self._load_templates()

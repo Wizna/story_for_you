@@ -107,7 +107,7 @@ class StyleExtractor:
     def _execute_and_parse(self, prompt: str) -> WritingStyle:
         """执行 LLM 调用并解析结果。"""
         try:
-            response = self.llm.generate(prompt=prompt)
+            response = self.llm.generate(prompt=prompt, options={"no_think": True})
             return self._parse_response(response.content)
         except LLMError as exc:
             logger.warning("Style extraction failed, using fallback: %s", exc)

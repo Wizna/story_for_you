@@ -37,7 +37,7 @@ class StateSynthesizer:
             events=json.dumps(events_payload, ensure_ascii=False),
             recent_context=recent_context.strip() or "暂无历史上下文。",
         )
-        response = self.llm.generate(prompt=prompt)
+        response = self.llm.generate(prompt=prompt, options={"no_think": True})
         try:
             data = load_json_response(response.content)
             if not isinstance(data, dict):

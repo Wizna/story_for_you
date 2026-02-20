@@ -136,16 +136,21 @@ class OpenAICompatibleProvider(LLMProvider):
         stream: bool,
         call_options: dict | None = None,
     ) -> dict:
-        messages: list[dict[str, str]] = []
-        if system:
-            messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
-
         merged = dict(self.options)
         if call_options:
             merged.update(
                 {k: v for k, v in call_options.items() if v is not None}
             )
+
+        # Pop no_think before building payload; append directive to user content for Qwen models.
+        no_think = merged.pop("no_think", False)
+        if no_think and "qwen" in self.model.lower():
+            prompt = prompt + "\n\n/no_think"
+
+        messages: list[dict[str, str]] = []
+        if system:
+            messages.append({"role": "system", "content": system})
+        messages.append({"role": "user", "content": prompt})
 
         payload: dict = {
             "model": self.model,

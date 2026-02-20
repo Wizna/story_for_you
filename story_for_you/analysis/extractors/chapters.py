@@ -50,7 +50,7 @@ class ChapterSummarizer:
         )
         if truncated:
             logger.debug("Chapter summary prompt truncated to %s chars", len(prompt))
-        response = self.llm.generate(prompt=prompt)
+        response = self.llm.generate(prompt=prompt, options={"no_think": True})
         try:
             data = load_json_response(response.content)
             if not isinstance(data, dict):

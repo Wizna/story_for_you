@@ -57,7 +57,7 @@ class EventExtractor:
         )
         if truncated:
             logger.debug("Event extraction prompt truncated to %s chars", len(prompt))
-        response = self.llm.generate(prompt=prompt)
+        response = self.llm.generate(prompt=prompt, options={"no_think": True})
         events, error = self._parse_response(response.content, chapter_no)
         if events is not None:
             return events
@@ -147,7 +147,7 @@ class EventExtractor:
             invalid_output=snippet,
         )
         try:
-            repaired = self.llm.generate(prompt=prompt)
+            repaired = self.llm.generate(prompt=prompt, options={"no_think": True})
         except LLMError as exc:
             logger.warning("Event extraction repair attempt failed: %s", exc)
             return None
