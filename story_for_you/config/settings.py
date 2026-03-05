@@ -12,7 +12,7 @@ import yaml
 @dataclass
 class LLMSettings:
     provider: str = "ollama"
-    model: str = "qwen3:8b"
+    model: str = "qwen3.5:9b"
     base_url: str = "http://localhost:11434"
     temperature: float = 0.7
     top_p: float = 0.9
