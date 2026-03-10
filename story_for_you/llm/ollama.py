@@ -27,8 +27,21 @@ class OllamaProvider(LLMProvider):
     ):
         self.model = model
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
         self.options = options or {}
+
+        # Use granular timeouts so long generations succeed as long as
+        # tokens keep flowing.  The *read* timeout is per-chunk, not total,
+        # so a slow model that steadily produces tokens won't be killed.
+        if isinstance(timeout, httpx.Timeout):
+            self.timeout = timeout
+        else:
+            seconds = timeout if timeout is not None else 300.0
+            self.timeout = httpx.Timeout(
+                connect=30.0,
+                read=seconds,
+                write=30.0,
+                pool=30.0,
+            )
         self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout)
 
     def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:

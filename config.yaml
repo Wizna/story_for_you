@@ -1,4 +1,4 @@
 llm:
   model: qwen3.5:9b
   max_tokens: 32768
-  timeout: 420
+  timeout: 600
