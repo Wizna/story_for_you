@@ -66,7 +66,7 @@
 | ---------- | ----------------------- | -------------------------- |
 | 语言       | Python 3.11+            | 生态丰富，LLM 集成方便     |
 | LLM 运行时 | Ollama                  | 本地部署简单，Mac 友好     |
-| 默认模型   | Qwen2.5-7B-Instruct     | 中文优秀，内存 < 16G       |
+| 默认模型   | Qwen3.5-9B     | 中文优秀，内存 < 16G       |
 | CLI 框架   | Typer                   | 类型提示友好，自动生成帮助 |
 | LLM 调用   | httpx + Ollama REST API | 轻量，无额外依赖           |
 | 配置管理   | Pydantic + YAML         | 类型安全，易于验证         |
@@ -718,7 +718,7 @@ class LLMProvider(ABC):
 ```python
 # llm/ollama.py
 class OllamaProvider(LLMProvider):
-    def __init__(self, model: str = "qwen2.5:7b-instruct",
+    def __init__(self, model: str = "qwen3.5:9b",
                  base_url: str = "http://localhost:11434"):
         self.model = model
         self.base_url = base_url
@@ -1039,7 +1039,7 @@ story style novel.txt --context analysis.json --inject
 
 ```bash
 story --config config.yaml <command> ...  # 指定配置文件
-story --model qwen2.5:7b-instruct ...     # 指定模型
+story --model qwen3.5:9b ...     # 指定模型
 story --verbose ...                        # 详细输出
 ```
 
@@ -1084,7 +1084,7 @@ story cache status
 # LLM 配置
 llm:
   provider: ollama              # ollama | openai
-  model: qwen2.5:7b-instruct
+  model: qwen3.5:9b
   base_url: http://localhost:11434
   temperature: 0.7
   max_tokens: 4096
@@ -1258,7 +1258,7 @@ story = "story_for_you.cli.main:app"
 
 1. Python 3.12+
 2. Ollama 已安装并运行
-3. Qwen2.5:7b-instruct 模型已下载
+3. Qwen3.5:9b 模型已下载
 
 ### 9.2 安装步骤
 
@@ -1270,7 +1270,7 @@ brew install ollama
 ollama serve
 
 # 3. 下载模型
-ollama pull qwen2.5:7b-instruct
+ollama pull qwen3.5:9b
 
 # 4. 克隆项目
 git clone <repo>
@@ -1295,12 +1295,12 @@ uv run story --help
 
 ---
 
-## 11. LLM 推理策略（Ollama + Qwen2.5）
+## 11. LLM 推理策略（Ollama + Qwen3.5）
 
 ### 11.1 Provider 生命周期
 
 - CLI 入口通过 `_build_llm(settings)` 构造单例 `OllamaProvider`，再把同一个实例注入 `StoryAnalyzer` 与四个核心业务，确保一次命令只建立一个 HTTP client，避免本地 Ollama 端口被短时间打爆。
-- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/timeout/seed`，默认指向 `http://localhost:11434` 与 `qwen2.5:7b-instruct`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
+- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/timeout/seed`，默认指向 `http://localhost:11434` 与 `qwen3.5:9b`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 
 ```python
@@ -1372,7 +1372,7 @@ payload = load_json_response(response.content)
 
 | 症状 | 可能原因 | 排查步骤 |
 | ---- | -------- | -------- |
-| `RuntimeError: Ollama request failed` | 本地 `ollama serve` 未启动或模型未下载 | `curl http://localhost:11434/api/tags` 验证服务；`ollama pull qwen2.5:7b-instruct` |
+| `RuntimeError: Ollama request failed` | 本地 `ollama serve` 未启动或模型未下载 | `curl http://localhost:11434/api/tags` 验证服务；`ollama pull qwen3.5:9b` |
 | 结果不复现 | 使用旧缓存或变更了配置 | 加 `--reanalyze`，确认 `StoryContext.metadata.config_fingerprint` 更新 |
 | 筛选结果空白 | 角色别名未登记 | 检查 `StoryContext.characters[name].aliases`，必要时在分析阶段补充 |
 

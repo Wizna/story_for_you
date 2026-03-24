@@ -185,6 +185,6 @@
 
 ## 7. tech
 
-- 使用自托管中文 LLM，例如 Qwen2.5-7B-Instruct, 希望 macbook 本地可以运行，所以大小要比较小，内存占用 < 16G
+- 使用自托管中文 LLM，例如 Qwen3.5-9B, 希望 macbook 本地可以运行，所以大小要比较小，内存占用 < 16G
 
 - Ollama 部署
