@@ -10,19 +10,17 @@
 
 ## 输出格式
 所有内容必须源自章节全文，不要复述上下文。返回 UTF-8 JSON（无额外字段）：
-```json
-{
-  "chapter": <int>,
-  "title": "<若原文缺失则生成5字内标题>",
-  "pov": "first-person | third-person | omniscient | multi-pov",
-  "beats": ["3~6 个剧情节拍，按时间顺序，每个 ≤25 字；大段内心独白注明'心理变化'"],
-  "mood": "tense | hopeful | somber | whimsical | neutral",
-  "synopsis": "80~120 字，描述事件起因→经过→结果",
-  "irreversible_flags": ["<flag_type>: <15字内原因>"]
-}
-```
+  {
+    "chapter": <int>,
+    "title": "<若原文缺失则生成5字内标题>",
+    "pov": "first-person | third-person | omniscient | multi-pov",
+    "beats": ["3~6 个剧情节拍，按时间顺序，每个 ≤25 字；大段内心独白注明'心理变化'"],
+    "mood": "tense | hopeful | somber | whimsical | neutral",
+    "synopsis": "80~120 字，描述事件起因→经过→结果",
+    "irreversible_flags": ["<flag_type>: <15字内原因>"]
+  }
 
 ## 规则
 1. `irreversible_flags` 的 flag_type 取值：`death|betrayal|identity|world_shift|binding|catastrophe`；无不可逆事件则返回空数组。
 2. `beats` 必须按时间顺序排列，每条不超过 25 字。
-3. 严格输出 JSON，不要添加额外解释。
+3. 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

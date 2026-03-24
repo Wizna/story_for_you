@@ -127,16 +127,13 @@ class RenderingLimits:
 class EndingPhaseTemperatures:
     """Temperature settings for each ending writer phase."""
 
-    inspiration: float = 0.55
     outline: float = 0.55
     draft: float = 0.65
-    revision: float = 0.35
     polish: float = 0.35
     resolution: float = 0.35
-    legacy: float = 0.7
 
     def __post_init__(self) -> None:
-        for phase in ("inspiration", "outline", "draft", "revision", "polish", "resolution", "legacy"):
+        for phase in ("outline", "draft", "polish", "resolution"):
             value = getattr(self, phase)
             if not 0.0 <= value <= 2.0:
                 raise ValueError(f"{phase} temperature must be between 0.0 and 2.0, got {value}")

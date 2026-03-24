@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import logging
 import re
 from dataclasses import dataclass, field
@@ -46,16 +45,21 @@ _MAX_BEAT_PARAGRAPHS = 4
 class EndingOutline:
     """续写大纲结构"""
 
-    theme: str = ""
+    core_theme: str = ""
     ending_direction: str = ""  # HE/BE/OE
+    emotional_tone: str = ""
     timeline: str = ""  # 时间跨度描述
     key_beats: list[str] = field(default_factory=list)
     emotional_arc: str = ""
     final_image: str = ""
+    key_resolution: str = ""
 
 
 class EndingWriter:
-    """多阶段续写器，模拟人类作者创作流程。"""
+    """多阶段续写器，模拟人类作者创作流程。
+
+    4 阶段流程：构思大纲 → 初稿写作 → 修订润色 → 伏笔检查
+    """
 
     def __init__(
         self,
@@ -70,36 +74,22 @@ class EndingWriter:
         self._hint_interpreter = HintInterpreter()
         temps = temperatures or EndingPhaseTemperatures()
         self._phase_llm_options = {
-            "inspiration": {"temperature": temps.inspiration, "no_think": True},
             "outline": {"temperature": temps.outline, "no_think": True},
             "draft": {"temperature": temps.draft},
-            "revision": {"temperature": temps.revision},
             "polish": {"temperature": temps.polish},
             "resolution": {"temperature": temps.resolution, "no_think": True},
-            "legacy": {"temperature": temps.legacy},
         }
         self._load_templates()
 
     def _load_templates(self) -> None:
-        """Load all stage templates with fallback to legacy template."""
-        try:
-            self.inspiration_template = load_template("ending_inspiration")
-            self.outline_template = load_template("ending_outline")
-            self.draft_template = load_template("ending_draft")
-            self.revision_template = load_template("ending_revision")
-            self.polish_template = load_template("ending_polish")
-            self.resolution_template = load_template("ending_resolution")
-            self._multi_stage_enabled = True
-        except FileNotFoundError:
-            self.legacy_template = load_template("ending")
-            self._multi_stage_enabled = False
-            logger.info("Multi-stage templates not found, using legacy single-stage mode")
+        """Load all stage templates."""
+        self.outline_template = load_template("ending_outline")
+        self.draft_template = load_template("ending_draft")
+        self.polish_template = load_template("ending_polish")
+        self.resolution_template = load_template("ending_resolution")
 
     def continue_story(self, text: str, context: StoryContext, hint: str = "") -> str:
-        """执行完整的多阶段续写流程。"""
-        if not self._multi_stage_enabled:
-            return self._legacy_continue(text, context, hint)
-
+        """执行完整的 4 阶段续写流程。"""
         style = context.writing_style
         context_block = format_context_sections(context.for_prompt(limits=self._limits))
         style_anchors = self._build_style_anchors(context)
@@ -107,63 +97,36 @@ class EndingWriter:
         hint_payload = directives.for_prompt()
 
         try:
-            inspiration = self._phase_inspiration(context, context_block, hint_payload)
-            outline = self._phase_outline(context, inspiration, hint_payload)
+            outline = self._phase_outline(context, context_block, hint_payload)
             if directives.ending_direction:
                 outline.ending_direction = directives.ending_direction
 
             draft = self._phase_draft(
                 context, outline, style, context_block, hint_payload, style_anchors
             )
-            revised = self._phase_revision(draft, style, context_block, hint_payload, style_anchors)
-            final = self._phase_polish(
-                revised, style, outline, context_block, hint_payload, style_anchors
+            polished = self._phase_polish(
+                draft, style, outline, context_block, hint_payload, style_anchors
             )
-            final = self._phase_resolution_review(final, context, context_block, style, hint_payload)
+            final = self._phase_resolution_review(polished, context, context_block, style, hint_payload)
 
             enforcer = StyleEnforcer(style)
             return enforcer.post_process(final)
         except (LLMError, GenerationError) as exc:
-            logger.warning("Multi-stage continuation failed, falling back to legacy: %s", exc)
-            return self._legacy_continue(text, context, hint)
+            logger.warning("Multi-stage continuation failed, falling back to simple draft: %s", exc)
+            return self._fallback_draft(context, style, context_block, hint_payload, style_anchors)
 
-    def _phase_inspiration(self, context: StoryContext, context_block: str, hint: str) -> dict:
-        """阶段1: 分析故事主题、情感基调、可能的结局方向。"""
+    def _phase_outline(self, context: StoryContext, context_block: str, hint: str) -> EndingOutline:
+        """阶段1: 分析主题、情感、方向，并规划具体大纲（合并原 inspiration + outline）。"""
         recent_events = self._format_recent_events(context)
         unresolved = self._format_unresolved(context)
-
-        prompt = fill_template(
-            self.inspiration_template,
-            context_block=context_block,
-            recent_events=recent_events,
-            unresolved_threads=unresolved,
-            hint=hint,
-        )
-
-        try:
-            response = self.llm.generate(prompt=prompt, options=self._phase_options("inspiration"))
-            result = load_json_response(response.content)
-            if result:
-                return result
-        except LLMError as exc:
-            logger.warning("Inspiration phase failed: %s", exc)
-
-        return {
-            "core_theme": "命运与抉择",
-            "emotional_tone": "沉稳",
-            "possible_endings": ["开放式结局"],
-            "recommended_direction": "OE",
-            "key_resolution": "核心冲突的自然收束",
-        }
-
-    def _phase_outline(self, context: StoryContext, inspiration: dict, hint: str) -> EndingOutline:
-        """阶段2: 基于灵感构思规划具体大纲。"""
         characters = self._format_main_characters(context)
         conflicts = self._format_conflicts(context)
 
         prompt = fill_template(
             self.outline_template,
-            inspiration=json.dumps(inspiration, ensure_ascii=False),
+            context_block=context_block,
+            recent_events=recent_events,
+            unresolved_threads=unresolved,
             characters=characters,
             conflicts=conflicts,
             hint=hint,
@@ -174,23 +137,27 @@ class EndingWriter:
             result = load_json_response(response.content)
             if result:
                 return EndingOutline(
-                    theme=result.get("theme", ""),
+                    core_theme=result.get("core_theme", ""),
                     ending_direction=result.get("ending_direction", "OE"),
+                    emotional_tone=result.get("emotional_tone", ""),
                     timeline=result.get("timeline", ""),
                     key_beats=result.get("key_beats", []),
                     emotional_arc=result.get("emotional_arc", ""),
                     final_image=result.get("final_image", ""),
+                    key_resolution=result.get("key_resolution", ""),
                 )
         except LLMError as exc:
             logger.warning("Outline phase failed: %s", exc)
 
         return EndingOutline(
-            theme="故事收束",
+            core_theme="命运与抉择",
             ending_direction="OE",
+            emotional_tone="沉稳",
             timeline="当天",
             key_beats=["情节推进", "情感转折", "结局揭示"],
             emotional_arc="平稳→高潮→释然",
             final_image="留白意象",
+            key_resolution="核心冲突的自然收束",
         )
 
     def _phase_draft(
@@ -202,7 +169,7 @@ class EndingWriter:
         hint: str,
         style_anchors: str,
     ) -> str:
-        """阶段3: 按大纲写作初稿，应用风格指南。"""
+        """阶段2: 按大纲写作初稿，应用风格指南。"""
         outline_text = self._format_outline(outline)
         style_guide = format_style_guide(style)
         style_samples = format_style_samples(style)
@@ -235,69 +202,36 @@ class EndingWriter:
         except LLMError as exc:
             logger.warning("Draft phase failed: %s", exc)
 
-        return f"[初稿生成失败] 基于大纲「{outline.theme}」的续写内容。"
-
-    def _phase_revision(
-        self,
-        draft: str,
-        style: WritingStyle | None,
-        context_block: str,
-        hint: str,
-        style_anchors: str,
-    ) -> str:
-        """阶段4: 检查并修订初稿，确保风格一致性。"""
-        style_guide = format_style_guide(style)
-        style_constraints = format_style_constraints(style)
-        characteristic_words = ", ".join(style.characteristic_words) if style and style.characteristic_words else ""
-        tone_markers = ", ".join(style.tone_markers) if style and style.tone_markers else ""
-        checklist = self._revision_checklist(style)
-
-        prompt = fill_template(
-            self.revision_template,
-            draft=draft,
-            style_guide=style_guide,
-            style_constraints=style_constraints,
-            characteristic_words=characteristic_words,
-            tone_markers=tone_markers,
-            checklist=checklist,
-            context_block=context_block or "(无上下文)",
-            hint=hint,
-            style_anchors=style_anchors,
-            banned_expressions=BANNED_EXPRESSIONS_PROMPT,
-        )
-
-        try:
-            response = self.llm.generate(prompt=prompt, options=self._phase_options("revision"))
-            content = response.content.strip()
-            if content:
-                return content
-        except LLMError as exc:
-            logger.warning("Revision phase failed: %s", exc)
-
-        return draft
+        return f"[初稿生成失败] 基于大纲「{outline.core_theme}」的续写内容。"
 
     def _phase_polish(
         self,
-        revised: str,
+        draft: str,
         style: WritingStyle | None,
         outline: EndingOutline,
         context_block: str,
         hint: str,
         style_anchors: str,
     ) -> str:
-        """阶段5: 最终润色，强化意象和情感。"""
+        """阶段3: 修订并润色初稿（合并原 revision + polish）。"""
         style_guide = format_style_guide(style)
         style_samples = format_style_samples(style)
         style_constraints = format_style_constraints(style)
+        characteristic_words = ", ".join(style.characteristic_words) if style and style.characteristic_words else ""
+        tone_markers = ", ".join(style.tone_markers) if style and style.tone_markers else ""
+        checklist = self._revision_checklist(style)
 
         prompt = fill_template(
             self.polish_template,
-            revised_content=revised,
+            draft=draft,
             final_image=outline.final_image or "自然意象",
             emotional_arc=outline.emotional_arc or "情感收束",
             style_guide=style_guide,
             style_samples=style_samples,
             style_constraints=style_constraints,
+            characteristic_words=characteristic_words,
+            tone_markers=tone_markers,
+            checklist=checklist,
             context_block=context_block or "(无上下文)",
             hint=hint,
             beat_constraints=self._draft_paragraph_plan(outline),
@@ -313,7 +247,7 @@ class EndingWriter:
         except LLMError as exc:
             logger.warning("Polish phase failed: %s", exc)
 
-        return revised
+        return draft
 
     def _phase_resolution_review(
         self,
@@ -323,7 +257,7 @@ class EndingWriter:
         style: WritingStyle | None,
         hint: str,
     ) -> str:
-        """阶段6: 校验伏笔收束情况，必要时补写桥段。"""
+        """阶段4: 校验伏笔收束情况，必要时补写桥段。"""
         threads = self._collect_unresolved_threads(context)
         if not threads:
             return polished
@@ -398,7 +332,7 @@ class EndingWriter:
 
     def _format_outline(self, outline: EndingOutline) -> str:
         lines = [
-            f"主题: {outline.theme}",
+            f"主题: {outline.core_theme}",
             f"结局方向: {outline.ending_direction}",
             f"时间跨度: {outline.timeline}",
             f"情感曲线: {outline.emotional_arc}",
@@ -568,7 +502,7 @@ class EndingWriter:
         results: list[str] = []
         for part in parts:
             sentence = part.strip()
-            if sentence.startswith('"') or sentence.startswith('"') or '："' in sentence:
+            if sentence.startswith('"') or sentence.startswith('\u201c') or '：\u201c' in sentence:
                 continue
             if sentence.startswith("…") or sentence.startswith("。"):
                 continue
@@ -590,29 +524,39 @@ class EndingWriter:
     def _phase_options(self, phase: str) -> dict | None:
         return self._phase_llm_options.get(phase)
 
-    # Legacy fallback --------------------------------------------------------
+    # Fallback ---------------------------------------------------------------
 
-    def _legacy_continue(self, text: str, context: StoryContext, hint: str) -> str:
-        context_block = format_context_sections(context.for_prompt(limits=self._limits))
-        recent_segments = self._recent_segment_digest(context)
-        directives = self._hint_interpreter.interpret(hint, context)
-        prompt = fill_template(
-            self.legacy_template,
-            context_block=context_block,
-            recent_segments=recent_segments,
-            hint=directives.for_prompt(),
+    def _fallback_draft(
+        self,
+        context: StoryContext,
+        style: WritingStyle | None,
+        context_block: str,
+        hint: str,
+        style_anchors: str,
+    ) -> str:
+        """Simplified single-call fallback using the draft template."""
+        outline = EndingOutline(
+            core_theme="故事收束",
+            ending_direction="OE",
+            timeline="当天",
+            key_beats=["情节推进", "情感转折", "结局揭示"],
+            emotional_arc="平稳→高潮→释然",
+            final_image="留白意象",
+            key_resolution="核心冲突的自然收束",
         )
+
         try:
-            response = self.llm.generate(prompt=prompt, options=self._phase_options("legacy"))
-            content = response.content.strip()
-            if content:
-                enforcer = StyleEnforcer(context.writing_style)
+            content = self._phase_draft(context, outline, style, context_block, hint, style_anchors)
+            if content and not content.startswith("[初稿生成失败]"):
+                enforcer = StyleEnforcer(style)
                 return enforcer.post_process(content)
         except LLMError as exc:
-            logger.warning("Ending continuation failed, falling back to heuristic ending: %s", exc)
-        return self._fallback(context, hint)
+            logger.warning("Fallback draft also failed: %s", exc)
 
-    def _fallback(self, context: StoryContext, hint: str) -> str:
+        return self._heuristic_ending(context, hint)
+
+    def _heuristic_ending(self, context: StoryContext, hint: str) -> str:
+        """Last-resort heuristic ending when all LLM calls fail."""
         last_summary = context.chapter_window[-1] if context.chapter_window else None
         recent_events = context.events[-3:]
         tone = context.story_state.world_tension if context.story_state else "medium"

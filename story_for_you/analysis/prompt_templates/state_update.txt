@@ -9,19 +9,17 @@
 3. **上下文摘要**：`{{recent_context}}`
 
 ## 输出格式
-```json
-{
-  "current_arc": "setup | journey | twist | climax | dark-night | resolution",
-  "world_tension": "low | medium | high",
-  "major_conflicts": ["正在进行的矛盾/任务，含人物誓言/仇恨（明确谁 vs 谁）"],
-  "time_constraints": ["deadline/限时诅咒/婚期等"],
-  "unresolved_events": ["尚未收尾的承诺/伏笔/债务，每条 ≤20 字"]
-}
-```
+  {
+    "current_arc": "setup | journey | twist | climax | dark-night | resolution",
+    "world_tension": "low | medium | high",
+    "major_conflicts": ["正在进行的矛盾/任务，含人物誓言/仇恨（明确谁 vs 谁）"],
+    "time_constraints": ["deadline/限时诅咒/婚期等"],
+    "unresolved_events": ["尚未收尾的承诺/伏笔/债务，每条 ≤20 字"]
+  }
 
 ## 规则
 1. 输入事件为空时，延用上一帧的 `current_arc` 和 `world_tension`。
 2. 冲突或 setback 事件 → `world_tension` 至少 `medium`。
 3. `major_conflicts` 3~5 条；`time_constraints` 0~3 条。
 4. `unresolved_events` 仅当事件明确解决才移除，进入 resolution 时清理已解决事项；列表最多 5 项。
-5. 严格输出 JSON，不要添加额外解释。
+5. 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

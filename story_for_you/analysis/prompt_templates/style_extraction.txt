@@ -13,27 +13,25 @@
 
 ## 输出格式
 返回 UTF-8 JSON，字段含义见 inline 注释（实际输出不要带注释）：
-```json
-{
-  "avg_sentence_length": 25,
-  "sentence_variety": "uniform | varied | mixed",
-  "paragraph_density": "sparse | medium | dense",
-  "register": "literary | colloquial | classical | mixed",
-  "characteristic_words": ["≤8 个，须在原文中出现 3 次以上"],
-  "idiom_frequency": "none | sparse | moderate | heavy",
-  "metaphor_style": "比喻类型概括",
-  "description_focus": ["landscape | psychological | action"],
-  "parallelism_use": "rare | occasional | frequent",
-  "tone_markers": ["语气词，如 呢/吧/罢"],
-  "narrator_style": "detached | intimate | intrusive",
-  "representative_samples": [
-    {"source_chapter": 1, "content": "≤50 字原文片段", "style_notes": "风格说明"}
-  ],
-  "style_summary": "100-150 字中文风格总结，可直接用于指导文本生成"
-}
-```
+  {
+    "avg_sentence_length": 25,
+    "sentence_variety": "uniform | varied | mixed",
+    "paragraph_density": "sparse | medium | dense",
+    "register": "literary | colloquial | classical | mixed",
+    "characteristic_words": ["≤8 个，须在原文中出现 3 次以上"],
+    "idiom_frequency": "none | sparse | moderate | heavy",
+    "metaphor_style": "比喻类型概括",
+    "description_focus": ["landscape | psychological | action"],
+    "parallelism_use": "rare | occasional | frequent",
+    "tone_markers": ["语气词，如 呢/吧/罢"],
+    "narrator_style": "detached | intimate | intrusive",
+    "representative_samples": [
+      {"source_chapter": 1, "content": "≤50 字原文片段", "style_notes": "风格说明"}
+    ],
+    "style_summary": "100-150 字中文风格总结，可直接用于指导文本生成"
+  }
 
 ## 要点
 1. `characteristic_words` 和 `representative_samples`（≤3 个）必须从原文提取。
 2. `style_summary` 应简洁有力，适合作为写作指导。
-3. 严格输出 JSON，不要添加额外解释。
+3. 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

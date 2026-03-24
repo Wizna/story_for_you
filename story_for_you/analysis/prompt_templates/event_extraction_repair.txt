@@ -1,12 +1,11 @@
-You produced malformed JSON during the story event extraction task. Convert the
-invalid output below into a syntactically valid JSON array of PlotEvent objects.
+你在提取剧情事件时生成了无效 JSON。请将下列错误输出修正为合法的 JSON 数组。
 
-Schema: each element is `{ event_id: string, chapter: int, type: string ("progress"|"setback"|"reveal"|"conflict"), participants: string[], summary: string, impact: { power_shifts: {string: string}, relation_changes: {string: string}, world_flags: string[] }, is_irreversible: bool }`. Supply sensible defaults for missing fields (empty list, false, etc.). Preserve the language/tone of the original descriptions.
+格式：每个元素为 { event_id: string, chapter: int, type: "progress"|"setback"|"reveal"|"conflict", participants: string[], summary: string, impact: { power_shifts: {string: string}, relation_changes: {string: string}, world_flags: string[] }, is_irreversible: bool }。缺失字段用合理默认值补齐（空数组、false 等）。保持原文描述的语言和风格。
 
-Reason the previous output was rejected:
+拒绝原因：
 {{error_message}}
 
-Invalid output to fix (truncated if necessary):
+待修正输出（可能已截断）：
 {{invalid_output}}
 
-Return ONLY the corrected JSON array — no code fences, no commentary.
+严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

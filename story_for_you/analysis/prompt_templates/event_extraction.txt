@@ -17,23 +17,21 @@
 
 ## 输出格式
 返回 JSON 数组（可为空），`participants` 须使用角色清单中的主名（别名映射回主名）：
-```json
-{
-  "event_id": "CH{{chapter_no}}-E01",
-  "chapter": {{chapter_no}},
-  "type": "conflict | reveal | progress | setback",
-  "participants": ["主名"],
-  "summary": "<= 60 字，描述事件影响而非引用原文",
-  "impact": {
-    "power_shifts": {"角色": "变化"},
-    "relation_changes": {"角色A-角色B": "变化"},
-    "world_flags": ["世界/势力层面标记"]
-  },
-  "is_irreversible": true | false
-}
-```
+  {
+    "event_id": "CH{{chapter_no}}-E01",
+    "chapter": {{chapter_no}},
+    "type": "conflict | reveal | progress | setback",
+    "participants": ["主名"],
+    "summary": "<= 60 字，描述事件影响而非引用原文",
+    "impact": {
+      "power_shifts": {"角色": "变化"},
+      "relation_changes": {"角色A-角色B": "变化"},
+      "world_flags": ["世界/势力层面标记"]
+    },
+    "is_irreversible": true | false
+  }
 
 ## 规则
 1. `event_id` 序号从 E01 递增；`impact` 各子字段允许为空对象/空数组。
 2. 无法确认是否不可逆时，标记 `false` 并在 `world_flags` 写 `"needs_follow_up"`。
-3. 严格输出 JSON，不要添加额外解释。
+3. 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。
