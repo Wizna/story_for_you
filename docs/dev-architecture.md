@@ -716,7 +716,7 @@ class LLMProvider(ABC):
 ```
 
 ```python
-# llm/ollama.py
+# llm/ollama.py (本地备选)
 class OllamaProvider(LLMProvider):
     def __init__(self, model: str = "qwen3.5:9b",
                  base_url: str = "http://localhost:11434"):
@@ -1039,7 +1039,7 @@ story style novel.txt --context analysis.json --inject
 
 ```bash
 story --config config.yaml <command> ...  # 指定配置文件
-story --model qwen3.5:9b ...     # 指定模型
+story --model deepseek-v4-pro ...     # 指定模型
 story --verbose ...                        # 详细输出
 ```
 
@@ -1083,11 +1083,12 @@ story cache status
 ```yaml
 # LLM 配置
 llm:
-  provider: ollama              # ollama | openai
-  model: qwen3.5:9b
-  base_url: http://localhost:11434
+  provider: openai                # openai (默认) | ollama
+  model: deepseek-v4-pro
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY   # 从此环境变量读取 API Key
   temperature: 0.7
-  max_tokens: 4096
+  max_tokens: 32768
   seed: 42                      # 固定种子保证可复现
 
 # 文本处理配置
@@ -1257,30 +1258,31 @@ story = "story_for_you.cli.main:app"
 ### 9.1 前置条件
 
 1. Python 3.12+
-2. Ollama 已安装并运行
-3. Qwen3.5:9b 模型已下载
+2. DeepSeek API Key（默认后端）或 Ollama（本地备选）
 
 ### 9.2 安装步骤
 
 ```bash
-# 1. 安装 Ollama (macOS)
-brew install ollama
-
-# 2. 启动 Ollama 服务
-ollama serve
-
-# 3. 下载模型
-ollama pull qwen3.5:9b
-
-# 4. 克隆项目
+# 1. 克隆项目
 git clone <repo>
 cd story_for_you
 
-# 5. 安装依赖
+# 2. 安装依赖
 uv sync --dev
 
-# 6. 验证安装
+# 3. 配置 API Key
+export STORY_LLM__API_KEY=sk-xxx
+
+# 4. 验证安装
 uv run story --help
+
+# （可选）使用本地 Ollama
+# brew install ollama
+# ollama serve
+# ollama pull qwen3.5:9b
+# export STORY_LLM__PROVIDER=ollama
+# export STORY_LLM__MODEL=qwen3.5:9b
+# export STORY_LLM__BASE_URL=http://localhost:11434
 ```
 
 ---
@@ -1295,12 +1297,12 @@ uv run story --help
 
 ---
 
-## 11. LLM 推理策略（Ollama + Qwen3.5）
+## 11. LLM 推理策略（DeepSeek API / Ollama）
 
 ### 11.1 Provider 生命周期
 
-- CLI 入口通过 `_build_llm(settings)` 构造单例 `OllamaProvider`，再把同一个实例注入 `StoryAnalyzer` 与四个核心业务，确保一次命令只建立一个 HTTP client，避免本地 Ollama 端口被短时间打爆。
-- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/timeout/seed`，默认指向 `http://localhost:11434` 与 `qwen3.5:9b`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
+- CLI 入口通过 `_build_llm(settings)` 构造单例 Provider，再把同一个实例注入 `StoryAnalyzer` 与四个核心业务，确保一次命令只建立一个 HTTP client。
+- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/timeout/seed`，默认指向 `https://api.deepseek.com` 与 `deepseek-v4-pro`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 
 ```python
@@ -1372,7 +1374,8 @@ payload = load_json_response(response.content)
 
 | 症状 | 可能原因 | 排查步骤 |
 | ---- | -------- | -------- |
-| `RuntimeError: Ollama request failed` | 本地 `ollama serve` 未启动或模型未下载 | `curl http://localhost:11434/api/tags` 验证服务；`ollama pull qwen3.5:9b` |
+| `ConfigurationError: api_key is required` | 未设置 DeepSeek API Key | `export STORY_LLM__API_KEY=sk-xxx` |
+| `LLMConnectionError: Failed to connect` | API 不可达或网络问题 | 检查网络连接；若用 Ollama 确认 `ollama serve` 已启动 |
 | 结果不复现 | 使用旧缓存或变更了配置 | 加 `--reanalyze`，确认 `StoryContext.metadata.config_fingerprint` 更新 |
 | 筛选结果空白 | 角色别名未登记 | 检查 `StoryContext.characters[name].aliases`，必要时在分析阶段补充 |
 

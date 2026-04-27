@@ -11,17 +11,17 @@ import yaml
 
 @dataclass
 class LLMSettings:
-    provider: str = "ollama"
-    model: str = "qwen3.5:9b"
-    base_url: str = "http://localhost:11434"
+    provider: str = "openai"
+    model: str = "deepseek-v4-pro"
+    base_url: str = "https://api.deepseek.com"
     temperature: float = 0.7
     top_p: float = 0.9
     top_k: int = 40
     repeat_penalty: float = 1.1
-    max_tokens: int = 4096
+    max_tokens: int = 32768
     timeout: float = 300.0
     seed: int = 42
-    api_key: str = ""
+    api_key_env: str = "DEEPSEEK_API_KEY"
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.temperature <= 2.0:

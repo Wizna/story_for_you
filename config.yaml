@@ -1,4 +1,5 @@
 llm:
-  model: qwen3.5:9b
+  model: deepseek-v4-pro
+  api_key_env: DEEPSEEK_API_KEY
   max_tokens: 32768
   timeout: 600

@@ -27,18 +27,18 @@ uv run story --help
 
 - Python 3.11+
 - LLM 后端（二选一）：
-  - **本地**：[Ollama](https://ollama.ai/) 运行于 `localhost:11434`（默认）
-  - **云端**：任何 OpenAI 兼容 API（DeepSeek、OpenAI、Groq、Together、Mistral 等）
+  - **云端**：DeepSeek API（默认，需要 API Key）
+  - **本地**：[Ollama](https://ollama.ai/) 运行于 `localhost:11434`
 
 ```bash
-# 方式一：本地 Ollama
-ollama pull qwen3.5:9b
+# 方式一：云端 DeepSeek API（默认）
+export DEEPSEEK_API_KEY=sk-xxx
 
-# 方式二：云端 API（以 DeepSeek 为例）
-export STORY_LLM__PROVIDER=openai
-export STORY_LLM__MODEL=deepseek-chat
-export STORY_LLM__BASE_URL=https://api.deepseek.com
-export STORY_LLM__API_KEY=sk-xxx
+# 方式二：本地 Ollama
+export STORY_LLM__PROVIDER=ollama
+export STORY_LLM__MODEL=qwen3.5:9b
+export STORY_LLM__BASE_URL=http://localhost:11434
+ollama pull qwen3.5:9b
 ```
 
 ## 快速开始
@@ -131,16 +131,17 @@ uv run story cache clear   # 清空所有缓存
 ### 环境变量
 
 ```bash
-# 通用设置
+# DeepSeek（默认）— 只需设置对应的 API Key 环境变量
+export DEEPSEEK_API_KEY="sk-xxx"
+
+# 切换到 OpenAI — 修改 config.yaml 后设置对应 Key
+# config.yaml: api_key_env: OPENAI_API_KEY
+export OPENAI_API_KEY="sk-xxx"
+
+# 切换到本地 Ollama
+export STORY_LLM__PROVIDER="ollama"
 export STORY_LLM__MODEL="qwen3.5:9b"
 export STORY_LLM__BASE_URL="http://localhost:11434"
-export STORY_LLM__TEMPERATURE="0.7"
-
-# 使用云端 API（OpenAI 兼容）
-export STORY_LLM__PROVIDER="openai"        # 默认为 "ollama"
-export STORY_LLM__API_KEY="sk-xxx"         # 仅 openai provider 需要
-export STORY_LLM__MODEL="deepseek-chat"
-export STORY_LLM__BASE_URL="https://api.deepseek.com"
 ```
 
 ### 配置文件
@@ -149,10 +150,11 @@ export STORY_LLM__BASE_URL="https://api.deepseek.com"
 
 ```yaml
 llm:
-  model: qwen3.5:9b
-  base_url: http://localhost:11434
+  model: deepseek-v4-pro
+  base_url: https://api.deepseek.com
+  api_key_env: DEEPSEEK_API_KEY   # 从此环境变量读取 API Key
   temperature: 0.7
-  max_tokens: 8192
+  max_tokens: 32768
 
 parser:
   chunk_size: 4000
@@ -189,7 +191,7 @@ Indexer Layer
     SegmentIndexService, SegmentRetriever, CharacterTagger
          │
 LLM Abstraction Layer
-    LLMProvider (抽象) → OllamaProvider (默认) / OpenAICompatibleProvider (云端 API)
+    LLMProvider (抽象) → OpenAICompatibleProvider (默认, DeepSeek API) / OllamaProvider (本地备选)
          │
 Infrastructure
     TextSplitter, Config (Pydantic + YAML), ContextStore (缓存), ProgressStore (断点续传)

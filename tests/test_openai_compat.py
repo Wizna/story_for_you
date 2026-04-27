@@ -214,26 +214,35 @@ class TestErrorMapping:
 class TestFactory:
     def test_missing_api_key_raises_configuration_error(self):
         settings = Settings()
-        settings.llm.provider = "openai"
-        settings.llm.api_key = ""
+        settings.llm.api_key_env = ""
         with pytest.raises(ConfigurationError, match="api_key is required"):
             build_llm(settings)
 
-    def test_build_llm_uses_settings_provider(self):
-        """Verify the bugfix: build_llm now reads settings.llm.provider."""
+    def test_api_key_env_resolves_from_environment(self, monkeypatch):
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-env")
         settings = Settings()
-        settings.llm.provider = "openai"
-        settings.llm.api_key = "sk-test"
+        settings.llm.api_key_env = "DEEPSEEK_API_KEY"
+        provider = build_llm(settings)
+        assert isinstance(provider, OpenAICompatibleProvider)
+        assert provider.api_key == "sk-from-env"
+
+    def test_missing_api_key_env_error_shows_env_name(self):
+        settings = Settings()
+        settings.llm.api_key_env = "MY_CUSTOM_KEY"
+        with pytest.raises(ConfigurationError, match="MY_CUSTOM_KEY"):
+            build_llm(settings)
+
+    def test_build_llm_uses_settings_provider(self, monkeypatch):
+        """Verify build_llm reads settings.llm.provider (default is now openai)."""
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-test")
+        settings = Settings()
         settings.llm.base_url = "https://api.example.com"
-        # Should not raise — it should use "openai" from settings, not default to "ollama".
         provider = build_llm(settings)
         assert isinstance(provider, OpenAICompatibleProvider)
 
     def test_build_llm_explicit_provider_overrides_settings(self):
         settings = Settings()
-        settings.llm.provider = "openai"
-        settings.llm.api_key = "sk-test"
-        # Explicit provider="ollama" should override settings.llm.provider.
+        # Explicit provider="ollama" should override the default openai provider.
         from story_for_you.llm.ollama import OllamaProvider
         provider = build_llm(settings, provider="ollama")
         assert isinstance(provider, OllamaProvider)

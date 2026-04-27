@@ -5,6 +5,7 @@ Provides a centralized way to construct LLM providers from configuration setting
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING, Any, Callable, Dict
 
 from story_for_you.exceptions import ConfigurationError
@@ -49,10 +50,11 @@ def _build_openai_compat_provider(settings: Settings) -> "LLMProvider":
     """Build an OpenAICompatibleProvider from settings."""
     from story_for_you.llm.openai_compat import OpenAICompatibleProvider
 
-    if not settings.llm.api_key:
+    api_key = os.environ.get(settings.llm.api_key_env, "") if settings.llm.api_key_env else ""
+    if not api_key:
         raise ConfigurationError(
-            "api_key is required for the openai provider. "
-            "Set STORY_LLM__API_KEY environment variable."
+            f"api_key is required for the openai provider. "
+            f"Set {settings.llm.api_key_env or 'api_key_env in config.yaml'} environment variable."
         )
     options: Dict[str, Any] = {
         "temperature": settings.llm.temperature,
@@ -64,7 +66,7 @@ def _build_openai_compat_provider(settings: Settings) -> "LLMProvider":
     return OpenAICompatibleProvider(
         model=settings.llm.model,
         base_url=settings.llm.base_url,
-        api_key=settings.llm.api_key,
+        api_key=api_key,
         timeout=settings.llm.timeout,
         options=options,
     )
