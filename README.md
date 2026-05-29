@@ -130,19 +130,22 @@ uv run story cache clear   # 清空所有缓存
 
 ### 环境变量
 
+API Key 通过 `config.yaml` 中的 `api_key_env` 指定环境变量名，系统自动读取：
+
 ```bash
-# DeepSeek（默认）— 只需设置对应的 API Key 环境变量
+# DeepSeek（默认）— config.yaml 已配置 api_key_env: DEEPSEEK_API_KEY
 export DEEPSEEK_API_KEY="sk-xxx"
 
-# 切换到 OpenAI — 修改 config.yaml 后设置对应 Key
-# config.yaml: api_key_env: OPENAI_API_KEY
+# 切换到 OpenAI — 修改 config.yaml 中 model/base_url/api_key_env 后：
 export OPENAI_API_KEY="sk-xxx"
 
-# 切换到本地 Ollama
+# 切换到本地 Ollama（无需 API Key）
 export STORY_LLM__PROVIDER="ollama"
 export STORY_LLM__MODEL="qwen3.5:9b"
 export STORY_LLM__BASE_URL="http://localhost:11434"
 ```
+
+其他 LLM 参数也可通过 `STORY_LLM__*` 环境变量覆盖 `config.yaml` 中的值。
 
 ### 配置文件
 
@@ -150,11 +153,18 @@ export STORY_LLM__BASE_URL="http://localhost:11434"
 
 ```yaml
 llm:
+  # DeepSeek（默认配置）
+  provider: openai
   model: deepseek-v4-pro
   base_url: https://api.deepseek.com
   api_key_env: DEEPSEEK_API_KEY   # 从此环境变量读取 API Key
   temperature: 0.7
   max_tokens: 32768
+
+  # 切换到 OpenAI 只需改这三行：
+  # model: gpt-4o
+  # base_url: https://api.openai.com
+  # api_key_env: OPENAI_API_KEY
 
 parser:
   chunk_size: 4000
@@ -170,6 +180,10 @@ cache:
 ```bash
 uv run story analyze novel.txt --config config.yaml
 ```
+
+默认 provider 使用 DeepSeek 的 OpenAI-compatible Chat API。结构化抽取场景会自动把内部
+`no_think` 选项转换为 DeepSeek 支持的 `thinking: {"type": "disabled"}`，以减少推理内容对
+JSON 输出的干扰；其他 OpenAI 兼容服务不会收到这个 DeepSeek 专用参数。
 
 ## 技术架构
 

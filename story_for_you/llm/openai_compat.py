@@ -54,7 +54,7 @@ class OpenAICompatibleProvider(LLMProvider):
     ) -> LLMResponse:
         payload = self._build_payload(prompt, system, stream=False, call_options=options)
         try:
-            response = self._client.post("/v1/chat/completions", json=payload)
+            response = self._client.post(self._chat_completions_path(), json=payload)
             response.raise_for_status()
         except httpx.TimeoutException as exc:
             raise LLMTimeoutError(f"Request timed out: {exc}") from exc
@@ -91,7 +91,7 @@ class OpenAICompatibleProvider(LLMProvider):
         try:
             with self._client.stream(
                 "POST",
-                "/v1/chat/completions",
+                self._chat_completions_path(),
                 json=payload,
             ) as response:
                 response.raise_for_status()
@@ -142,10 +142,13 @@ class OpenAICompatibleProvider(LLMProvider):
                 {k: v for k, v in call_options.items() if v is not None}
             )
 
-        # Pop no_think before building payload; append directive to user content for Qwen models.
+        # Pop no_think before building payload; translate it for providers that
+        # expose an explicit thinking switch.
         no_think = merged.pop("no_think", False)
         if no_think and "qwen" in self.model.lower():
             prompt = prompt + "\n\n/no_think"
+        elif no_think and self._is_deepseek_endpoint():
+            merged.setdefault("thinking", {"type": "disabled"})
 
         messages: list[dict[str, str]] = []
         if system:
@@ -159,12 +162,29 @@ class OpenAICompatibleProvider(LLMProvider):
         }
 
         # Map well-known option keys to top-level API parameters.
-        _TOP_LEVEL_KEYS = {"temperature", "max_tokens", "seed", "top_p", "frequency_penalty", "presence_penalty"}
+        _TOP_LEVEL_KEYS = {
+            "temperature",
+            "max_tokens",
+            "seed",
+            "top_p",
+            "frequency_penalty",
+            "presence_penalty",
+            "thinking",
+            "response_format",
+        }
         for key in _TOP_LEVEL_KEYS:
             if key in merged:
                 payload[key] = merged.pop(key)
 
         return payload
+
+    def _is_deepseek_endpoint(self) -> bool:
+        return "deepseek.com" in self.base_url.lower()
+
+    def _chat_completions_path(self) -> str:
+        if self._is_deepseek_endpoint():
+            return "/chat/completions"
+        return "/v1/chat/completions"
 
     @staticmethod
     def _map_status_error(exc: httpx.HTTPStatusError) -> Exception:

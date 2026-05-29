@@ -87,6 +87,18 @@ class TestGenerate:
         assert resp.content == "Hi there!"
         assert resp.tokens_used == 42
 
+    def test_deepseek_generate_uses_official_chat_path(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == "/chat/completions"
+            return httpx.Response(200, json=_ok_response())
+
+        p = _provider(
+            _make_transport(handler),
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-pro",
+        )
+        p.generate("Say hi")
+
     def test_system_prompt_included(self):
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)
@@ -123,6 +135,29 @@ class TestGenerate:
         )
         # Call-level options override instance options.
         p.generate("test", options={"temperature": 0.5})
+
+    def test_deepseek_no_think_disables_thinking(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert body["thinking"] == {"type": "disabled"}
+            return httpx.Response(200, json=_ok_response())
+
+        p = _provider(
+            _make_transport(handler),
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-pro",
+        )
+        p.generate("return json", options={"no_think": True})
+
+    def test_no_think_not_sent_to_generic_openai_endpoint(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert "thinking" not in body
+            assert "no_think" not in body
+            return httpx.Response(200, json=_ok_response())
+
+        p = _provider(_make_transport(handler), base_url="https://api.example.com")
+        p.generate("return json", options={"no_think": True})
 
     def test_auth_header_present(self):
         def handler(request: httpx.Request) -> httpx.Response:

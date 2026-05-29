@@ -1271,7 +1271,7 @@ cd story_for_you
 uv sync --dev
 
 # 3. 配置 API Key
-export STORY_LLM__API_KEY=sk-xxx
+export DEEPSEEK_API_KEY=sk-xxx
 
 # 4. 验证安装
 uv run story --help
@@ -1289,7 +1289,7 @@ uv run story --help
 
 ## 10. 后续扩展点
 
-- [ ] 支持 OpenAI API 兼容接口
+- [ ] 扩展更多 OpenAI-compatible API 预设（OpenAI、Groq、Together 等）
 - [ ] Web UI（v0.2）
 - [ ] 进度条显示
 - [ ] 分析结果可视化（人物关系图）
@@ -1302,7 +1302,8 @@ uv run story --help
 ### 11.1 Provider 生命周期
 
 - CLI 入口通过 `_build_llm(settings)` 构造单例 Provider，再把同一个实例注入 `StoryAnalyzer` 与四个核心业务，确保一次命令只建立一个 HTTP client。
-- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/timeout/seed`，默认指向 `https://api.deepseek.com` 与 `deepseek-v4-pro`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
+- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/timeout/seed`，默认使用 `openai` provider，指向 `https://api.deepseek.com` 与 `deepseek-v4-pro`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
+- `OpenAICompatibleProvider` 默认请求 `/v1/chat/completions`；当 `base_url` 是 DeepSeek 官方域名时，请求官方 OpenAI-compatible 路径 `/chat/completions`。分析抽取类调用传入 `no_think=True` 时，会转换为 DeepSeek 支持的 `thinking: {"type": "disabled"}`，降低结构化 JSON 输出被思考内容污染的概率；非 DeepSeek API 不会收到该专用参数。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 
 ```python
@@ -1374,7 +1375,7 @@ payload = load_json_response(response.content)
 
 | 症状 | 可能原因 | 排查步骤 |
 | ---- | -------- | -------- |
-| `ConfigurationError: api_key is required` | 未设置 DeepSeek API Key | `export STORY_LLM__API_KEY=sk-xxx` |
+| `ConfigurationError: api_key is required` | 未设置 DeepSeek API Key | `export DEEPSEEK_API_KEY=sk-xxx` |
 | `LLMConnectionError: Failed to connect` | API 不可达或网络问题 | 检查网络连接；若用 Ollama 确认 `ollama serve` 已启动 |
 | 结果不复现 | 使用旧缓存或变更了配置 | 加 `--reanalyze`，确认 `StoryContext.metadata.config_fingerprint` 更新 |
 | 筛选结果空白 | 角色别名未登记 | 检查 `StoryContext.characters[name].aliases`，必要时在分析阶段补充 |
