@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from story_for_you.analysis.context import EventImpact, PlotEvent
+from story_for_you.analysis.context import CharacterState, EventImpact, PlotEvent
 from story_for_you.analysis.prompting import (
     clamp_text_middle,
     fill_template,
@@ -32,15 +32,12 @@ class EventExtractor:
     def extract(
         self,
         chapter_text: str,
-        participants: list[str],
+        participants: list[str] | list[CharacterState],
         chapter_no: int,
         recent_context: str,
     ) -> list[PlotEvent]:
         """Extract lasting events from the chapter text."""
-        roster = [
-            {"name": name, "aliases": []}
-            for name in sorted({participant for participant in participants if participant})
-        ]
+        roster, alias_map = self._build_roster(participants)
         recent_context_text = recent_context.strip() or "暂无历史上下文。"
         chapter_body = chapter_text.strip()
         prompt, truncated = render_prompt_with_budget(
@@ -55,8 +52,8 @@ class EventExtractor:
         if truncated:
             logger.debug("Event extraction prompt truncated to %s chars", len(prompt))
         response = self.llm.generate(prompt=prompt, options={"no_think": True})
-        allowed_participants = {item["name"] for item in roster}
-        events, error = self._parse_response(response.content, chapter_no, allowed_participants)
+        allowed_participants = set(alias_map)
+        events, error = self._parse_response(response.content, chapter_no, alias_map, allowed_participants)
         if events is not None:
             return events
 
@@ -64,7 +61,12 @@ class EventExtractor:
             logger.debug("Event extraction parse failed (%s). Attempting repair.", error)
         repaired_content = self._attempt_repair(response.content, error)
         if repaired_content:
-            events, repair_error = self._parse_response(repaired_content, chapter_no, allowed_participants)
+            events, repair_error = self._parse_response(
+                repaired_content,
+                chapter_no,
+                alias_map,
+                allowed_participants,
+            )
             if events is not None:
                 return events
             error = repair_error or error
@@ -77,7 +79,13 @@ class EventExtractor:
         )
         raise LLMResponseError(f"Event extraction failed after repair: {error or 'unknown parse failure'}")
 
-    def _from_payload(self, payload: Any, chapter_no: int, allowed_participants: set[str]) -> PlotEvent:
+    def _from_payload(
+        self,
+        payload: Any,
+        chapter_no: int,
+        alias_map: dict[str, str],
+        allowed_participants: set[str],
+    ) -> PlotEvent:
         for field_name in (
             "chapter",
             "type",
@@ -110,7 +118,7 @@ class EventExtractor:
                 raise LLMResponseError("Event participant names must be strings.")
             stripped = name.strip()
             if stripped:
-                participants.append(stripped)
+                participants.append(alias_map.get(stripped, stripped))
         unknown = sorted(set(participants) - allowed_participants)
         if unknown:
             raise LLMResponseError("Event participants must come from roster: " + ", ".join(unknown))
@@ -139,6 +147,7 @@ class EventExtractor:
         self,
         content: str | None,
         chapter_no: int,
+        alias_map: dict[str, str],
         allowed_participants: set[str],
     ) -> tuple[list[PlotEvent] | None, str | None]:
         """Attempt to parse structured events from the model output."""
@@ -158,7 +167,7 @@ class EventExtractor:
             if not isinstance(item, dict):
                 return None, f"Event payload at index {idx} is not an object."
             try:
-                events.append(self._from_payload(item, chapter_no, allowed_participants))
+                events.append(self._from_payload(item, chapter_no, alias_map, allowed_participants))
             except LLMResponseError as exc:
                 return None, str(exc)
         return events, None
@@ -193,6 +202,29 @@ class EventExtractor:
         if not text:
             raise LLMResponseError(f"Event {field_name} must not be empty.")
         return text
+
+    def _build_roster(
+        self,
+        participants: list[str] | list[CharacterState],
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        roster_by_name: dict[str, dict[str, Any]] = {}
+        alias_map: dict[str, str] = {}
+        for participant in participants:
+            if isinstance(participant, CharacterState):
+                name = participant.name.strip()
+                aliases = [alias.strip() for alias in participant.aliases if alias.strip()]
+            elif isinstance(participant, str):
+                name = participant.strip()
+                aliases = []
+            else:
+                raise LLMResponseError("Event roster entries must be strings or CharacterState objects.")
+            if not name:
+                continue
+            roster_by_name[name] = {"name": name, "aliases": sorted(set(aliases))}
+            alias_map[name] = name
+            for alias in aliases:
+                alias_map[alias] = name
+        return [roster_by_name[name] for name in sorted(roster_by_name)], alias_map
 
     def _attempt_repair(self, raw_response: str | None, error: str | None) -> str | None:
         """Ask the LLM to fix its malformed JSON response."""

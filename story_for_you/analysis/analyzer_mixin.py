@@ -117,8 +117,7 @@ class AnalyzerMixin:
         Returns the updated story state and the chapter summary.
         """
         characters = self.character_extractor.extract(chapter_text)
-        character_names = [character.name for character in characters]
-        relationships = self.relationship_mapper.map(chapter_text, character_names)
+        relationships = self.relationship_mapper.map(chapter_text, characters)
         recent_context = self._build_recent_context(chapter_no)
         chapter_meta = self._build_chapter_meta(chapter_no, chapter_text, story_state)
 
@@ -126,7 +125,7 @@ class AnalyzerMixin:
             chapter_text, chapter_no, recent_context, chapter_meta
         )
         events = self.event_extractor.extract(
-            chapter_text, character_names, chapter_no, recent_context
+            chapter_text, characters, chapter_no, recent_context
         )
         for event in events:
             event.chapter = chapter_no

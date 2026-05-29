@@ -4,14 +4,14 @@
 你是小说人物关系分析器。只根据本章正文判断给定人物之间是否发生了关系变化。
 
 ## 输入
-- **候选人物**：`{{character_roster}}`
+- **候选人物**：`{{character_roster}}`（JSON 数组，每项含 `name` 与 `aliases`）
 - **章节正文**：`{{chapter_text}}`
 
 ## 输出要求
 返回 UTF-8 JSON 数组（无注释、无额外字段）。每个元素表示一个有叙事意义的关系变化：
 {
-  "source": "人物名，必须来自候选人物",
-  "targets": ["目标人物名，必须来自候选人物"],
+  "source": "人物名，必须来自候选人物的 name 或 aliases",
+  "targets": ["目标人物名，必须来自候选人物的 name 或 aliases"],
   "relation_type": "关系类型，如亲人/恋慕/盟友/敌对/照料/误解/疏离/未知",
   "sentiment": "positive | neutral | negative",
   "description": "30字内说明变化依据"

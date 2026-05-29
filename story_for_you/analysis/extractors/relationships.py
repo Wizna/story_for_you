@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from story_for_you.analysis.context import Relationship
+from story_for_you.analysis.context import CharacterState, Relationship
 from story_for_you.analysis.prompting import fill_template, load_template
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
@@ -19,9 +19,9 @@ class RelationshipMapper:
         self.llm = llm
         self.template = load_template("relationship_extraction")
 
-    def map(self, chapter_text: str, characters: list[str] | None = None) -> list[Relationship]:
+    def map(self, chapter_text: str, characters: list[str] | list[CharacterState] | None = None) -> list[Relationship]:
         """Return relationship changes observed in the text."""
-        roster = [name for name in (characters or []) if name]
+        roster, alias_map = self._build_roster(characters or [])
         if not roster:
             return []
         prompt = fill_template(
@@ -33,10 +33,15 @@ class RelationshipMapper:
         payload = load_json_response(response.content)
         if not isinstance(payload, list):
             raise LLMResponseError("Relationship mapper response is not a JSON list.")
-        allowed = set(roster)
-        return [self._from_payload(item, allowed) for item in payload]
+        allowed = set(alias_map)
+        return [self._from_payload(item, alias_map, allowed) for item in payload]
 
-    def _from_payload(self, payload: Any, allowed_characters: set[str]) -> Relationship:
+    def _from_payload(
+        self,
+        payload: Any,
+        alias_map: dict[str, str],
+        allowed_characters: set[str],
+    ) -> Relationship:
         if not isinstance(payload, dict):
             raise LLMResponseError("Relationship item is not a JSON object.")
         for field_name in ("source", "targets", "relation_type", "sentiment", "description"):
@@ -49,15 +54,17 @@ class RelationshipMapper:
         unknown = sorted(({source} | set(targets)) - allowed_characters)
         if unknown:
             raise LLMResponseError("Relationship names must come from roster: " + ", ".join(unknown))
+        canonical_source = alias_map[source]
+        canonical_targets = [alias_map[target] for target in targets]
         sentiment = self._required_str(payload.get("sentiment"), "sentiment")
         if sentiment not in _VALID_SENTIMENTS:
             raise LLMResponseError(f"Invalid relationship sentiment: {sentiment!r}")
         return Relationship(
-            targets=targets,
+            targets=canonical_targets,
             relation_type=self._required_str(payload.get("relation_type"), "relation_type"),
             sentiment=sentiment,
             description=self._required_str(payload.get("description"), "description", allow_empty=True),
-            source=source,
+            source=canonical_source,
         )
 
     def _required_str(self, value: Any, field_name: str, *, allow_empty: bool = False) -> str:
@@ -79,3 +86,26 @@ class RelationshipMapper:
             if text:
                 items.append(text)
         return items
+
+    def _build_roster(
+        self,
+        characters: list[str] | list[CharacterState],
+    ) -> tuple[list[dict[str, Any]], dict[str, str]]:
+        roster_by_name: dict[str, dict[str, Any]] = {}
+        alias_map: dict[str, str] = {}
+        for character in characters:
+            if isinstance(character, CharacterState):
+                name = character.name.strip()
+                aliases = [alias.strip() for alias in character.aliases if alias.strip()]
+            elif isinstance(character, str):
+                name = character.strip()
+                aliases = []
+            else:
+                raise LLMResponseError("Relationship roster entries must be strings or CharacterState objects.")
+            if not name:
+                continue
+            roster_by_name[name] = {"name": name, "aliases": sorted(set(aliases))}
+            alias_map[name] = name
+            for alias in aliases:
+                alias_map[alias] = name
+        return [roster_by_name[name] for name in sorted(roster_by_name)], alias_map

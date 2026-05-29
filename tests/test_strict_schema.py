@@ -69,6 +69,23 @@ def test_event_extractor_requires_boolean_and_roster_names():
         EventExtractor(llm).extract("正文", ["翠翠"], 1, "")
 
 
+def test_event_extractor_accepts_explicit_aliases_from_roster():
+    llm = _FakeLLM(
+        '[{"event_id":"CH001-E01","chapter":1,"type":"progress","participants":["二老"],'
+        '"summary":"傩送回到渡口","impact":{"power_shifts":{},'
+        '"relation_changes":{},"world_flags":[]},"is_irreversible":false}]'
+    )
+
+    events = EventExtractor(llm).extract(
+        "正文",
+        [CharacterState(name="傩送", aliases=["二老"], role="main")],
+        1,
+        "",
+    )
+
+    assert events[0].participants == ["傩送"]
+
+
 def test_relationship_mapper_rejects_names_outside_roster():
     llm = _FakeLLM(
         '[{"source":"翠翠","targets":["陌生人"],"relation_type":"误会",'
@@ -77,6 +94,24 @@ def test_relationship_mapper_rejects_names_outside_roster():
 
     with pytest.raises(LLMResponseError, match="must come from roster"):
         RelationshipMapper(llm).map("正文", ["翠翠", "傩送"])
+
+
+def test_relationship_mapper_accepts_explicit_aliases_from_roster():
+    llm = _FakeLLM(
+        '[{"source":"二老","targets":["翠翠"],"relation_type":"恋慕",'
+        '"sentiment":"positive","description":"二人心意相关"}]'
+    )
+
+    relationships = RelationshipMapper(llm).map(
+        "正文",
+        [
+            CharacterState(name="傩送", aliases=["二老"], role="main"),
+            CharacterState(name="翠翠", role="main"),
+        ],
+    )
+
+    assert relationships[0].source == "傩送"
+    assert relationships[0].targets == ["翠翠"]
 
 
 def test_chapter_summarizer_requires_typed_list_items():
