@@ -12,6 +12,7 @@ from story_for_you.utils.json_utils import load_json_response
 logger = logging.getLogger(__name__)
 
 _MAX_STYLE_LIST_ITEMS = 8
+_STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
 
 
 class StyleExtractor:
@@ -121,7 +122,7 @@ class StyleExtractor:
 
     def _execute_and_parse(self, prompt: str) -> WritingStyle:
         """执行 LLM 调用并解析结果。"""
-        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
         return self._parse_response(response.content)
 
     def _parse_response(self, content: str) -> WritingStyle:

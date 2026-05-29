@@ -10,6 +10,8 @@ from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
 
 _VALID_SENTIMENTS = {"positive", "neutral", "negative"}
+_MAX_RELATIONSHIP_ATTEMPTS = 2
+_STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
 
 
 class RelationshipMapper:
@@ -29,12 +31,36 @@ class RelationshipMapper:
             chapter_text=chapter_text.strip(),
             character_roster=json.dumps(roster, ensure_ascii=False),
         )
-        response = self.llm.generate(prompt=prompt, options={"no_think": True})
-        payload = load_json_response(response.content)
-        if not isinstance(payload, list):
-            raise LLMResponseError("Relationship mapper response is not a JSON list.")
         allowed = set(alias_map)
-        return [self._from_payload(item, alias_map, allowed) for item in payload]
+        last_error: str | None = None
+        for attempt in range(1, _MAX_RELATIONSHIP_ATTEMPTS + 1):
+            response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+            relationships, error = self._parse_response(response.content, alias_map, allowed)
+            if relationships is not None:
+                return relationships
+            last_error = error
+            if attempt < _MAX_RELATIONSHIP_ATTEMPTS:
+                continue
+        raise LLMResponseError(f"Relationship extraction failed after retry: {last_error or 'unknown parse failure'}")
+
+    def _parse_response(
+        self,
+        content: str | None,
+        alias_map: dict[str, str],
+        allowed_characters: set[str],
+    ) -> tuple[list[Relationship] | None, str | None]:
+        if not content:
+            return None, "Empty response body."
+        payload = load_json_response(content)
+        if not isinstance(payload, list):
+            return None, "Relationship mapper response is not a JSON list."
+        relationships: list[Relationship] = []
+        for idx, item in enumerate(payload, start=1):
+            try:
+                relationships.append(self._from_payload(item, alias_map, allowed_characters))
+            except LLMResponseError as exc:
+                return None, f"Relationship payload at index {idx}: {exc}"
+        return relationships, None
 
     def _from_payload(
         self,

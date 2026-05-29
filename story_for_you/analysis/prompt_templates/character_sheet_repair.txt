@@ -1,0 +1,21 @@
+你在提取人物清单时生成了不符合合同的 JSON。请将下列输出修正为合法的 UTF-8 JSON 数组。
+
+每个元素必须是完整对象，且只包含这些字段：
+{
+  "name": string,
+  "aliases": string[],
+  "role": "main" | "support" | "minor",
+  "realm": string | null,
+  "personality": string[],
+  "unresolved": string[]
+}
+
+所有字段都必须出现。只能根据原输出中已有的信息和可确定含义修正；无法确定的数组字段写空数组，无法确定的 `realm` 写 null。不要新增原输出中不存在的人物，不要补造性格、关系或情节。
+
+拒绝原因：
+{{error_message}}
+
+待修正输出（可能已截断）：
+{{invalid_output}}
+
+严格输出 JSON 数组，不要包裹在代码块中，不要添加任何解释。

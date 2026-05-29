@@ -1,0 +1,25 @@
+你在生成章节摘要时输出了不符合合同的 JSON。请将下列输出修正为合法的 UTF-8 JSON 对象。
+
+对象必须完整包含且只包含这些字段：
+{
+  "chapter": int,
+  "title": string,
+  "pov": "first-person" | "third-person" | "omniscient" | "multi-pov" | "unknown",
+  "beats": string[],
+  "mood": "tense" | "hopeful" | "somber" | "whimsical" | "neutral" | "unknown",
+  "synopsis": string,
+  "irreversible_flags": string[]
+}
+
+`beats` 和 `irreversible_flags` 必须是字符串数组，不能包含对象、数字或布尔值。
+如果原输出中的 `irreversible_flags` 是对象数组，请只把其中明确已有的信息改写为
+`flag_type: 15字内原因` 形式的字符串；无明确不可逆事件则写空数组。
+不要新增原输出中没有的事件、人物或因果判断。
+
+拒绝原因：
+{{error_message}}
+
+待修正输出（可能已截断）：
+{{invalid_output}}
+
+严格输出 JSON 对象，不要包裹在代码块中，不要添加任何解释。

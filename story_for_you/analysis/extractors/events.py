@@ -18,6 +18,7 @@ from story_for_you.utils.json_utils import load_json_response
 logger = logging.getLogger(__name__)
 
 _REPAIR_SNIPPET_BUDGET = 4000
+_STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
 
 
 class EventExtractor:
@@ -51,7 +52,7 @@ class EventExtractor:
         )
         if truncated:
             logger.debug("Event extraction prompt truncated to %s chars", len(prompt))
-        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
         allowed_participants = set(alias_map)
         events, error = self._parse_response(response.content, chapter_no, alias_map, allowed_participants)
         if events is not None:
@@ -87,6 +88,7 @@ class EventExtractor:
         allowed_participants: set[str],
     ) -> PlotEvent:
         for field_name in (
+            "event_id",
             "chapter",
             "type",
             "participants",
@@ -236,5 +238,5 @@ class EventExtractor:
             error_message=error or "JSON parsing failed.",
             invalid_output=snippet,
         )
-        repaired = self.llm.generate(prompt=prompt, options={"no_think": True})
+        repaired = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
         return repaired.content

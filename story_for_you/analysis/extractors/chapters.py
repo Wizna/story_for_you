@@ -5,7 +5,12 @@ import logging
 from typing import Any
 
 from story_for_you.analysis.context import ChapterSummary
-from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
+from story_for_you.analysis.prompting import (
+    clamp_text_middle,
+    fill_template,
+    load_template,
+    render_prompt_with_budget,
+)
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
@@ -13,6 +18,13 @@ from story_for_you.utils.json_utils import load_json_response
 logger = logging.getLogger(__name__)
 
 _MAX_BEATS = 6
+_MAX_CHAPTER_ATTEMPTS = 2
+_REPAIR_SNIPPET_BUDGET = 4000
+_JSON_OBJECT_OPTIONS = {
+    "no_think": True,
+    "temperature": 0.1,
+    "response_format": {"type": "json_object"},
+}
 _VALID_POVS = {"first-person", "third-person", "omniscient", "multi-pov", "unknown"}
 _VALID_MOODS = {"tense", "hopeful", "somber", "whimsical", "neutral", "unknown"}
 
@@ -27,6 +39,7 @@ class ChapterSummarizer:
     def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
         self.llm = llm
         self.template = load_template("chapter_summary")
+        self.repair_template = load_template("chapter_summary_repair")
         self.prompt_budget = prompt_budget
 
     def summarize(
@@ -52,10 +65,37 @@ class ChapterSummarizer:
         )
         if truncated:
             logger.debug("Chapter summary prompt truncated to %s chars", len(prompt))
-        response = self.llm.generate(prompt=prompt, options={"no_think": True})
-        data = load_json_response(response.content)
+        last_error: str | None = None
+        for attempt in range(1, _MAX_CHAPTER_ATTEMPTS + 1):
+            response = self.llm.generate(prompt=prompt, options=_JSON_OBJECT_OPTIONS)
+            summary, error = self._parse_response(response.content)
+            if summary is not None:
+                return summary
+            last_error = error
+            if error:
+                logger.debug("Chapter summary parse failed (%s). Attempting repair.", error)
+            repaired_content = self._attempt_repair(response.content, error)
+            if repaired_content:
+                summary, repair_error = self._parse_response(repaired_content)
+                if summary is not None:
+                    return summary
+                last_error = repair_error or last_error
+            if attempt < _MAX_CHAPTER_ATTEMPTS:
+                logger.debug("Retrying chapter summary after schema failure: %s", last_error)
+        raise LLMResponseError(f"Chapter summary failed after retry: {last_error or 'unknown parse failure'}")
+
+    def _parse_response(self, content: str | None) -> tuple[ChapterSummary | None, str | None]:
+        if not content:
+            return None, "Empty response body."
+        data = load_json_response(content)
         if not isinstance(data, dict):
-            raise LLMResponseError("Chapter summary response is not a JSON object.")
+            return None, "Chapter summary response is not a JSON object."
+        try:
+            return self._from_payload(data), None
+        except LLMResponseError as exc:
+            return None, str(exc)
+
+    def _from_payload(self, data: dict[str, Any]) -> ChapterSummary:
         for field_name in ("chapter", "title", "pov", "beats", "mood", "synopsis", "irreversible_flags"):
             if field_name not in data:
                 raise LLMResponseError(f"Chapter summary response missing required field: {field_name}")
@@ -115,3 +155,16 @@ class ChapterSummarizer:
         if len(text) <= limit:
             return text
         return text[: max(limit - 3, 0)].rstrip() + "..."
+
+    def _attempt_repair(self, raw_response: str | None, error: str | None) -> str | None:
+        """Ask the LLM to repair malformed chapter-summary JSON once."""
+        if not raw_response:
+            return None
+        snippet = clamp_text_middle(raw_response, _REPAIR_SNIPPET_BUDGET)
+        prompt = fill_template(
+            self.repair_template,
+            error_message=error or "JSON parsing failed.",
+            invalid_output=snippet,
+        )
+        repaired = self.llm.generate(prompt=prompt, options=_JSON_OBJECT_OPTIONS)
+        return repaired.content

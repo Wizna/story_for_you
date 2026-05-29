@@ -13,6 +13,7 @@ from story_for_you.utils.json_utils import load_json_response
 
 _VALID_ARCS = {"setup", "journey", "twist", "climax", "dark-night", "resolution"}
 _VALID_TENSIONS = {"low", "medium", "high"}
+_STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
 
 
 class StateSynthesizer:
@@ -39,7 +40,7 @@ class StateSynthesizer:
             events=json.dumps(events_payload, ensure_ascii=False),
             recent_context=recent_context.strip() or "暂无历史上下文。",
         )
-        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
         data = load_json_response(response.content)
         if not isinstance(data, dict):
             raise LLMResponseError("Story state response is not a JSON object.")

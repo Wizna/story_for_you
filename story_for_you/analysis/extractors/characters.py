@@ -5,7 +5,12 @@ from typing import Any, Iterable
 import logging
 
 from story_for_you.analysis.context import CharacterState
-from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
+from story_for_you.analysis.prompting import (
+    clamp_text_middle,
+    fill_template,
+    load_template,
+    render_prompt_with_budget,
+)
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
@@ -13,6 +18,8 @@ from story_for_you.utils.json_utils import load_json_response
 logger = logging.getLogger(__name__)
 
 _MAX_LLM_CHARACTERS = 8
+_REPAIR_SNIPPET_BUDGET = 4000
+_STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
 _ROLE_PRIORITY: dict[str, int] = {"main": 3, "support": 2, "minor": 1}
 
 
@@ -23,6 +30,7 @@ class CharacterExtractor:
         self.llm = llm
         self.personality_analyzer = PersonalityAnalyzer(llm)
         self.template = load_template("character_sheet")
+        self.repair_template = load_template("character_sheet_repair")
         self.prompt_budget = prompt_budget
 
     def extract(self, text: str) -> list[CharacterState]:
@@ -58,20 +66,47 @@ class CharacterExtractor:
     # Internal helpers -------------------------------------------------
     def _prompt_characters(self, prompt: str) -> list[CharacterState]:
         """Use the configured LLM to extract structured characters."""
-        response = self.llm.generate(prompt=prompt, options={"no_think": True})
-        payload = load_json_response(response.content)
+        response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+        characters, error = self._parse_response(response.content)
+        if characters is not None:
+            return characters
+
+        if error:
+            logger.debug("Character extraction parse failed (%s). Attempting repair.", error)
+        repaired_content = self._attempt_repair(response.content, error)
+        if repaired_content:
+            characters, repair_error = self._parse_response(repaired_content)
+            if characters is not None:
+                return characters
+            error = repair_error or error
+
+        raw_content = response.content[:1000] if response.content else "(empty)"
+        logger.warning(
+            "Failed to parse character extraction response after repair: %s\nRaw response (truncated): %s",
+            error or "Unknown parse failure",
+            raw_content,
+        )
+        raise LLMResponseError(f"Character extraction failed after repair: {error or 'unknown parse failure'}")
+
+    def _parse_response(self, content: str | None) -> tuple[list[CharacterState] | None, str | None]:
+        if not content:
+            return None, "Empty response body."
+        payload = load_json_response(content)
         if payload is None:
-            raise LLMResponseError("Character extractor returned invalid JSON payload.")
+            return None, "Character extractor returned invalid JSON payload."
         if not isinstance(payload, list):
-            raise LLMResponseError("Character extractor payload is not a list.")
+            return None, "Character extractor payload is not a list."
         characters: list[CharacterState] = []
-        for item in payload[:_MAX_LLM_CHARACTERS]:
+        for idx, item in enumerate(payload[:_MAX_LLM_CHARACTERS], start=1):
             if not isinstance(item, dict):
-                raise LLMResponseError("Character extractor list item is not an object.")
-            character = self._to_character(item)
+                return None, f"Character payload at index {idx} is not an object."
+            try:
+                character = self._to_character(item)
+            except LLMResponseError as exc:
+                return None, str(exc)
             if character:
                 characters.append(character)
-        return characters
+        return characters, None
 
     def _to_character(self, data: dict) -> CharacterState | None:
         for field_name in ("name", "aliases", "role", "realm", "personality", "unresolved"):
@@ -160,6 +195,19 @@ class CharacterExtractor:
                 continue
             normalized_traits.append(normalized)
         return list(dict.fromkeys(normalized_traits))
+
+    def _attempt_repair(self, raw_response: str | None, error: str | None) -> str | None:
+        """Ask the LLM to repair malformed character JSON once."""
+        if not raw_response:
+            return None
+        snippet = clamp_text_middle(raw_response, _REPAIR_SNIPPET_BUDGET)
+        prompt = fill_template(
+            self.repair_template,
+            error_message=error or "JSON parsing failed.",
+            invalid_output=snippet,
+        )
+        repaired = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+        return repaired.content
 
 
 class PersonalityAnalyzer:

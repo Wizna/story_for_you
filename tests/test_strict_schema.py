@@ -25,6 +25,19 @@ class _FakeLLM(LLMProvider):
         yield from []
 
 
+class _SequencedLLM(LLMProvider):
+    def __init__(self, contents: list[str]):
+        self.contents = list(contents)
+
+    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+        if not self.contents:
+            raise AssertionError("No more queued responses.")
+        return LLMResponse(content=self.contents.pop(0), tokens_used=0)
+
+    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+        yield from []
+
+
 def test_context_from_dict_rejects_defaulted_event_type():
     payload = {
         "metadata": {},
@@ -55,6 +68,31 @@ def test_character_extractor_requires_list_fields():
     )
 
     with pytest.raises(LLMResponseError, match="JSON arrays"):
+        CharacterExtractor(llm).extract("翠翠在渡口。")
+
+
+def test_character_extractor_repairs_missing_required_field_once():
+    llm = _SequencedLLM(
+        [
+            '[{"name":"翠翠","aliases":[],"role":"main","realm":null,"unresolved":[]}]',
+            '[{"name":"翠翠","aliases":[],"role":"main","realm":null,"personality":[],"unresolved":[]}]',
+        ]
+    )
+
+    characters = CharacterExtractor(llm).extract("翠翠在渡口。")
+
+    assert [character.name for character in characters] == ["翠翠"]
+
+
+def test_character_extractor_fails_after_repair_if_schema_still_invalid():
+    llm = _SequencedLLM(
+        [
+            '[{"name":"翠翠","aliases":[],"role":"main","realm":null,"unresolved":[]}]',
+            '[{"name":"翠翠","aliases":[],"role":"main","realm":null,"unresolved":[]}]',
+        ]
+    )
+
+    with pytest.raises(LLMResponseError, match="failed after repair"):
         CharacterExtractor(llm).extract("翠翠在渡口。")
 
 
@@ -114,6 +152,36 @@ def test_relationship_mapper_accepts_explicit_aliases_from_roster():
     assert relationships[0].targets == ["翠翠"]
 
 
+def test_relationship_mapper_retries_transient_invalid_schema():
+    llm = _SequencedLLM(
+        [
+            '[{"source":"翠翠","targets":[],"relation_type":"恋慕",'
+            '"sentiment":"positive","description":"缺少目标"}]',
+            '[{"source":"翠翠","targets":["傩送"],"relation_type":"恋慕",'
+            '"sentiment":"positive","description":"关系明确"}]',
+        ]
+    )
+
+    relationships = RelationshipMapper(llm).map("正文", ["翠翠", "傩送"])
+
+    assert relationships[0].source == "翠翠"
+    assert relationships[0].targets == ["傩送"]
+
+
+def test_relationship_mapper_fails_after_retry_if_schema_remains_invalid():
+    llm = _SequencedLLM(
+        [
+            '[{"source":"翠翠","targets":[],"relation_type":"恋慕",'
+            '"sentiment":"positive","description":"缺少目标"}]',
+            '[{"source":"翠翠","targets":[],"relation_type":"恋慕",'
+            '"sentiment":"positive","description":"仍缺少目标"}]',
+        ]
+    )
+
+    with pytest.raises(LLMResponseError, match="failed after retry"):
+        RelationshipMapper(llm).map("正文", ["翠翠", "傩送"])
+
+
 def test_chapter_summarizer_requires_typed_list_items():
     llm = _FakeLLM(
         '{"chapter":1,"title":"渡口","pov":"third-person","beats":["等待",42],'
@@ -122,6 +190,43 @@ def test_chapter_summarizer_requires_typed_list_items():
 
     with pytest.raises(LLMResponseError, match="beats.*strings"):
         ChapterSummarizer(llm).summarize("正文", 1, "")
+
+
+def test_chapter_summarizer_repairs_object_irreversible_flags():
+    llm = _SequencedLLM(
+        [
+            '{"chapter":1,"title":"渡口","pov":"third-person","beats":["等待"],'
+            '"mood":"somber","synopsis":"翠翠等待。",'
+            '"irreversible_flags":[{"type":"death","reason":"爷爷已死"}]}',
+            '{"chapter":1,"title":"渡口","pov":"third-person","beats":["等待"],'
+            '"mood":"somber","synopsis":"翠翠等待。",'
+            '"irreversible_flags":["death: 爷爷已死"]}',
+        ]
+    )
+
+    summary = ChapterSummarizer(llm).summarize("正文", 1, "")
+
+    assert summary.irreversible_flags == ["death: 爷爷已死"]
+
+
+def test_chapter_summarizer_retries_after_failed_repair():
+    llm = _SequencedLLM(
+        [
+            '{"chapter":1,"title":"渡口","pov":"third-person","beats":["等待"],'
+            '"mood":"somber","synopsis":"翠翠等待。",'
+            '"irreversible_flags":[{"type":"death","reason":"爷爷已死"}]}',
+            '{"chapter":1,"title":"渡口","pov":"third-person","beats":["等待"],'
+            '"mood":"somber","synopsis":"翠翠等待。",'
+            '"irreversible_flags":[{"type":"death","reason":"爷爷已死"}]}',
+            '{"chapter":1,"title":"渡口","pov":"third-person","beats":["等待"],'
+            '"mood":"somber","synopsis":"翠翠等待。",'
+            '"irreversible_flags":["death: 爷爷已死"]}',
+        ]
+    )
+
+    summary = ChapterSummarizer(llm).summarize("正文", 1, "")
+
+    assert summary.irreversible_flags == ["death: 爷爷已死"]
 
 
 def test_style_extractor_requires_string_list_items():
