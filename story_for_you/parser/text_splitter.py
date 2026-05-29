@@ -45,7 +45,8 @@ class TextSplitter:
             )
             if boundary >= length:
                 break
-            cursor = max(boundary - self.overlap, boundary)
+            next_cursor = boundary - self.overlap
+            cursor = next_cursor if next_cursor > cursor else boundary
         return chunks
 
     def merge(self, chunks: list[str]) -> str:

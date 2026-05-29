@@ -44,7 +44,8 @@ def _load_settings(config: Optional[Path]) -> Settings:
 
 
 def _split_text(text: str, settings: Settings) -> list[TextChunk]:
-    chunk_budget = max(settings.prompt.min_chunk, settings.llm.max_tokens - settings.prompt.margin)
+    context_window = settings.llm.context_window or settings.llm.max_tokens
+    chunk_budget = max(settings.prompt.min_chunk, context_window - settings.prompt.margin)
     chunk_size = min(settings.parser.chunk_size, chunk_budget)
     splitter = TextSplitter(chunk_size=chunk_size, overlap=settings.parser.overlap)
     chunks = splitter.split(text)
@@ -81,7 +82,7 @@ def _reanalyze(text: str, settings: Settings, llm):
     analyzer = StoryAnalyzer(
         llm=llm,
         window_size=settings.analysis.window_size,
-        prompt_budget=settings.llm.max_tokens,
+        prompt_budget=settings.llm.context_window,
     )
     progress_label = "Analyzing chapters"
     with typer.progressbar(chapters, length=total_chapters, label=progress_label) as progress_iter:
@@ -227,7 +228,7 @@ def analyze(
             llm=llm,
             progress_store=progress_store,
             window_size=settings.analysis.window_size,
-            prompt_budget=settings.llm.max_tokens,
+            prompt_budget=settings.llm.context_window,
         )
 
         with typer.progressbar(length=total_chapters, label="Analyzing chapters") as progress:

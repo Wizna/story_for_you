@@ -35,8 +35,10 @@ def _build_ollama_provider(settings: Settings) -> "LLMProvider":
         "repeat_penalty": settings.llm.repeat_penalty,
         "seed": settings.llm.seed,
     }
+    if settings.llm.context_window and settings.llm.context_window > 0:
+        options["num_ctx"] = settings.llm.context_window
     if settings.llm.max_tokens and settings.llm.max_tokens > 0:
-        options["num_ctx"] = settings.llm.max_tokens
+        options["num_predict"] = settings.llm.max_tokens
     options = {key: value for key, value in options.items() if value is not None}
     return OllamaProvider(
         model=settings.llm.model,

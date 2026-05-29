@@ -3,5 +3,13 @@ llm:
   base_url: https://api.deepseek.com
   model: deepseek-v4-pro
   api_key_env: DEEPSEEK_API_KEY
+  context_window: 1000000
   max_tokens: 32768
   timeout: 600
+
+parser:
+  chunk_size: 120000
+  overlap: 2000
+
+prompt:
+  margin: 20000

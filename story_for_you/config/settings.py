@@ -22,6 +22,7 @@ class LLMSettings:
     timeout: float = 300.0
     seed: int = 42
     api_key_env: str = "DEEPSEEK_API_KEY"
+    context_window: int = 1_000_000
 
     def __post_init__(self) -> None:
         if not 0.0 <= self.temperature <= 2.0:
@@ -36,12 +37,14 @@ class LLMSettings:
             raise ValueError(f"max_tokens must be positive, got {self.max_tokens}")
         if self.timeout <= 0:
             raise ValueError(f"timeout must be positive, got {self.timeout}")
+        if self.context_window <= 0:
+            raise ValueError(f"context_window must be positive, got {self.context_window}")
 
 
 @dataclass
 class ParserSettings:
-    chunk_size: int = 4000
-    overlap: int = 200
+    chunk_size: int = 120000
+    overlap: int = 2000
 
     def __post_init__(self) -> None:
         if self.chunk_size <= 0:
@@ -91,7 +94,7 @@ class AnalysisSettings:
 class PromptSettings:
     """Settings for prompt budget calculation."""
 
-    margin: int = 2300  # Reserve space for instructions/context
+    margin: int = 20000  # Reserve space for instructions/context
     min_chunk: int = 800  # Minimum chunk size
 
     def __post_init__(self) -> None:

@@ -281,6 +281,8 @@ class TestFactory:
         from story_for_you.llm.ollama import OllamaProvider
         provider = build_llm(settings, provider="ollama")
         assert isinstance(provider, OllamaProvider)
+        assert provider.options["num_ctx"] == settings.llm.context_window
+        assert provider.options["num_predict"] == settings.llm.max_tokens
 
     def test_unknown_provider_raises_configuration_error(self):
         settings = Settings()

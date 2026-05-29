@@ -38,7 +38,7 @@
 │  └─────────────────────────┬───────────────────────────┘    │
 │                            │                                 │
 │  ┌─────────────┐  ┌────────▼────────┐  ┌─────────────┐      │
-│  │ OpenAI      │  │ Ollama (默认)   │  │ 其他实现... │      │
+│  │ OpenAI      │  │ Ollama (本地)   │  │ 其他实现... │      │
 │  └─────────────┘  └─────────────────┘  └─────────────┘      │
 └─────────────────────────────────────────────────────────────┘
          │
@@ -65,10 +65,10 @@
 | 组件       | 选择                    | 理由                       |
 | ---------- | ----------------------- | -------------------------- |
 | 语言       | Python 3.11+            | 生态丰富，LLM 集成方便     |
-| LLM 运行时 | Ollama                  | 本地部署简单，Mac 友好     |
-| 默认模型   | Qwen3.5-9B     | 中文优秀，内存 < 16G       |
+| LLM 运行时 | DeepSeek API            | 默认云端推理，吞吐优先     |
+| 默认模型   | deepseek-v4-pro         | 1M 上下文，适合长篇全局分析 |
 | CLI 框架   | Typer                   | 类型提示友好，自动生成帮助 |
-| LLM 调用   | httpx + Ollama REST API | 轻量，无额外依赖           |
+| LLM 调用   | httpx + OpenAI-compatible Chat API | 轻量，无额外依赖           |
 | 配置管理   | Pydantic + YAML         | 类型安全，易于验证         |
 | 测试       | pytest                  | Python 标准选择            |
 
@@ -1088,13 +1088,18 @@ llm:
   base_url: https://api.deepseek.com
   api_key_env: DEEPSEEK_API_KEY   # 从此环境变量读取 API Key
   temperature: 0.7
+  context_window: 1000000         # deepseek-v4-pro 上下文窗口
   max_tokens: 32768
   seed: 42                      # 固定种子保证可复现
 
 # 文本处理配置
 parser:
-  chunk_size: 4000              # 每块最大字符数
-  overlap: 200                  # 块间重叠字符数
+  chunk_size: 120000            # 每块最大字符数，长上下文下减少请求次数
+  overlap: 2000                 # 块间重叠字符数
+
+# Prompt 预算
+prompt:
+  margin: 20000                 # 给指令、历史摘要和结构化输出预留空间
 
 # 压缩配置
 compress:
@@ -1302,7 +1307,8 @@ uv run story --help
 ### 11.1 Provider 生命周期
 
 - CLI 入口通过 `_build_llm(settings)` 构造单例 Provider，再把同一个实例注入 `StoryAnalyzer` 与四个核心业务，确保一次命令只建立一个 HTTP client。
-- `Settings.llm` 提供 `provider/model/base_url/temperature/max_tokens/timeout/seed`，默认使用 `openai` provider，指向 `https://api.deepseek.com` 与 `deepseek-v4-pro`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
+- `Settings.llm` 提供 `provider/model/base_url/temperature/context_window/max_tokens/timeout/seed`，默认使用 `openai` provider，指向 `https://api.deepseek.com` 与 `deepseek-v4-pro`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
+- `max_tokens` 是单次生成输出上限；`context_window` 是模型上下文窗口，用于分块和 Prompt 截断预算。`_split_text()` 使用 `min(parser.chunk_size, context_window - prompt.margin)`，默认 12 万字符分块和 2000 字符重叠，以减少 DeepSeek API 请求次数并保留相邻块连续性。
 - `OpenAICompatibleProvider` 默认请求 `/v1/chat/completions`；当 `base_url` 是 DeepSeek 官方域名时，请求官方 OpenAI-compatible 路径 `/chat/completions`。分析抽取类调用传入 `no_think=True` 时，会转换为 DeepSeek 支持的 `thinking: {"type": "disabled"}`，降低结构化 JSON 输出被思考内容污染的概率；非 DeepSeek API 不会收到该专用参数。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 

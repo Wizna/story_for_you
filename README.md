@@ -159,6 +159,7 @@ llm:
   base_url: https://api.deepseek.com
   api_key_env: DEEPSEEK_API_KEY   # 从此环境变量读取 API Key
   temperature: 0.7
+  context_window: 1000000         # deepseek-v4-pro 上下文窗口
   max_tokens: 32768
 
   # 切换到 OpenAI 只需改这三行：
@@ -167,8 +168,11 @@ llm:
   # api_key_env: OPENAI_API_KEY
 
 parser:
-  chunk_size: 4000
-  overlap: 200
+  chunk_size: 120000              # 长上下文模型下减少请求次数
+  overlap: 2000
+
+prompt:
+  margin: 20000                   # 给指令、历史摘要和结构化输出预留空间
 
 cache:
   enabled: true
@@ -184,6 +188,10 @@ uv run story analyze novel.txt --config config.yaml
 默认 provider 使用 DeepSeek 的 OpenAI-compatible Chat API。结构化抽取场景会自动把内部
 `no_think` 选项转换为 DeepSeek 支持的 `thinking: {"type": "disabled"}`，以减少推理内容对
 JSON 输出的干扰；其他 OpenAI 兼容服务不会收到这个 DeepSeek 专用参数。
+
+`max_tokens` 控制单次生成的最大输出，不代表可用上下文长度；长篇分析的分块预算由
+`context_window - prompt.margin` 和 `parser.chunk_size` 共同决定。默认配置面向 1M 上下文的
+`deepseek-v4-pro`，以较大的 12 万字符分块减少 API 请求，同时保留重叠文本维持章节连续性。
 
 ## 技术架构
 
