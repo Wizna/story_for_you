@@ -52,8 +52,8 @@ class StateSynthesizer:
         ):
             if field_name not in data:
                 raise LLMResponseError(f"Story state response missing required field: {field_name}")
-        current_arc = str(data.get("current_arc")).strip()
-        world_tension = str(data.get("world_tension")).strip()
+        current_arc = self._required_str(data.get("current_arc"), "current_arc")
+        world_tension = self._required_str(data.get("world_tension"), "world_tension")
         if current_arc not in _VALID_ARCS:
             raise LLMResponseError(f"Invalid story arc: {current_arc!r}")
         if world_tension not in _VALID_TENSIONS:
@@ -69,4 +69,19 @@ class StateSynthesizer:
     def _required_str_list(self, value: Any, field_name: str) -> list[str]:
         if not isinstance(value, list):
             raise LLMResponseError(f"Story state field must be a list: {field_name}")
-        return [str(item).strip() for item in value if str(item).strip()]
+        items: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise LLMResponseError(f"Story state list items must be strings: {field_name}")
+            text = item.strip()
+            if text:
+                items.append(text)
+        return items
+
+    def _required_str(self, value: Any, field_name: str) -> str:
+        if not isinstance(value, str):
+            raise LLMResponseError(f"Story state field must be a string: {field_name}")
+        text = value.strip()
+        if not text:
+            raise LLMResponseError(f"Story state field must not be empty: {field_name}")
+        return text

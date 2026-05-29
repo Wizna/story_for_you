@@ -5,6 +5,7 @@ from dataclasses import asdict
 from typing import Any, Iterable, List
 
 from story_for_you.analysis.context import PlotEvent
+from story_for_you.core.exceptions import LLMResponseError
 
 
 class EventLedger:
@@ -60,7 +61,14 @@ class EventLedger:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> EventLedger:
         """Restore ledger state from a dictionary."""
+        if not isinstance(payload, dict):
+            raise LLMResponseError("EventLedger payload must be a JSON object.")
+        if "events" not in payload:
+            raise LLMResponseError("EventLedger missing required field: events")
+        events_payload = payload.get("events")
+        if not isinstance(events_payload, list):
+            raise LLMResponseError("EventLedger.events must be a list.")
         instance = cls()
-        events = [PlotEvent.from_dict(item) for item in payload.get("events", [])]
+        events = [PlotEvent.from_dict(item) for item in events_payload]
         instance.record(events)
         return instance

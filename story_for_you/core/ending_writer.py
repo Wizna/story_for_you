@@ -36,7 +36,7 @@ _MIN_DRAFT_PARAGRAPHS = 3
 _MIN_PARAGRAPH_CHARS = 120
 _MAX_BEAT_PARAGRAPHS = 4
 _VALID_ENDING_DIRECTIONS = {"HE", "BE", "OE"}
-_VALID_RESOLUTION_STATUSES = {"ok", "needs_bridges"}
+_VALID_RESOLUTION_STATUSES = {"ok", "needs_bridges", "blocked"}
 
 
 @dataclass
@@ -145,24 +145,24 @@ class EndingWriter:
         ):
             if field_name not in result:
                 raise LLMResponseError(f"Outline phase missing required field: {field_name}")
-        ending_direction = str(result.get("ending_direction")).strip()
+        ending_direction = self._required_str(result.get("ending_direction"), "ending_direction")
         if ending_direction not in _VALID_ENDING_DIRECTIONS:
             raise LLMResponseError(f"Invalid outline ending direction: {ending_direction!r}")
         key_beats_payload = result.get("key_beats")
         if not isinstance(key_beats_payload, list):
             raise LLMResponseError("Outline key_beats must be a list.")
-        key_beats = [str(item).strip() for item in key_beats_payload if str(item).strip()]
+        key_beats = self._required_str_list(key_beats_payload, "key_beats")
         if not key_beats:
             raise LLMResponseError("Outline key_beats must not be empty.")
         return EndingOutline(
-            core_theme=str(result.get("core_theme")).strip(),
+            core_theme=self._required_str(result.get("core_theme"), "core_theme"),
             ending_direction=ending_direction,
-            emotional_tone=str(result.get("emotional_tone")).strip(),
-            timeline=str(result.get("timeline")).strip(),
+            emotional_tone=self._required_str(result.get("emotional_tone"), "emotional_tone"),
+            timeline=self._required_str(result.get("timeline"), "timeline"),
             key_beats=key_beats,
-            emotional_arc=str(result.get("emotional_arc")).strip(),
-            final_image=str(result.get("final_image")).strip(),
-            key_resolution=str(result.get("key_resolution")).strip(),
+            emotional_arc=self._required_str(result.get("emotional_arc"), "emotional_arc"),
+            final_image=self._required_str(result.get("final_image"), "final_image"),
+            key_resolution=self._required_str(result.get("key_resolution"), "key_resolution"),
         )
 
     def _phase_draft(
@@ -279,24 +279,29 @@ class EndingWriter:
         for field_name in ("status", "missing_threads", "bridges", "notes"):
             if field_name not in payload:
                 raise LLMResponseError(f"Resolution phase missing required field: {field_name}")
-        status = str(payload.get("status")).strip().lower()
+        status = self._required_str(payload.get("status"), "status").lower()
         if status not in _VALID_RESOLUTION_STATUSES:
             raise LLMResponseError(f"Invalid resolution status: {status!r}")
-        if status == "ok":
-            return polished
+        missing_threads = self._required_str_list(payload.get("missing_threads"), "missing_threads")
         bridges_payload = payload.get("bridges")
         if not isinstance(bridges_payload, list):
             raise LLMResponseError("Resolution bridges must be a list.")
-        bridges = [item.strip() for item in bridges_payload if isinstance(item, str) and item.strip()]
+        bridges = self._required_str_list(bridges_payload, "bridges")
+        notes = self._required_str(payload.get("notes"), "notes", allow_empty=True)
+        if status == "ok":
+            if missing_threads or bridges:
+                raise LLMResponseError("Resolution status ok requires empty missing_threads and bridges.")
+            return polished
+        if status == "blocked":
+            details = "; ".join(missing_threads) or notes
+            raise GenerationError("Resolution phase blocked: " + (details or "unresolved threads remain"))
         if not bridges:
             raise GenerationError("Resolution phase requested changes but returned no bridge text.")
         enforcer = StyleEnforcer(style)
         bridges = enforcer.filter_duplicate_bridges(polished, bridges)
         if not bridges:
             raise GenerationError("Resolution bridge text duplicated existing content.")
-        notes = payload.get("notes")
-        note_text = notes.strip() if isinstance(notes, str) else None
-        return self._append_bridges(polished, bridges, note_text)
+        return self._append_bridges(polished, bridges, notes or None)
 
     # Helper methods ---------------------------------------------------------
 
@@ -494,6 +499,26 @@ class EndingWriter:
 
     def _phase_options(self, phase: str) -> dict | None:
         return self._phase_llm_options.get(phase)
+
+    def _required_str_list(self, value, field_name: str) -> list[str]:
+        if not isinstance(value, list):
+            raise LLMResponseError(f"Resolution {field_name} must be a list.")
+        items: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise LLMResponseError(f"Resolution {field_name} items must be strings.")
+            text = item.strip()
+            if text:
+                items.append(text)
+        return items
+
+    def _required_str(self, value, field_name: str, *, allow_empty: bool = False) -> str:
+        if not isinstance(value, str):
+            raise LLMResponseError(f"Resolution {field_name} must be a string.")
+        text = value.strip()
+        if not allow_empty and not text:
+            raise LLMResponseError(f"Resolution {field_name} must not be empty.")
+        return text
 
     def _validate_final(self, text: str, directives, context_block: str) -> None:
         result = self._ending_validator.validate(text, directives, context_block=context_block)

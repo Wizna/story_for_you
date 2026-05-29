@@ -25,20 +25,21 @@
 ## bridges 写作要求（极其重要）
 - **必须是叙事**：有具体场景、人物动作、对话或心理描写
 - **必须延续原作文风**：模仿风格示例的句式、用词、语气
-- **宁缺毋滥**：如果无法写出符合要求的叙事段落，请直接返回 status: ok
-- **反例**（禁止）："翠翠心中依然惦念着祖父的安全..."（说明性语句）
-- **正例**（应该）："翠翠坐在船头，望着对岸的山，忽然想起祖父生前常说的话。她轻声叹了口气，手里的竹篙在水中划出一道涟漪。"
+- **不能吞掉遗漏**：只要存在未照应的伏笔，就不能返回 `status: ok`
+- 如果能补写自然叙事段落，返回 `status: needs_bridges` 并提供 bridges
+- 如果存在遗漏但无法补写合格桥段，返回 `status: blocked`，说明原因，不要伪装成 ok
 
 ## 输出格式
 返回 UTF-8 JSON：
   {
-    "status": "ok 或 needs_bridges",
+    "status": "ok | needs_bridges | blocked",
     "missing_threads": ["伏笔描述1"],
     "bridges": ["叙事段落1"],
     "notes": "简短说明"
   }
 
 ## 约束
-- 如果所有伏笔都已照应，或无法写出合格的叙事段落，`status` 必须为 `ok`，`bridges` 为空。
-- 只有当能写出真正的叙事段落时，才使用 `needs_bridges`。
+- 只有所有伏笔都已照应时，`status` 才能为 `ok`，且 `missing_threads` 与 `bridges` 必须为空。
+- 只有当能写出真正的叙事段落时，才使用 `needs_bridges`，且 `bridges` 不能为空。
+- 存在遗漏但无法补写时，`status` 必须为 `blocked`，且 `missing_threads` 不能为空。
 - 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

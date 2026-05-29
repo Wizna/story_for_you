@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from copy import deepcopy
 from dataclasses import asdict
 from typing import Any, Iterable, TYPE_CHECKING
@@ -11,14 +10,12 @@ from story_for_you.analysis.context import (
     Relationship,
     StoryState,
 )
-from story_for_you.utils.chinese_name_utils import (
-    ROLE_PRIORITY,
-    names_have_overlap,
-    split_compound_chinese_name,
-)
+from story_for_you.core.exceptions import LLMResponseError
 
 if TYPE_CHECKING:
     from story_for_you.config.settings import RenderingLimits
+
+_ROLE_PRIORITY: dict[str, int] = {"main": 3, "support": 2, "minor": 1}
 
 
 class StateStore:
@@ -95,7 +92,7 @@ class StateStore:
             existing.personality = list(dict.fromkeys(existing.personality + character.personality))
         if character.unresolved:
             existing.unresolved = list(dict.fromkeys(existing.unresolved + character.unresolved))
-        if ROLE_PRIORITY.get(character.role, 0) > ROLE_PRIORITY.get(existing.role, 0):
+        if _ROLE_PRIORITY.get(character.role, 0) > _ROLE_PRIORITY.get(existing.role, 0):
             existing.role = character.role
         existing.realm = existing.realm or character.realm
         self._register_aliases(existing.name, [existing.name, *existing.aliases, character.name])
@@ -146,7 +143,7 @@ class StateStore:
             return []
         ordered = sorted(
             self._characters.values(),
-            key=lambda item: (ROLE_PRIORITY.get(item.role, 0), item.name.lower()),
+            key=lambda item: (_ROLE_PRIORITY.get(item.role, 0), item.name.lower()),
             reverse=True,
         )
         lines: list[str] = []
@@ -174,32 +171,36 @@ class StateStore:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> StateStore:
         """Restore store state from a dictionary."""
+        if not isinstance(payload, dict):
+            raise LLMResponseError("StateStore payload must be a JSON object.")
         instance = cls()
-        for name, char_data in payload.get("characters", {}).items():
+        for field_name in ("characters", "story_state", "event_log"):
+            if field_name not in payload:
+                raise LLMResponseError(f"StateStore missing required field: {field_name}")
+        characters_payload = payload.get("characters")
+        if not isinstance(characters_payload, dict):
+            raise LLMResponseError("StateStore.characters must be an object.")
+        events_payload = payload.get("event_log")
+        if not isinstance(events_payload, list):
+            raise LLMResponseError("StateStore.event_log must be a list.")
+        for name, char_data in characters_payload.items():
+            if not isinstance(name, str):
+                raise LLMResponseError("StateStore character keys must be strings.")
             character = CharacterState.from_dict(char_data, name_hint=name)
             instance._characters[name] = character
             instance._register_aliases(character.name, [character.name, *character.aliases])
         story_state_data = payload.get("story_state")
-        if story_state_data:
-            instance._story_state = StoryState(**story_state_data)
-        for event_data in payload.get("event_log", []):
+        if story_state_data is not None:
+            instance._story_state = StoryState.from_dict(story_state_data)
+        for event_data in events_payload:
             instance._event_log.append(PlotEvent.from_dict(event_data))
         return instance
 
     def _resolve_owner(self, character: CharacterState) -> str | None:
-        # 第一步：精确 token 匹配
         for key in self._alias_keys(character):
             owner = self._alias_index.get(key)
             if owner:
                 return owner
-
-        # 第二步：子串匹配（针对中文名）
-        candidate_names = [character.name] + character.aliases
-        for existing_name in self._characters.keys():
-            existing_char = self._characters[existing_name]
-            existing_names = [existing_char.name] + existing_char.aliases
-            if names_have_overlap(candidate_names, existing_names):
-                return existing_name
 
         return None
 
@@ -223,25 +224,7 @@ class StateStore:
         cleaned = (label or "").strip()
         if not cleaned:
             return []
-        without_paren = re.sub(r"[()（）]", " ", cleaned)
-        pieces = re.split(r"[、,，/|]+", without_paren)
-        tokens = [cleaned]
-        tokens.extend(part.strip() for part in pieces if part and part.strip())
-
-        # 对每个 token 尝试拆分复合中文名
-        expanded: list[str] = []
-        for token in tokens:
-            expanded.append(token)
-            expanded.extend(split_compound_chinese_name(token))
-
-        # 去重并保持顺序
-        seen: set[str] = set()
-        result: list[str] = []
-        for item in expanded:
-            if item and item not in seen:
-                seen.add(item)
-                result.append(item)
-        return result
+        return [cleaned]
 
     def _normalize_token(self, token: str) -> str:
-        return re.sub(r"\s+", "", token).lower()
+        return token.strip().lower()

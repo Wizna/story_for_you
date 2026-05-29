@@ -162,32 +162,52 @@ class StyleExtractor:
                     raise LLMResponseError(f"Style sample missing required field: {field_name}")
             samples.append(
                 StyleSample(
-                    source_chapter=int(item.get("source_chapter")),
-                    content=str(item.get("content", "")),
-                    style_notes=str(item.get("style_notes", "")),
+                    source_chapter=self._required_int(item.get("source_chapter"), "source_chapter"),
+                    content=self._required_str(item.get("content"), "content", allow_empty=True),
+                    style_notes=self._required_str(item.get("style_notes"), "style_notes", allow_empty=True),
                 )
             )
         for field_name in ("characteristic_words", "description_focus", "tone_markers"):
             if not isinstance(data.get(field_name), list):
                 raise LLMResponseError(f"Style field must be a list: {field_name}")
         return WritingStyle(
-            avg_sentence_length=int(data.get("avg_sentence_length")),
-            sentence_variety=str(data.get("sentence_variety")),
-            paragraph_density=str(data.get("paragraph_density")),
-            register=str(data.get("register")),
+            avg_sentence_length=self._required_int(data.get("avg_sentence_length"), "avg_sentence_length"),
+            sentence_variety=self._required_str(data.get("sentence_variety"), "sentence_variety"),
+            paragraph_density=self._required_str(data.get("paragraph_density"), "paragraph_density"),
+            register=self._required_str(data.get("register"), "register"),
             characteristic_words=self._normalize_list(data.get("characteristic_words")),
-            idiom_frequency=str(data.get("idiom_frequency")),
-            metaphor_style=str(data.get("metaphor_style", "")),
+            idiom_frequency=self._required_str(data.get("idiom_frequency"), "idiom_frequency"),
+            metaphor_style=self._required_str(data.get("metaphor_style"), "metaphor_style", allow_empty=True),
             description_focus=self._normalize_list(data.get("description_focus")),
-            parallelism_use=str(data.get("parallelism_use")),
+            parallelism_use=self._required_str(data.get("parallelism_use"), "parallelism_use"),
             tone_markers=self._normalize_list(data.get("tone_markers")),
-            narrator_style=str(data.get("narrator_style")),
+            narrator_style=self._required_str(data.get("narrator_style"), "narrator_style"),
             representative_samples=samples,
-            style_summary=str(data.get("style_summary", "")),
+            style_summary=self._required_str(data.get("style_summary"), "style_summary", allow_empty=True),
         )
+
+    def _required_int(self, value: Any, field_name: str) -> int:
+        if not isinstance(value, int) or isinstance(value, bool):
+            raise LLMResponseError(f"Style field must be an integer: {field_name}")
+        return value
+
+    def _required_str(self, value: Any, field_name: str, *, allow_empty: bool = False) -> str:
+        if not isinstance(value, str):
+            raise LLMResponseError(f"Style field must be a string: {field_name}")
+        text = value.strip()
+        if not allow_empty and not text:
+            raise LLMResponseError(f"Style field must not be empty: {field_name}")
+        return text
 
     def _normalize_list(self, value: Any) -> list[str]:
         """确保返回字符串列表。"""
         if not isinstance(value, list):
             raise LLMResponseError("Style list field must be a JSON array.")
-        return [str(item) for item in value if item][:_MAX_STYLE_LIST_ITEMS]
+        items: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise LLMResponseError("Style list items must be strings.")
+            text = item.strip()
+            if text:
+                items.append(text)
+        return items[:_MAX_STYLE_LIST_ITEMS]

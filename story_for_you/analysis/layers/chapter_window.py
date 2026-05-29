@@ -3,6 +3,7 @@ from dataclasses import asdict
 from typing import Any, Deque, Iterable, List, Sequence
 
 from story_for_you.analysis.context import ChapterSummary
+from story_for_you.core.exceptions import LLMResponseError
 
 
 class ChapterSummaryWindow:
@@ -62,16 +63,23 @@ class ChapterSummaryWindow:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "ChapterSummaryWindow":
         """Restore window state from a dictionary."""
-        window_size = payload.get("window_size", 12)
+        if not isinstance(payload, dict):
+            raise LLMResponseError("ChapterSummaryWindow payload must be a JSON object.")
+        for field_name in ("window_size", "history", "window"):
+            if field_name not in payload:
+                raise LLMResponseError(f"ChapterSummaryWindow missing required field: {field_name}")
+        window_size = payload.get("window_size")
+        if not isinstance(window_size, int) or isinstance(window_size, bool):
+            raise LLMResponseError("ChapterSummaryWindow.window_size must be an integer.")
         instance = cls(window_size=window_size)
-        history_payload: Sequence[dict[str, Any]] = payload.get("history") or payload.get("summaries") or []
+        history_payload: Sequence[dict[str, Any]] = payload.get("history")
+        if not isinstance(history_payload, list):
+            raise LLMResponseError("ChapterSummaryWindow.history must be a list.")
         for item in history_payload:
-            instance._history.append(ChapterSummary(**item))
-        window_payload: Sequence[dict[str, Any]] | None = payload.get("window")
-        if window_payload:
-            for item in window_payload:
-                instance._window.append(ChapterSummary(**item))
-        else:
-            for summary in instance._history[-instance.window_size :]:
-                instance._window.append(summary)
+            instance._history.append(ChapterSummary.from_dict(item))
+        window_payload: Sequence[dict[str, Any]] = payload.get("window")
+        if not isinstance(window_payload, list):
+            raise LLMResponseError("ChapterSummaryWindow.window must be a list.")
+        for item in window_payload:
+            instance._window.append(ChapterSummary.from_dict(item))
         return instance

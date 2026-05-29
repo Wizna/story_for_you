@@ -8,16 +8,12 @@ from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
-from story_for_you.utils.chinese_name_utils import (
-    ROLE_PRIORITY,
-    names_have_overlap,
-    split_compound_chinese_name,
-)
 from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
 
 _MAX_LLM_CHARACTERS = 8
+_ROLE_PRIORITY: dict[str, int] = {"main": 3, "support": 2, "minor": 1}
 
 
 class CharacterExtractor:
@@ -81,14 +77,17 @@ class CharacterExtractor:
         for field_name in ("name", "aliases", "role", "realm", "personality", "unresolved"):
             if field_name not in data:
                 raise LLMResponseError(f"Character item missing required field: {field_name}")
-        name = str(data.get("name", "")).strip()
+        name = self._required_str(data.get("name"), "name")
         if not name:
             raise LLMResponseError("Character item requires a non-empty name.")
         aliases = self._normalize_str_list(data.get("aliases", []))
         unresolved = self._normalize_str_list(data.get("unresolved", []))
         personality = self._localize_personality(self._normalize_str_list(data.get("personality", [])))
         role = self._normalize_role(data.get("role"))
-        realm = str(data.get("realm") or "").strip() or None
+        realm_payload = data.get("realm")
+        if realm_payload is not None and not isinstance(realm_payload, str):
+            raise LLMResponseError("Character realm must be a string or null.")
+        realm = realm_payload.strip() or None if isinstance(realm_payload, str) else None
         return CharacterState(
             name=name,
             aliases=aliases,
@@ -99,24 +98,18 @@ class CharacterExtractor:
             unresolved=unresolved,
         )
 
-    def _normalize_role(self, value: str | None) -> str:
-        lowered = (value or "").lower()
-        if lowered in ROLE_PRIORITY:
+    def _normalize_role(self, value: Any) -> str:
+        if not isinstance(value, str):
+            raise LLMResponseError("Character role must be a string.")
+        lowered = value.strip().lower()
+        if lowered in _ROLE_PRIORITY:
             return lowered
         raise LLMResponseError(f"Invalid character role: {value!r}")
 
     def _find_character(self, roster: list[CharacterState], candidate: CharacterState) -> CharacterState | None:
         candidate_keys = self._alias_keys(candidate)
         for existing in roster:
-            # 第一步：精确 token 匹配
             if candidate_keys.intersection(self._alias_keys(existing)):
-                return existing
-
-        # 第二步：子串匹配（针对中文名）
-        candidate_names = [candidate.name] + candidate.aliases
-        for existing in roster:
-            existing_names = [existing.name] + existing.aliases
-            if names_have_overlap(candidate_names, existing_names):
                 return existing
 
         return None
@@ -131,19 +124,11 @@ class CharacterExtractor:
         )
         target.unresolved = self._merge_list(target.unresolved, incoming.unresolved)
         target.realm = target.realm or incoming.realm
-        if ROLE_PRIORITY[incoming.role] > ROLE_PRIORITY[target.role]:
+        if _ROLE_PRIORITY[incoming.role] > _ROLE_PRIORITY[target.role]:
             target.role = incoming.role
 
     def _alias_keys(self, character: CharacterState) -> set[str]:
-        keys: set[str] = set()
-        all_names = [character.name] + character.aliases
-        for name in all_names:
-            # 添加原始名字
-            keys.add(name.lower())
-            # 添加拆分后的组成部分
-            for part in split_compound_chinese_name(name):
-                keys.add(part.lower())
-        return keys
+        return {name.strip().lower() for name in [character.name, *character.aliases] if name.strip()}
 
     def _merge_list(self, base: list[str], incoming: list[str]) -> list[str]:
         merged = list(dict.fromkeys(item for item in base + incoming if item))
@@ -151,13 +136,21 @@ class CharacterExtractor:
 
     def _normalize_str_list(self, value: Any) -> list[str]:
         """Ensure we always work with a list of trimmed strings."""
-        if isinstance(value, str):
-            raw = [value]
-        elif isinstance(value, Iterable):
-            raw = [item for item in value if isinstance(item, str)]
-        else:
-            raw = []
-        return [item.strip() for item in raw if item and item.strip()]
+        if not isinstance(value, list):
+            raise LLMResponseError("Character string-list fields must be JSON arrays.")
+        items: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise LLMResponseError("Character string-list items must be strings.")
+            text = item.strip()
+            if text:
+                items.append(text)
+        return items
+
+    def _required_str(self, value: Any, field_name: str) -> str:
+        if not isinstance(value, str):
+            raise LLMResponseError(f"Character {field_name} must be a string.")
+        return value.strip()
 
     def _localize_personality(self, traits: Iterable[str]) -> list[str]:
         normalized_traits: list[str] = []

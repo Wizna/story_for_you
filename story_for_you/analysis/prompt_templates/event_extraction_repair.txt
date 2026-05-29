@@ -1,6 +1,6 @@
 你在提取剧情事件时生成了无效 JSON。请将下列错误输出修正为合法的 JSON 数组。
 
-格式：每个元素为 { event_id: string, chapter: int, type: "progress"|"setback"|"reveal"|"conflict", participants: string[], summary: string, impact: { power_shifts: {string: string}, relation_changes: {string: string}, world_flags: string[] }, is_irreversible: bool }。缺失字段用合理默认值补齐（空数组、false 等）。保持原文描述的语言和风格。
+格式：每个元素为 { event_id: string, chapter: int, type: "progress"|"setback"|"reveal"|"conflict", participants: string[], summary: string, impact: { power_shifts: {string: string}, relation_changes: {string: string}, world_flags: string[] }, is_irreversible: bool }。所有字段必须基于原输出或原文证据明确给出；无法确定时不要补造事件，返回空数组。保持原文描述的语言和风格。
 
 拒绝原因：
 {{error_message}}

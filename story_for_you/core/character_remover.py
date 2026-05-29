@@ -93,10 +93,19 @@ class CharacterRemover:
         return self._parse_action(payload)
 
     def _parse_action(self, payload: dict[str, Any]) -> tuple[str, str]:
-        action = str(payload.get("action", "")).strip().lower()
+        action_payload = payload.get("action")
+        if not isinstance(action_payload, str):
+            raise LLMResponseError("Character removal action must be a string.")
+        action = action_payload.strip().lower()
         if action not in {"delete", "rewrite"}:
             raise LLMResponseError(f"Invalid character removal action: {action!r}")
-        content = str(payload.get("content") or "").strip()
+        content_payload = payload.get("content")
+        if content_payload is None:
+            content = ""
+        elif isinstance(content_payload, str):
+            content = content_payload.strip()
+        else:
+            raise LLMResponseError("Character removal content must be a string or null.")
         if action == "rewrite" and not content:
             raise LLMResponseError("Character removal rewrite action requires content.")
         if action == "delete":

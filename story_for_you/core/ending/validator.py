@@ -49,6 +49,9 @@ class EndingValidator:
         return self._from_payload(payload)
 
     def _from_payload(self, payload: dict[str, Any]) -> EndingValidationResult:
+        for field_name in ("passed", "issues", "repair_instructions"):
+            if field_name not in payload:
+                raise LLMResponseError(f"Ending validation missing required field: {field_name}")
         passed = payload.get("passed")
         if not isinstance(passed, bool):
             raise LLMResponseError("Ending validation JSON must include boolean 'passed'.")
@@ -59,8 +62,13 @@ class EndingValidator:
         )
 
     def _str_list(self, value: Any) -> list[str]:
-        if value is None:
-            return []
         if not isinstance(value, list):
             raise LLMResponseError("Ending validation list fields must be JSON arrays.")
-        return [str(item).strip() for item in value if str(item).strip()]
+        items: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise LLMResponseError("Ending validation list items must be strings.")
+            text = item.strip()
+            if text:
+                items.append(text)
+        return items

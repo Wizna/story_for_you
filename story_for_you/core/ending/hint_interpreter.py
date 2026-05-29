@@ -93,18 +93,20 @@ class HintInterpreter:
         ):
             if field_name not in payload:
                 raise LLMResponseError(f"Ending directive missing required field: {field_name}")
-        closure = str(payload.get("closure")).strip().lower()
+        closure = self._required_str(payload.get("closure"), "closure").lower()
         if closure not in _VALID_CLOSURES:
             raise LLMResponseError(f"Invalid closure value from directive extractor: {closure!r}")
 
         ending_direction = payload.get("ending_direction")
         if ending_direction is not None:
-            ending_direction = str(ending_direction).strip() or None
+            if not isinstance(ending_direction, str):
+                raise LLMResponseError("Ending direction must be a string or null.")
+            ending_direction = ending_direction.strip() or None
             if ending_direction and ending_direction not in _VALID_DIRECTIONS:
                 raise LLMResponseError(f"Invalid ending direction: {ending_direction!r}")
 
         return HintDirectives(
-            normalized_text=str(payload.get("normalized_text") or raw_hint_text).strip() or "无特别要求",
+            normalized_text=self._required_str(payload.get("normalized_text"), "normalized_text"),
             ending_direction=ending_direction,
             emotional_tone=self._optional_str(payload.get("emotional_tone")),
             focus_characters=self._str_list(payload.get("focus_characters")),
@@ -118,12 +120,29 @@ class HintInterpreter:
     def _optional_str(self, value: Any) -> str | None:
         if value is None:
             return None
-        text = str(value).strip()
+        if not isinstance(value, str):
+            raise LLMResponseError("Ending directive optional string fields must be strings or null.")
+        text = value.strip()
         return text or None
+
+    def _required_str(self, value: Any, field_name: str) -> str:
+        if not isinstance(value, str):
+            raise LLMResponseError(f"Ending directive {field_name} must be a string.")
+        text = value.strip()
+        if not text:
+            raise LLMResponseError(f"Ending directive {field_name} must not be empty.")
+        return text
 
     def _str_list(self, value: Any) -> list[str]:
         if value is None:
             return []
         if not isinstance(value, list):
             raise LLMResponseError("Ending directive list fields must be JSON arrays.")
-        return [str(item).strip() for item in value if str(item).strip()]
+        items: list[str] = []
+        for item in value:
+            if not isinstance(item, str):
+                raise LLMResponseError("Ending directive list items must be strings.")
+            text = item.strip()
+            if text:
+                items.append(text)
+        return items

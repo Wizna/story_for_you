@@ -47,9 +47,7 @@ class SegmentRetriever:
                 if not overlap:
                     filtered.append(segment)
                 continue
-            # soft mode keeps segments with incidental mentions
-            score = self._mention_score(segment.content, excluded)
-            if score <= 1:
+            if not overlap:
                 filtered.append(segment)
         return filtered
 
@@ -66,10 +64,3 @@ class SegmentRetriever:
                 neighbors.add(self.segments[idx + 1].segment_id)
         ordered_ids = sorted(neighbors, key=lambda seg_id: self._order.get(seg_id, seg_id))
         return [self._by_id[seg_id] for seg_id in ordered_ids]
-
-    def _mention_score(self, content: str, targets: set[str]) -> int:
-        lowered = content.lower()
-        score = 0
-        for target in targets:
-            score += lowered.count(target)
-        return score

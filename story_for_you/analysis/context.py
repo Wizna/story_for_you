@@ -3,8 +3,88 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, TYPE_CHECKING
 
+from story_for_you.exceptions import LLMResponseError
+
 if TYPE_CHECKING:
     from story_for_you.config.settings import RenderingLimits
+
+_VALID_EVENT_TYPES = {"conflict", "reveal", "progress", "setback"}
+_VALID_RELATION_SENTIMENTS = {"positive", "neutral", "negative"}
+_VALID_CHARACTER_ROLES = {"main", "support", "minor"}
+_VALID_STORY_ARCS = {"setup", "journey", "twist", "climax", "dark-night", "resolution"}
+_VALID_WORLD_TENSIONS = {"low", "medium", "high"}
+
+
+def _require_mapping(value: Any, label: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise LLMResponseError(f"{label} must be a JSON object.")
+    return value
+
+
+def _require_fields(payload: dict[str, Any], fields: tuple[str, ...], label: str) -> None:
+    for field_name in fields:
+        if field_name not in payload:
+            raise LLMResponseError(f"{label} missing required field: {field_name}")
+
+
+def _required_str(payload: dict[str, Any], field_name: str, label: str, *, allow_empty: bool = False) -> str:
+    value = payload.get(field_name)
+    if not isinstance(value, str):
+        raise LLMResponseError(f"{label}.{field_name} must be a string.")
+    text = value.strip()
+    if not allow_empty and not text:
+        raise LLMResponseError(f"{label}.{field_name} must not be empty.")
+    return text
+
+
+def _optional_str(payload: dict[str, Any], field_name: str, label: str) -> str | None:
+    value = payload.get(field_name)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise LLMResponseError(f"{label}.{field_name} must be a string or null.")
+    return value.strip() or None
+
+
+def _required_int(payload: dict[str, Any], field_name: str, label: str) -> int:
+    value = payload.get(field_name)
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise LLMResponseError(f"{label}.{field_name} must be an integer.")
+    return value
+
+
+def _required_bool(payload: dict[str, Any], field_name: str, label: str) -> bool:
+    value = payload.get(field_name)
+    if not isinstance(value, bool):
+        raise LLMResponseError(f"{label}.{field_name} must be a boolean.")
+    return value
+
+
+def _required_str_list(payload: dict[str, Any], field_name: str, label: str) -> list[str]:
+    value = payload.get(field_name)
+    if not isinstance(value, list):
+        raise LLMResponseError(f"{label}.{field_name} must be a list.")
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise LLMResponseError(f"{label}.{field_name} items must be strings.")
+        text = item.strip()
+        if text:
+            items.append(text)
+    return items
+
+
+def _required_str_dict(payload: dict[str, Any], field_name: str, label: str) -> dict[str, str]:
+    value = payload.get(field_name)
+    if not isinstance(value, dict):
+        raise LLMResponseError(f"{label}.{field_name} must be an object.")
+    result: dict[str, str] = {}
+    for key, item in value.items():
+        if not isinstance(key, str) or not isinstance(item, str):
+            raise LLMResponseError(f"{label}.{field_name} keys and values must be strings.")
+        if key.strip() and item.strip():
+            result[key.strip()] = item.strip()
+    return result
 
 
 @dataclass
@@ -14,6 +94,16 @@ class StyleSample:
     source_chapter: int
     content: str  # 20-50字原文片段
     style_notes: str  # 为何典型
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "StyleSample":
+        payload = _require_mapping(payload, "StyleSample")
+        _require_fields(payload, ("source_chapter", "content", "style_notes"), "StyleSample")
+        return cls(
+            source_chapter=_required_int(payload, "source_chapter", "StyleSample"),
+            content=_required_str(payload, "content", "StyleSample", allow_empty=True),
+            style_notes=_required_str(payload, "style_notes", "StyleSample", allow_empty=True),
+        )
 
 
 @dataclass
@@ -43,6 +133,47 @@ class WritingStyle:
     representative_samples: list[StyleSample] = field(default_factory=list)
     style_summary: str = ""  # 100-150字风格总结，用于提示词
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "WritingStyle":
+        payload = _require_mapping(payload, "WritingStyle")
+        _require_fields(
+            payload,
+            (
+                "avg_sentence_length",
+                "sentence_variety",
+                "paragraph_density",
+                "register",
+                "characteristic_words",
+                "idiom_frequency",
+                "metaphor_style",
+                "description_focus",
+                "parallelism_use",
+                "tone_markers",
+                "narrator_style",
+                "representative_samples",
+                "style_summary",
+            ),
+            "WritingStyle",
+        )
+        sample_payload = payload.get("representative_samples")
+        if not isinstance(sample_payload, list):
+            raise LLMResponseError("WritingStyle.representative_samples must be a list.")
+        return cls(
+            avg_sentence_length=_required_int(payload, "avg_sentence_length", "WritingStyle"),
+            sentence_variety=_required_str(payload, "sentence_variety", "WritingStyle"),
+            paragraph_density=_required_str(payload, "paragraph_density", "WritingStyle"),
+            register=_required_str(payload, "register", "WritingStyle"),
+            characteristic_words=_required_str_list(payload, "characteristic_words", "WritingStyle"),
+            idiom_frequency=_required_str(payload, "idiom_frequency", "WritingStyle"),
+            metaphor_style=_required_str(payload, "metaphor_style", "WritingStyle", allow_empty=True),
+            description_focus=_required_str_list(payload, "description_focus", "WritingStyle"),
+            parallelism_use=_required_str(payload, "parallelism_use", "WritingStyle"),
+            tone_markers=_required_str_list(payload, "tone_markers", "WritingStyle"),
+            narrator_style=_required_str(payload, "narrator_style", "WritingStyle"),
+            representative_samples=[StyleSample.from_dict(item) for item in sample_payload],
+            style_summary=_required_str(payload, "style_summary", "WritingStyle", allow_empty=True),
+        )
+
 
 @dataclass
 class ChapterSummary:
@@ -54,12 +185,40 @@ class ChapterSummary:
     synopsis: str
     irreversible_flags: list[str] = field(default_factory=list)
 
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "ChapterSummary":
+        payload = _require_mapping(payload, "ChapterSummary")
+        _require_fields(
+            payload,
+            ("chapter", "title", "pov", "beats", "mood", "synopsis", "irreversible_flags"),
+            "ChapterSummary",
+        )
+        return cls(
+            chapter=_required_int(payload, "chapter", "ChapterSummary"),
+            title=_required_str(payload, "title", "ChapterSummary"),
+            pov=_required_str(payload, "pov", "ChapterSummary"),
+            beats=_required_str_list(payload, "beats", "ChapterSummary"),
+            mood=_required_str(payload, "mood", "ChapterSummary"),
+            synopsis=_required_str(payload, "synopsis", "ChapterSummary"),
+            irreversible_flags=_required_str_list(payload, "irreversible_flags", "ChapterSummary"),
+        )
+
 
 @dataclass
 class EventImpact:
     power_shifts: dict[str, str] = field(default_factory=dict)
     relation_changes: dict[str, str] = field(default_factory=dict)
     world_flags: list[str] = field(default_factory=list)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "EventImpact":
+        payload = _require_mapping(payload, "EventImpact")
+        _require_fields(payload, ("power_shifts", "relation_changes", "world_flags"), "EventImpact")
+        return cls(
+            power_shifts=_required_str_dict(payload, "power_shifts", "EventImpact"),
+            relation_changes=_required_str_dict(payload, "relation_changes", "EventImpact"),
+            world_flags=_required_str_list(payload, "world_flags", "EventImpact"),
+        )
 
 
 @dataclass
@@ -75,16 +234,23 @@ class PlotEvent:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PlotEvent":
         """Instantiate a PlotEvent from a dictionary payload."""
-        impact_data = payload.get("impact", {})
-        impact = EventImpact(**impact_data)
+        payload = _require_mapping(payload, "PlotEvent")
+        _require_fields(
+            payload,
+            ("event_id", "chapter", "type", "participants", "summary", "impact", "is_irreversible"),
+            "PlotEvent",
+        )
+        event_type = _required_str(payload, "type", "PlotEvent")
+        if event_type not in _VALID_EVENT_TYPES:
+            raise LLMResponseError(f"Invalid PlotEvent.type: {event_type!r}")
         return cls(
-            event_id=payload.get("event_id", ""),
-            chapter=payload.get("chapter", 0),
-            type=payload.get("type", "progress"),
-            participants=payload.get("participants", []),
-            summary=payload.get("summary", ""),
-            impact=impact,
-            is_irreversible=payload.get("is_irreversible", False),
+            event_id=_required_str(payload, "event_id", "PlotEvent"),
+            chapter=_required_int(payload, "chapter", "PlotEvent"),
+            type=event_type,
+            participants=_required_str_list(payload, "participants", "PlotEvent"),
+            summary=_required_str(payload, "summary", "PlotEvent"),
+            impact=EventImpact.from_dict(payload.get("impact")),
+            is_irreversible=_required_bool(payload, "is_irreversible", "PlotEvent"),
         )
 
 
@@ -103,26 +269,18 @@ class Relationship:
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "Relationship":
-        """Instantiate from legacy payloads supporting both target/targets."""
-        raw_targets = payload.get("targets")
-        if raw_targets is None:
-            raw_target = payload.get("target")
-            if isinstance(raw_target, str):
-                raw_targets = [raw_target]
-            elif isinstance(raw_target, list):
-                raw_targets = [item for item in raw_target if isinstance(item, str)]
-            else:
-                raw_targets = []
-        elif isinstance(raw_targets, str):
-            raw_targets = [raw_targets]
-        else:
-            raw_targets = [item for item in raw_targets if isinstance(item, str)]
+        """Instantiate from a strict relationship payload."""
+        payload = _require_mapping(payload, "Relationship")
+        _require_fields(payload, ("targets", "relation_type", "sentiment", "description", "source"), "Relationship")
+        sentiment = _required_str(payload, "sentiment", "Relationship")
+        if sentiment not in _VALID_RELATION_SENTIMENTS:
+            raise LLMResponseError(f"Invalid Relationship.sentiment: {sentiment!r}")
         return cls(
-            targets=raw_targets,
-            relation_type=payload.get("relation_type", "acquaintance"),
-            sentiment=payload.get("sentiment", "neutral"),
-            description=payload.get("description", ""),
-            source=payload.get("source"),
+            targets=_required_str_list(payload, "targets", "Relationship"),
+            relation_type=_required_str(payload, "relation_type", "Relationship"),
+            sentiment=sentiment,
+            description=_required_str(payload, "description", "Relationship", allow_empty=True),
+            source=_required_str(payload, "source", "Relationship"),
         )
 
 
@@ -139,15 +297,26 @@ class CharacterState:
     @classmethod
     def from_dict(cls, payload: dict[str, Any], name_hint: str = "") -> "CharacterState":
         """Instantiate a CharacterState from a dictionary payload."""
-        relationships = [Relationship.from_dict(r) for r in payload.get("relationships", [])]
+        payload = _require_mapping(payload, "CharacterState")
+        _require_fields(
+            payload,
+            ("name", "aliases", "realm", "role", "personality", "relationships", "unresolved"),
+            "CharacterState",
+        )
+        role = _required_str(payload, "role", "CharacterState")
+        if role not in _VALID_CHARACTER_ROLES:
+            raise LLMResponseError(f"Invalid CharacterState.role: {role!r}")
+        relationship_payload = payload.get("relationships")
+        if not isinstance(relationship_payload, list):
+            raise LLMResponseError("CharacterState.relationships must be a list.")
         return cls(
-            name=payload.get("name", name_hint),
-            aliases=payload.get("aliases", []),
-            realm=payload.get("realm"),
-            role=payload.get("role", "minor"),
-            personality=payload.get("personality", []),
-            relationships=relationships,
-            unresolved=payload.get("unresolved", []),
+            name=_required_str(payload, "name", "CharacterState") or name_hint,
+            aliases=_required_str_list(payload, "aliases", "CharacterState"),
+            realm=_optional_str(payload, "realm", "CharacterState"),
+            role=role,
+            personality=_required_str_list(payload, "personality", "CharacterState"),
+            relationships=[Relationship.from_dict(r) for r in relationship_payload],
+            unresolved=_required_str_list(payload, "unresolved", "CharacterState"),
         )
 
 
@@ -158,6 +327,28 @@ class StoryState:
     major_conflicts: list[str]
     time_constraints: list[str]
     unresolved_events: list[str]
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> "StoryState":
+        payload = _require_mapping(payload, "StoryState")
+        _require_fields(
+            payload,
+            ("current_arc", "world_tension", "major_conflicts", "time_constraints", "unresolved_events"),
+            "StoryState",
+        )
+        current_arc = _required_str(payload, "current_arc", "StoryState")
+        if current_arc not in _VALID_STORY_ARCS:
+            raise LLMResponseError(f"Invalid StoryState.current_arc: {current_arc!r}")
+        world_tension = _required_str(payload, "world_tension", "StoryState")
+        if world_tension not in _VALID_WORLD_TENSIONS:
+            raise LLMResponseError(f"Invalid StoryState.world_tension: {world_tension!r}")
+        return cls(
+            current_arc=current_arc,
+            world_tension=world_tension,
+            major_conflicts=_required_str_list(payload, "major_conflicts", "StoryState"),
+            time_constraints=_required_str_list(payload, "time_constraints", "StoryState"),
+            unresolved_events=_required_str_list(payload, "unresolved_events", "StoryState"),
+        )
 
 
 @dataclass
@@ -190,39 +381,36 @@ class StoryContext:
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "StoryContext":
         """Instantiate a StoryContext from a dictionary payload."""
-        chapter_window = [ChapterSummary(**item) for item in payload.get("chapter_window", [])]
-        events = [PlotEvent.from_dict(item) for item in payload.get("events", [])]
+        payload = _require_mapping(payload, "StoryContext")
+        _require_fields(
+            payload,
+            ("metadata", "chapter_window", "events", "characters", "story_state", "writing_style"),
+            "StoryContext",
+        )
+        chapter_payload = payload.get("chapter_window")
+        events_payload = payload.get("events")
+        characters_payload = payload.get("characters")
+        if not isinstance(chapter_payload, list):
+            raise LLMResponseError("StoryContext.chapter_window must be a list.")
+        if not isinstance(events_payload, list):
+            raise LLMResponseError("StoryContext.events must be a list.")
+        if not isinstance(characters_payload, dict):
+            raise LLMResponseError("StoryContext.characters must be an object.")
+        metadata = payload.get("metadata")
+        if not isinstance(metadata, dict):
+            raise LLMResponseError("StoryContext.metadata must be an object.")
+        chapter_window = [ChapterSummary.from_dict(item) for item in chapter_payload]
+        events = [PlotEvent.from_dict(item) for item in events_payload]
         characters = {
             name: CharacterState.from_dict(value, name_hint=name)
-            for name, value in payload.get("characters", {}).items()
+            for name, value in characters_payload.items()
         }
         story_state_payload = payload.get("story_state")
-        story_state = None
-        if story_state_payload:
-            story_state = StoryState(**story_state_payload)
+        story_state = StoryState.from_dict(story_state_payload) if story_state_payload is not None else None
         writing_style_payload = payload.get("writing_style")
-        writing_style = None
-        if writing_style_payload:
-            samples = [
-                StyleSample(**s) for s in writing_style_payload.get("representative_samples", [])
-            ]
-            writing_style = WritingStyle(
-                avg_sentence_length=writing_style_payload.get("avg_sentence_length", 20),
-                sentence_variety=writing_style_payload.get("sentence_variety", "mixed"),
-                paragraph_density=writing_style_payload.get("paragraph_density", "medium"),
-                register=writing_style_payload.get("register", "literary"),
-                characteristic_words=writing_style_payload.get("characteristic_words", []),
-                idiom_frequency=writing_style_payload.get("idiom_frequency", "sparse"),
-                metaphor_style=writing_style_payload.get("metaphor_style", ""),
-                description_focus=writing_style_payload.get("description_focus", []),
-                parallelism_use=writing_style_payload.get("parallelism_use", "rare"),
-                tone_markers=writing_style_payload.get("tone_markers", []),
-                narrator_style=writing_style_payload.get("narrator_style", "detached"),
-                representative_samples=samples,
-                style_summary=writing_style_payload.get("style_summary", ""),
-            )
+        writing_style = WritingStyle.from_dict(writing_style_payload) if writing_style_payload is not None else None
         return cls(
-            metadata=payload.get("metadata", {}),
+            metadata=metadata,
             chapter_window=chapter_window,
             events=events,
             characters=characters,
