@@ -54,7 +54,10 @@
 
 - **模块化**：每个功能独立成模块，便于维护和测试
 - **可扩展**：LLM 层抽象，支持多种模型后端
-- **内容理解优先**：所有处理基于对小说的深度理解（人物、事件、关系）
+- **LLM 语义优先**：人物、事件、关系、故事状态、读者 hint、结局审查、删除/桥接文本等语义判断都由 LLM 完成
+- **Python 只做确定性流程**：本地代码负责分块、排序、缓存、索引、去重、prompt 渲染、JSON/schema 校验和错误上报
+- **不做语义兜底**：LLM 不可用、返回空内容、坏 JSON 或缺少必需字段时直接失败，不用关键词、正则、计数或默认值伪造结果
+- **分析粒度独立于上下文窗口**：大上下文模型可以减少请求次数，但不能把整本书压成单个分析单元；人物/事件/状态抽取仍按稳定语义单元执行
 - **简单优先**：CLI 为主，避免过度设计
 - **可复现**：相同参数产出相同结果（设置固定 seed）
 
@@ -597,9 +600,9 @@ class CharacterTagger:
     def tag(self, segments: list[Segment]) -> list[Segment]:
         """为段落标注人物
 
-        使用规则匹配（非 LLM）：
-        - 精确匹配人物名和别名
-        - 代词消解（简单规则：最近提及）
+        使用已由 LLM 抽取出的人物主名/别名做精确索引：
+        - 只服务检索和缓存，不做人物关系或剧情语义判断
+        - 不做代词消解、不根据出现次数推断角色重要性
         """
         for seg in segments:
             seg.characters = self._find_characters(seg.content)
@@ -844,7 +847,7 @@ class FilterResult:
 
 ---
 
-#### 4.6.3 人物删除 (`character_remover.py`) - 检索优先
+#### 4.6.3 人物删除 (`character_remover.py`) - LLM 决策
 
 ```python
 class CharacterRemover:
@@ -861,10 +864,9 @@ class CharacterRemover:
         处理流程：
         1. 检索不包含目标人物的段落（保留）
         2. 检索包含目标人物的段落（待处理）
-        3. 评估待处理段落：
-           - 人物仅被提及 → 文本替换删除名字
-           - 人物为主要参与者 → 整段删除
-           - 人物影响主线逻辑 → 最小改写
+        3. 将每个待处理段落交给 LLM，返回 JSON action：
+           - delete：整段删除
+           - rewrite：按原风格改写并移除指定人物
         4. 拼接结果
         """
         # Step 1: 检索排除目标人物的段落
@@ -877,35 +879,16 @@ class CharacterRemover:
             include=characters, mode="strict"
         )
 
-        # Step 3: 评估每个受影响段落
+        # Step 3: 由 LLM 评估每个受影响段落
         processed = []
         for seg in affected_segments:
-            action = self._evaluate_segment(seg, characters, context)
-            if action.type == "keep_with_replace":
-                # 简单文本替换，删除人物名
-                processed.append(self._replace_names(seg, characters))
-            elif action.type == "minimal_rewrite":
-                # 最小改写（仅此处调用 LLM）
-                processed.append(self._minimal_rewrite(seg, characters, context))
+            action = self._rewrite_or_delete(seg, characters, context)
+            if action.type == "rewrite":
+                processed.append(action.segment)
             # action.type == "delete" → 不加入
 
-        # Step 4: 合并并修复断点
-        return self._assemble_and_fix(kept_segments, processed, context)
-
-    def _evaluate_segment(self, seg: Segment, chars: list[str],
-                          ctx: StoryContext) -> Action:
-        """评估段落处理方式
-
-        判断依据：
-        - 人物出现频次
-        - 是否为对话主体
-        - 是否涉及关键事件
-        """
-        ...
-
-    def _replace_names(self, seg: Segment, chars: list[str]) -> Segment:
-        """简单文本替换（无 LLM）"""
-        ...
+        # Step 4: 合并
+        return self._assemble(kept_segments, processed)
 
     def _minimal_rewrite(self, seg: Segment, chars: list[str],
                          ctx: StoryContext) -> Segment:
@@ -946,7 +929,9 @@ class EndingWriter:
         - 保持人物性格一致性
         - 延续已建立的人物关系
         - 呼应前文关键事件
-        - 借助 SegmentIndex 识别最后几个场景及其节奏
+        - 借助 SegmentIndex 提供最近片段尾部作为承接锚点
+        - 先用 LLM 抽取读者 hint 的结构化约束
+        - 最终用 LLM reviewer 审查约束满足度和剧情自洽性
         """
         ...
 ```
@@ -1101,6 +1086,13 @@ parser:
 prompt:
   margin: 20000                 # 给指令、历史摘要和结构化输出预留空间
 
+# 分析粒度
+analysis:
+  target_unit_chars: 8000       # 语义分析单元大小
+  min_units: 8
+  max_units_per_batch: 8
+  batch_context_chars: 120000
+
 # 压缩配置
 compress:
   default_level: medium
@@ -1223,7 +1215,7 @@ cache:
 
 ### 7.3 错误处理
 
-- LLM 调用失败：重试 3 次，记录日志
+- LLM 调用失败或返回坏 JSON：直接报错，不使用 Python 语义兜底生成伪结果
 - 文件读取失败：明确错误提示
 - 内存不足：提示减小 chunk_size
 
@@ -1308,7 +1300,7 @@ uv run story --help
 
 - CLI 入口通过 `_build_llm(settings)` 构造单例 Provider，再把同一个实例注入 `StoryAnalyzer` 与四个核心业务，确保一次命令只建立一个 HTTP client。
 - `Settings.llm` 提供 `provider/model/base_url/temperature/context_window/max_tokens/timeout/seed`，默认使用 `openai` provider，指向 `https://api.deepseek.com` 与 `deepseek-v4-pro`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
-- `max_tokens` 是单次生成输出上限；`context_window` 是模型上下文窗口，用于分块和 Prompt 截断预算。`_split_text()` 使用 `min(parser.chunk_size, context_window - prompt.margin)`，默认 12 万字符分块和 2000 字符重叠，以减少 DeepSeek API 请求次数并保留相邻块连续性。
+- `max_tokens` 是单次生成输出上限；`context_window` 是模型上下文窗口，用于 Prompt 截断预算。分析阶段通过 `_split_analysis_text()` 使用 `analysis.target_unit_chars` 形成稳定语义单元，避免大上下文模型把整本书压成单个“章节”；`parser.chunk_size` 仍作为业务处理和通用分块上限。
 - `OpenAICompatibleProvider` 默认请求 `/v1/chat/completions`；当 `base_url` 是 DeepSeek 官方域名时，请求官方 OpenAI-compatible 路径 `/chat/completions`。分析抽取类调用传入 `no_think=True` 时，会转换为 DeepSeek 支持的 `thinking: {"type": "disabled"}`，降低结构化 JSON 输出被思考内容污染的概率；非 DeepSeek API 不会收到该专用参数。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 

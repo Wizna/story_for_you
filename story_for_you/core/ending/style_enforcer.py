@@ -1,19 +1,10 @@
-"""Style enforcement and post-processing for ending writer.
-
-Provides deduplication, quality filtering, and text cleanup utilities.
-"""
+"""Mechanical post-processing for ending writer output."""
 
 from __future__ import annotations
 
 import logging
 import re
 from typing import TYPE_CHECKING
-
-from story_for_you.core.ending.constants import (
-    LOW_QUALITY_PHRASES,
-    META_PATTERNS,
-    QUESTION_MARKERS,
-)
 
 if TYPE_CHECKING:
     from story_for_you.analysis.context import WritingStyle
@@ -26,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class StyleEnforcer:
-    """Enforces style consistency and quality in generated text."""
+    """Applies non-semantic cleanup such as duplicate paragraph removal."""
 
     DEDUP_SIMILARITY_THRESHOLD = 0.25
 
@@ -34,19 +25,15 @@ class StyleEnforcer:
         self.style = style
 
     def post_process(self, text: str) -> str:
-        """Deduplicate重复段落，过滤元内容和低质量短语。"""
+        """Deduplicate repeated paragraphs without interpreting story semantics."""
 
         if not text:
             return text
 
-        # 第零步：剥离元内容（编辑提示、标记等）
-        working = self._strip_meta_content(text)
-
-        paragraphs = [para for para in working.split("\n\n") if para.strip()]
+        paragraphs = [para for para in text.split("\n\n") if para.strip()]
         if not paragraphs:
             return text
 
-        # 第一步：完全相同段落去重
         normalized_seen: set[str] = set()
         cleaned: list[str] = []
         last_norm = ""
@@ -58,18 +45,8 @@ class StyleEnforcer:
             normalized_seen.add(norm)
             last_norm = norm
 
-        # 第二步：高相似度段落去重（基于句子重叠）
         cleaned = self._dedupe_similar_paragraphs(cleaned)
-
-        # 第三步：对文学/古典风格强制过滤低质量短语
-        register = getattr(self.style, "register", "mixed").lower() if self.style else "mixed"
-        if register in ("literary", "classical"):
-            cleaned = self._filter_low_quality_sentences(cleaned)
-
-        # 第四步：过滤非对话问句段落（可能是调试残余或草稿提问）
-        cleaned = self._filter_question_paragraphs(cleaned)
-
-        return "\n\n".join(cleaned) if cleaned else working
+        return "\n\n".join(cleaned) if cleaned else text
 
     def filter_duplicate_bridges(self, polished: str, bridges: list[str]) -> list[str]:
         """Filter out bridge paragraphs that are too similar to existing polished content.
@@ -113,79 +90,6 @@ class StyleEnforcer:
                 existing_first_sentences.add(bridge_first)
 
         return filtered
-
-    def _filter_low_quality_sentences(self, paragraphs: list[str]) -> list[str]:
-        """从段落中移除包含低质量短语的句子。"""
-        result: list[str] = []
-        for para in paragraphs:
-            # 按句号分割
-            sentences = re.split(r"(。|！|？)", para)
-            filtered_parts: list[str] = []
-            i = 0
-            while i < len(sentences):
-                sentence = sentences[i]
-                # 保留标点符号
-                punct = sentences[i + 1] if i + 1 < len(sentences) and sentences[i + 1] in "。！？" else ""
-
-                # 检查是否包含低质量短语
-                has_bad_phrase = any(phrase in sentence for phrase in LOW_QUALITY_PHRASES)
-                if has_bad_phrase:
-                    logger.info("移除低质量句子: %s", sentence[:30] + "...")
-                elif sentence.strip():
-                    filtered_parts.append(sentence + punct)
-
-                i += 2 if punct else 1
-
-            # 重新组合段落
-            if filtered_parts:
-                new_para = "".join(filtered_parts).strip()
-                if new_para:
-                    result.append(new_para)
-        return result
-
-    def _filter_question_paragraphs(self, paragraphs: list[str]) -> list[str]:
-        """过滤以问号结尾的非对话段落。
-
-        这类段落通常是调试残余、草稿提问或LLM的元叙述，不应出现在正文中。
-        保留对话中的问句（引号内的问句）。
-        """
-        result: list[str] = []
-        for para in paragraphs:
-            para_stripped = para.strip()
-            if not para_stripped:
-                continue
-
-            # 检查段落是否以问号结尾（非对话）
-            if para_stripped.endswith("？"):
-                # 检查是否是对话（引号内的内容）
-                # 对话格式：..."xxx？" 或 "xxx？"
-                is_dialogue = (
-                    para_stripped.endswith('"？"')
-                    or para_stripped.endswith('"')
-                    or '："' in para_stripped
-                    or ':"' in para_stripped
-                )
-                if not is_dialogue:
-                    # 检查是否包含问句特征词
-                    has_question_marker = any(marker in para_stripped for marker in QUESTION_MARKERS)
-                    if has_question_marker:
-                        logger.debug("移除非对话问句段落: %s...", para_stripped[:30])
-                        continue
-
-            result.append(para_stripped)
-        return result
-
-    def _strip_meta_content(self, text: str) -> str:
-        """剥离 LLM 生成的元内容标注（编辑提示、版本标记等）。
-
-        对每一行应用 META_PATTERNS 正则，将匹配到的元内容替换为空。
-        """
-        result = text
-        for pattern in META_PATTERNS:
-            result = re.sub(pattern, "", result, flags=re.MULTILINE)
-        # 清理多余空行（合并连续空行为最多两个换行）
-        result = re.sub(r"\n{3,}", "\n\n", result)
-        return result.strip()
 
     def _dedupe_similar_paragraphs(self, paragraphs: list[str], threshold: float = DEDUP_SIMILARITY_THRESHOLD) -> list[str]:
         """移除与之前段落高度相似的段落。

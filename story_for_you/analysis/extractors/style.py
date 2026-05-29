@@ -5,7 +5,7 @@ from typing import Any
 
 from story_for_you.analysis.context import ChapterSummary, StyleSample, WritingStyle
 from story_for_you.analysis.prompting import fill_template, load_template
-from story_for_you.core.exceptions import LLMError
+from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
 
@@ -40,11 +40,26 @@ class StyleExtractor:
         samples: list[tuple[int, str]] = []
         indices = self._sample_indices(len(chapters))
         for idx in indices:
-            content = chapters[idx].strip()
-            if len(content) > self.SAMPLE_SIZE:
-                content = content[: self.SAMPLE_SIZE]
+            content = self._sample_body_text(chapters[idx].strip(), position=idx, total=len(chapters))
             samples.append((idx + 1, content))
         return samples
+
+    def _sample_body_text(self, content: str, *, position: int, total: int) -> str:
+        """Sample narrative body text, avoiding front matter when possible."""
+        if not content:
+            return ""
+        cleaned = content
+        if len(cleaned) <= self.SAMPLE_SIZE:
+            return cleaned
+        if total == 1:
+            start = max(0, len(cleaned) // 2 - self.SAMPLE_SIZE // 2)
+            return cleaned[start : start + self.SAMPLE_SIZE]
+        if position == 0:
+            return cleaned[: self.SAMPLE_SIZE]
+        if position >= total - 1:
+            return cleaned[-self.SAMPLE_SIZE :]
+        start = max(0, len(cleaned) // 2 - self.SAMPLE_SIZE // 2)
+        return cleaned[start : start + self.SAMPLE_SIZE]
 
     def _sample_indices(self, total: int) -> list[int]:
         """根据章节总数选取样本索引。"""
@@ -106,71 +121,73 @@ class StyleExtractor:
 
     def _execute_and_parse(self, prompt: str) -> WritingStyle:
         """执行 LLM 调用并解析结果。"""
-        try:
-            response = self.llm.generate(prompt=prompt, options={"no_think": True})
-            return self._parse_response(response.content)
-        except LLMError as exc:
-            logger.warning("Style extraction failed, using fallback: %s", exc)
-            return self._fallback_style()
+        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        return self._parse_response(response.content)
 
     def _parse_response(self, content: str) -> WritingStyle:
         """解析 LLM 返回的 JSON 响应。"""
         payload = load_json_response(content)
-        if payload is None:
-            logger.warning("Style extractor returned invalid JSON, using fallback.")
-            return self._fallback_style()
+        if not isinstance(payload, dict):
+            raise LLMResponseError("Style extractor returned invalid JSON object.")
         return self._payload_to_style(payload)
 
     def _payload_to_style(self, data: dict[str, Any]) -> WritingStyle:
         """将 JSON payload 转换为 WritingStyle 对象。"""
+        for field_name in (
+            "avg_sentence_length",
+            "sentence_variety",
+            "paragraph_density",
+            "register",
+            "characteristic_words",
+            "idiom_frequency",
+            "metaphor_style",
+            "description_focus",
+            "parallelism_use",
+            "tone_markers",
+            "narrator_style",
+            "representative_samples",
+            "style_summary",
+        ):
+            if field_name not in data:
+                raise LLMResponseError(f"Style extractor response missing required field: {field_name}")
         samples = []
-        for item in data.get("representative_samples", [])[:3]:
-            if isinstance(item, dict):
-                samples.append(
-                    StyleSample(
-                        source_chapter=item.get("source_chapter", 0),
-                        content=str(item.get("content", "")),
-                        style_notes=str(item.get("style_notes", "")),
-                    )
+        sample_payload = data.get("representative_samples")
+        if not isinstance(sample_payload, list):
+            raise LLMResponseError("Style representative_samples must be a list.")
+        for item in sample_payload[:3]:
+            if not isinstance(item, dict):
+                raise LLMResponseError("Style sample item must be an object.")
+            for field_name in ("source_chapter", "content", "style_notes"):
+                if field_name not in item:
+                    raise LLMResponseError(f"Style sample missing required field: {field_name}")
+            samples.append(
+                StyleSample(
+                    source_chapter=int(item.get("source_chapter")),
+                    content=str(item.get("content", "")),
+                    style_notes=str(item.get("style_notes", "")),
                 )
+            )
+        for field_name in ("characteristic_words", "description_focus", "tone_markers"):
+            if not isinstance(data.get(field_name), list):
+                raise LLMResponseError(f"Style field must be a list: {field_name}")
         return WritingStyle(
-            avg_sentence_length=int(data.get("avg_sentence_length", 20)),
-            sentence_variety=str(data.get("sentence_variety", "mixed")),
-            paragraph_density=str(data.get("paragraph_density", "medium")),
-            register=str(data.get("register", "literary")),
-            characteristic_words=self._normalize_list(data.get("characteristic_words", [])),
-            idiom_frequency=str(data.get("idiom_frequency", "sparse")),
+            avg_sentence_length=int(data.get("avg_sentence_length")),
+            sentence_variety=str(data.get("sentence_variety")),
+            paragraph_density=str(data.get("paragraph_density")),
+            register=str(data.get("register")),
+            characteristic_words=self._normalize_list(data.get("characteristic_words")),
+            idiom_frequency=str(data.get("idiom_frequency")),
             metaphor_style=str(data.get("metaphor_style", "")),
-            description_focus=self._normalize_list(data.get("description_focus", [])),
-            parallelism_use=str(data.get("parallelism_use", "rare")),
-            tone_markers=self._normalize_list(data.get("tone_markers", [])),
-            narrator_style=str(data.get("narrator_style", "detached")),
+            description_focus=self._normalize_list(data.get("description_focus")),
+            parallelism_use=str(data.get("parallelism_use")),
+            tone_markers=self._normalize_list(data.get("tone_markers")),
+            narrator_style=str(data.get("narrator_style")),
             representative_samples=samples,
             style_summary=str(data.get("style_summary", "")),
         )
 
     def _normalize_list(self, value: Any) -> list[str]:
         """确保返回字符串列表。"""
-        if isinstance(value, list):
-            return [str(item) for item in value if item][:_MAX_STYLE_LIST_ITEMS]
-        if isinstance(value, str):
-            return [value]
-        return []
-
-    def _fallback_style(self) -> WritingStyle:
-        """返回默认风格（当 LLM 调用失败时）。"""
-        return WritingStyle(
-            avg_sentence_length=20,
-            sentence_variety="mixed",
-            paragraph_density="medium",
-            register="literary",
-            characteristic_words=[],
-            idiom_frequency="sparse",
-            metaphor_style="",
-            description_focus=["landscape", "psychological"],
-            parallelism_use="rare",
-            tone_markers=[],
-            narrator_style="detached",
-            representative_samples=[],
-            style_summary="（风格分析失败，请重新尝试）",
-        )
+        if not isinstance(value, list):
+            raise LLMResponseError("Style list field must be a JSON array.")
+        return [str(item) for item in value if item][:_MAX_STYLE_LIST_ITEMS]

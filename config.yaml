@@ -13,3 +13,9 @@ parser:
 
 prompt:
   margin: 20000
+
+analysis:
+  target_unit_chars: 8000
+  min_units: 8
+  max_units_per_batch: 8
+  batch_context_chars: 120000

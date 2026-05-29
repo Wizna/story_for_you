@@ -43,15 +43,48 @@ def _load_settings(config: Optional[Path]) -> Settings:
     return loader.load()
 
 
-def _split_text(text: str, settings: Settings) -> list[TextChunk]:
+def _split_text(
+    text: str,
+    settings: Settings,
+    *,
+    chunk_size: int | None = None,
+    overlap: int | None = None,
+) -> list[TextChunk]:
     context_window = settings.llm.context_window or settings.llm.max_tokens
     chunk_budget = max(settings.prompt.min_chunk, context_window - settings.prompt.margin)
-    chunk_size = min(settings.parser.chunk_size, chunk_budget)
-    splitter = TextSplitter(chunk_size=chunk_size, overlap=settings.parser.overlap)
+    effective_chunk_size = min(chunk_size or settings.parser.chunk_size, chunk_budget)
+    effective_overlap = settings.parser.overlap if overlap is None else overlap
+    if effective_overlap >= effective_chunk_size:
+        effective_overlap = max(0, effective_chunk_size // 4)
+    splitter = TextSplitter(chunk_size=effective_chunk_size, overlap=effective_overlap)
     chunks = splitter.split(text)
     if not chunks:
         chunks = [TextChunk(content=text, start_pos=0, end_pos=len(text), chapter="1")]
     return chunks
+
+
+def _analysis_chunk_size(text: str, settings: Settings) -> int:
+    context_window = settings.llm.context_window or settings.llm.max_tokens
+    context_budget = max(settings.prompt.min_chunk, context_window - settings.prompt.margin)
+    target = min(settings.analysis.target_unit_chars, context_budget)
+    text_len = len(text)
+    if text_len <= target:
+        return max(settings.prompt.min_chunk, text_len)
+
+    estimated_units = max(1, (text_len + target - 1) // target)
+    should_enforce_min_units = (
+        estimated_units < settings.analysis.min_units
+        and text_len >= target * max(2, settings.analysis.min_units // 2)
+    )
+    if should_enforce_min_units:
+        target = max(settings.prompt.min_chunk, text_len // settings.analysis.min_units)
+    return max(settings.prompt.min_chunk, min(target, context_budget))
+
+
+def _split_analysis_text(text: str, settings: Settings) -> list[TextChunk]:
+    chunk_size = _analysis_chunk_size(text, settings)
+    overlap = min(settings.parser.overlap, max(0, chunk_size // 4))
+    return _split_text(text, settings, chunk_size=chunk_size, overlap=overlap)
 
 
 def _chunks_to_segments(chunks: Iterable[TextChunk]) -> list[Segment]:
@@ -75,7 +108,7 @@ def _chunks_to_segments(chunks: Iterable[TextChunk]) -> list[Segment]:
 
 
 def _reanalyze(text: str, settings: Settings, llm):
-    chunks = _split_text(text, settings)
+    chunks = _split_analysis_text(text, settings)
     chapters = [chunk.content for chunk in chunks]
     total_chapters = len(chapters)
     typer.echo(f"Preparing {total_chapters} chapter-sized chunk(s) for analysis...")
@@ -111,7 +144,7 @@ def _load_artifacts(
             segments_payload = json.loads(segments_path.read_text(encoding="utf-8"))
             segments = deserialize_segments(segments_payload)
         else:
-            segments = _chunks_to_segments(_split_text(text, settings))
+            segments = _chunks_to_segments(_split_analysis_text(text, settings))
         segment_index = SegmentIndexService().build(context, segments)
         return context, segments, segment_index
     if not no_cache and not reanalyze:
@@ -219,7 +252,7 @@ def analyze(
             )
             typer.echo(f"Resuming from chapter {existing_progress.completed_chapters + 1}...")
 
-        chunks = _split_text(text, settings)
+        chunks = _split_analysis_text(text, settings)
         chapters = [chunk.content for chunk in chunks]
         total_chapters = len(chapters)
         typer.echo(f"Preparing {total_chapters} chapter-sized chunk(s) for analysis...")

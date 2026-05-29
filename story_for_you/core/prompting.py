@@ -131,50 +131,35 @@ def format_style_samples(style: WritingStyle | None, max_samples: int = 3) -> st
 
 
 def format_style_constraints(style: WritingStyle | None) -> str:
-    """根据风格类型生成不同强度的写作约束。
+    """Render style constraints from model-extracted style attributes.
 
     Args:
         style: WritingStyle object or None.
 
     Returns:
-        风格感知的写作约束文本。literary/classical 风格使用严格约束，
-        colloquial/mixed 风格使用宽松约束。
+        Prompt text that asks the LLM to apply the style model semantically.
     """
     if style is None:
         return ""
 
-    register = getattr(style, "register", "mixed").lower()
-    desc_focus = {item.lower() for item in getattr(style, "description_focus", []) if item}
+    register = getattr(style, "register", "mixed")
+    desc_focus = [item for item in getattr(style, "description_focus", []) if item]
     metaphor_style = getattr(style, "metaphor_style", "").strip()
     tone_markers = getattr(style, "tone_markers", [])
+    style_summary = getattr(style, "style_summary", "").strip()
 
-    focus_lines: list[str] = []
-    if "landscape" in desc_focus:
-        focus_lines.append("- 每段必须嵌入具体景物/方位细节，用景象映射人物情绪")
-    if "psychological" in desc_focus:
-        focus_lines.append('- 角色心理需通过细小动作、触觉或静物暗示呈现，避免直接写"他很伤心"')
-    if "action" in desc_focus:
-        focus_lines.append("- 动作描写要有起因与结果，避免无意义的打斗或奔跑")
+    lines = [
+        "## 写作约束",
+        f"- 语体判断：{register}",
+        "- 由模型根据风格摘要和示例自行判断何为不合风格的句式、词汇、节奏与叙述姿态。",
+        "- 续写必须像正文自然延伸，不要出现任务说明、审稿意见或自我解释。",
+    ]
+    if style_summary:
+        lines.append(f"- 风格摘要：{style_summary}")
+    if desc_focus:
+        lines.append("- 描写重点：" + "、".join(desc_focus))
     if metaphor_style:
-        focus_lines.append(f"- 比喻应遵循「{metaphor_style}」的习惯表达，勿加入现代化比喻")
+        lines.append(f"- 比喻风格：{metaphor_style}")
     if tone_markers:
-        whitelisted = "、".join(tone_markers[:4])
-        focus_lines.append(f"- 语气词限于：{whitelisted}，并且只在必要时使用一次")
-
-    if register in ("literary", "classical"):
-        # 文学/古典风格：严格约束
-        base = """## 写作约束（文学风格）
-- 情绪必须**间接表达**：通过动作、景物、对话暗示，禁止直接陈述（如"心中满是xxx"、"眼中满是"）
-- 禁止网文套路：避免"脸上洋溢着"、"仿佛一切都有了新的开始"、"留下一个xxx的背影"等俗套
-- 禁止解释性叙述：如"这让她感到温暖"，改为通过场景展示
-- 对话要符合时代背景，避免现代口语"""
-    else:
-        # 通俗/网文风格：宽松约束
-        base = """## 写作约束（通俗风格）
-- 情绪表达可以直接，但避免过度重复相同句式
-- 保持节奏流畅，情节推进明快
-- 避免同一段落内重复使用相同的表达方式"""
-
-    if focus_lines:
-        base = base + "\n" + "\n".join(focus_lines)
-    return base
+        lines.append("- 语气词参考：" + "、".join(tone_markers[:4]))
+    return "\n".join(lines)

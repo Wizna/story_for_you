@@ -1,67 +1,62 @@
 from __future__ import annotations
 
-import re
+import json
+from typing import Any
 
 from story_for_you.analysis.context import Relationship
+from story_for_you.analysis.prompting import fill_template, load_template
+from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
+from story_for_you.utils.json_utils import load_json_response
+
+_VALID_SENTIMENTS = {"positive", "neutral", "negative"}
 
 
 class RelationshipMapper:
-    """Maps relationship deltas between characters."""
+    """Maps relationship deltas between characters via the configured LLM."""
 
     def __init__(self, llm: LLMProvider):
         self.llm = llm
+        self.template = load_template("relationship_extraction")
 
     def map(self, chapter_text: str, characters: list[str] | None = None) -> list[Relationship]:
         """Return relationship changes observed in the text."""
-        if not characters:
+        roster = [name for name in (characters or []) if name]
+        if not roster:
             return []
-        relationships: list[Relationship] = []
-        seen: set[tuple[str, tuple[str, ...]]] = set()
-        sentences = re.split(r"(?<=[。.!?])\s+", chapter_text.strip())
-        for sentence in sentences:
-            participants = sorted({name for name in characters if name in sentence})
-            if len(participants) < 2:
-                continue
-            relation_type = self._infer_type(sentence)
-            sentiment = self._infer_sentiment(sentence)
-            description = self._render_description(sentence)
-            for source in participants:
-                targets = tuple(name for name in participants if name != source)
-                if not targets:
-                    continue
-                key = (source, targets)
-                if key in seen:
-                    continue
-                relationships.append(
-                    Relationship(
-                        targets=list(targets),
-                        relation_type=relation_type,
-                        sentiment=sentiment,
-                        description=description,
-                        source=source,
-                    )
-                )
-                seen.add(key)
-        return relationships
+        prompt = fill_template(
+            self.template,
+            chapter_text=chapter_text.strip(),
+            character_roster=json.dumps(roster, ensure_ascii=False),
+        )
+        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        payload = load_json_response(response.content)
+        if not isinstance(payload, list):
+            raise LLMResponseError("Relationship mapper response is not a JSON list.")
+        return [self._from_payload(item) for item in payload]
 
-    def _infer_type(self, sentence: str) -> str:
-        lowered = sentence.lower()
-        if any(keyword in lowered for keyword in ["battle", "fight", "argue", "敌"]):
-            return "rival"
-        if any(keyword in lowered for keyword in ["love", "ally", "救"]):
-            return "ally"
-        return "acquaintance"
+    def _from_payload(self, payload: Any) -> Relationship:
+        if not isinstance(payload, dict):
+            raise LLMResponseError("Relationship item is not a JSON object.")
+        for field_name in ("source", "targets", "relation_type", "sentiment", "description"):
+            if field_name not in payload:
+                raise LLMResponseError(f"Relationship item missing required field: {field_name}")
+        source = str(payload.get("source", "")).strip()
+        targets = self._str_list(payload.get("targets"))
+        if not source or not targets:
+            raise LLMResponseError("Relationship item must include source and targets.")
+        sentiment = str(payload.get("sentiment")).strip()
+        if sentiment not in _VALID_SENTIMENTS:
+            raise LLMResponseError(f"Invalid relationship sentiment: {sentiment!r}")
+        return Relationship(
+            targets=targets,
+            relation_type=str(payload.get("relation_type")).strip(),
+            sentiment=sentiment,
+            description=str(payload.get("description") or "").strip(),
+            source=source,
+        )
 
-    def _infer_sentiment(self, sentence: str) -> str:
-        lowered = sentence.lower()
-        if any(keyword in lowered for keyword in ["hate", "怒", "betray"]):
-            return "negative"
-        if any(keyword in lowered for keyword in ["comfort", "love", "拥抱", "救"]):
-            return "positive"
-        return "neutral"
-
-    def _render_description(self, sentence: str) -> str:
-        """Return a compact, readable description snippet."""
-        collapsed = re.sub(r"\s+", " ", sentence).strip()
-        return collapsed
+    def _str_list(self, value: Any) -> list[str]:
+        if not isinstance(value, list):
+            raise LLMResponseError("Relationship targets must be a list.")
+        return [str(item).strip() for item in value if str(item).strip()]

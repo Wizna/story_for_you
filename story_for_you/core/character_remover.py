@@ -1,11 +1,11 @@
-from dataclasses import dataclass
-from typing import Literal
+from __future__ import annotations
 
-import logging
+from dataclasses import dataclass
+from typing import Any
 
 from story_for_you.analysis.context import StoryContext
 from story_for_you.config.settings import RenderingLimits
-from story_for_you.core.exceptions import LLMError
+from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment
 from story_for_you.llm.base import LLMProvider
@@ -15,9 +15,7 @@ from story_for_you.core.prompting import (
     format_style_guide,
     load_template,
 )
-
-logger = logging.getLogger(__name__)
-
+from story_for_you.utils.json_utils import load_json_response
 
 @dataclass
 class RemoveResult:
@@ -29,7 +27,7 @@ class RemoveResult:
 
 
 class CharacterRemover:
-    """Removes or rewrites characters from story segments."""
+    """Removes or rewrites characters from story segments using the configured LLM."""
 
     def __init__(self, llm: LLMProvider, retriever: SegmentRetriever, rendering_limits: RenderingLimits | None = None):
         self.llm = llm
@@ -39,23 +37,27 @@ class CharacterRemover:
 
     def remove(self, text: str, characters: list[str], context: StoryContext, mode: str = "hard") -> RemoveResult:
         """Return a removal result for the supplied characters."""
-        kept_segments = self.retriever.retrieve_excluding(exclude=characters, mode=mode)
+        kept_segments = self.retriever.retrieve_excluding(exclude=characters, mode="hard")
         affected_segments = self.retriever.retrieve_by_characters(include=characters, mode="strict")
         processed: list[Segment] = []
-        deleted = rewritten = replaced = 0
+        deleted = rewritten = 0
         context_block = format_context_sections(context.for_prompt(limits=self._limits))
         style_guide = format_style_guide(context.writing_style)
         for segment in affected_segments:
-            action = self._evaluate_segment(segment, characters, context, mode)
+            action, content = self._rewrite_or_delete(segment, characters, context_block, mode, style_guide)
             if action == "delete":
                 deleted += 1
                 continue
-            if action == "minimal_rewrite":
-                processed.append(self._minimal_rewrite(segment, characters, context_block, mode, style_guide))
-                rewritten += 1
-            else:
-                processed.append(self._replace_names(segment, characters))
-                replaced += 1
+            processed.append(
+                Segment(
+                    segment_id=segment.segment_id,
+                    content=content,
+                    chapter=segment.chapter,
+                    characters=[name for name in segment.characters if name not in characters],
+                    metadata=segment.metadata,
+                )
+            )
+            rewritten += 1
         merged = sorted(kept_segments + processed, key=lambda seg: seg.segment_id)
         content = "\n\n".join(seg.content.strip() for seg in merged)
         ratio = len(content) / max(len(text), 1)
@@ -64,42 +66,18 @@ class CharacterRemover:
             original_ratio=ratio,
             deleted_segments=deleted,
             rewritten_segments=rewritten,
-            replaced_segments=replaced,
+            replaced_segments=0,
         )
 
-    def _evaluate_segment(
+    def _rewrite_or_delete(
         self,
         segment: Segment,
         characters: list[str],
-        context: StoryContext,
+        context_block: str,
         mode: str,
-    ) -> Literal["delete", "keep_with_replace", "minimal_rewrite"]:
-        """Decide how to treat a segment that references removed characters."""
-        lowered = segment.content.lower()
-        occurrences = sum(lowered.count(name.lower()) for name in characters)
-        if occurrences >= 3 or (mode == "hard" and occurrences >= 2):
-            return "delete"
-        if occurrences == 2 and context.story_state and context.story_state.world_tension != "low":
-            return "minimal_rewrite"
-        return "keep_with_replace"
-
-    def _replace_names(self, segment: Segment, characters: list[str]) -> Segment:
-        """Perform simple textual replacements without LLM help."""
-        content = segment.content
-        for name in characters:
-            content = content.replace(name, "")
-        return Segment(
-            segment_id=segment.segment_id,
-            content=" ".join(content.split()),
-            chapter=segment.chapter,
-            characters=[name for name in segment.characters if name not in characters],
-            metadata=segment.metadata,
-        )
-
-    def _minimal_rewrite(
-        self, segment: Segment, characters: list[str], context_block: str, mode: str, style_guide: str
-    ) -> Segment:
-        """Ask the LLM to minimally rewrite a conflicting segment."""
+        style_guide: str,
+    ) -> tuple[str, str]:
+        """Ask the LLM whether to delete or rewrite an affected segment."""
         prompt = fill_template(
             self.rewrite_template,
             context_block=context_block,
@@ -108,20 +86,19 @@ class CharacterRemover:
             segment_text=segment.content.strip(),
             style_guide=style_guide,
         )
-        rewritten = self._call_llm(prompt) or "[Adjusted] 该段落已删除关键人物引用并保留结果。"
-        return Segment(
-            segment_id=segment.segment_id,
-            content=rewritten,
-            chapter=segment.chapter,
-            characters=[name for name in segment.characters if name not in characters],
-            metadata=segment.metadata,
-        )
+        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        payload = load_json_response(response.content)
+        if not isinstance(payload, dict):
+            raise LLMResponseError("Character remover returned invalid JSON object.")
+        return self._parse_action(payload)
 
-    def _call_llm(self, prompt: str) -> str | None:
-        try:
-            response = self.llm.generate(prompt=prompt)
-        except LLMError as exc:  # pragma: no cover
-            logger.warning("Character remover rewrite failed: %s", exc)
-            return None
-        text = response.content.strip()
-        return text or None
+    def _parse_action(self, payload: dict[str, Any]) -> tuple[str, str]:
+        action = str(payload.get("action", "")).strip().lower()
+        if action not in {"delete", "rewrite"}:
+            raise LLMResponseError(f"Invalid character removal action: {action!r}")
+        content = str(payload.get("content") or "").strip()
+        if action == "rewrite" and not content:
+            raise LLMResponseError("Character removal rewrite action requires content.")
+        if action == "delete":
+            content = ""
+        return action, content

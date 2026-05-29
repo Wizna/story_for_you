@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from collections import Counter
 from typing import Any, Iterable
 
 import logging
-import re
 
 from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.prompting import load_template, render_prompt_with_budget
-from story_for_you.core.exceptions import LLMError
+from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.chinese_name_utils import (
     ROLE_PRIORITY,
@@ -25,15 +23,6 @@ _MAX_LLM_CHARACTERS = 8
 class CharacterExtractor:
     """Identifies characters present in the supplied text."""
 
-    TRAIT_TRANSLATIONS = {
-        "resolute": "坚毅",
-        "protective": "守护欲强",
-        "curious": "好奇",
-        "empathetic": "善解人意",
-        "calculating": "精明",
-        "ambitious": "野心勃勃",
-    }
-
     def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
         self.llm = llm
         self.personality_analyzer = PersonalityAnalyzer(llm)
@@ -44,8 +33,6 @@ class CharacterExtractor:
         """Return structured character states for the text."""
         prompt = self._build_prompt(text)
         characters = self._prompt_characters(prompt)
-        if not characters:
-            characters = self._heuristic_extract(text)
         merged = self.merge_aliases(characters)
         return self.personality_analyzer.analyze(merged)
 
@@ -59,12 +46,6 @@ class CharacterExtractor:
                 continue
             self._merge_into(target, character)
         return roster
-
-    def _collect_candidates(self, text: str) -> Counter[str]:
-        latin_names = re.findall(r"\b[A-Z][a-zA-Z]{2,}\b", text)
-        chinese_names = re.findall(r"[\u4e00-\u9fff]{2,3}", text)
-        tokens = latin_names + chinese_names
-        return Counter(tokens)
 
     def _build_prompt(self, text: str) -> str:
         chapter_text = text.strip()
@@ -81,29 +62,28 @@ class CharacterExtractor:
     # Internal helpers -------------------------------------------------
     def _prompt_characters(self, prompt: str) -> list[CharacterState]:
         """Use the configured LLM to extract structured characters."""
-        try:
-            response = self.llm.generate(prompt=prompt, options={"no_think": True})
-        except LLMError as exc:  # pragma: no cover - defensive against provider issues
-            logger.warning("Character extraction prompt failed: %s", exc)
-            return []
+        response = self.llm.generate(prompt=prompt, options={"no_think": True})
         payload = load_json_response(response.content)
         if payload is None:
-            logger.warning("Character extractor returned invalid JSON payload.")
-            return []
+            raise LLMResponseError("Character extractor returned invalid JSON payload.")
         if not isinstance(payload, list):
-            logger.warning("Character extractor payload is not a list.")
-            return []
+            raise LLMResponseError("Character extractor payload is not a list.")
         characters: list[CharacterState] = []
         for item in payload[:_MAX_LLM_CHARACTERS]:
+            if not isinstance(item, dict):
+                raise LLMResponseError("Character extractor list item is not an object.")
             character = self._to_character(item)
             if character:
                 characters.append(character)
         return characters
 
     def _to_character(self, data: dict) -> CharacterState | None:
+        for field_name in ("name", "aliases", "role", "realm", "personality", "unresolved"):
+            if field_name not in data:
+                raise LLMResponseError(f"Character item missing required field: {field_name}")
         name = str(data.get("name", "")).strip()
         if not name:
-            return None
+            raise LLMResponseError("Character item requires a non-empty name.")
         aliases = self._normalize_str_list(data.get("aliases", []))
         unresolved = self._normalize_str_list(data.get("unresolved", []))
         personality = self._localize_personality(self._normalize_str_list(data.get("personality", [])))
@@ -123,25 +103,7 @@ class CharacterExtractor:
         lowered = (value or "").lower()
         if lowered in ROLE_PRIORITY:
             return lowered
-        return "minor"
-
-    def _heuristic_extract(self, text: str) -> list[CharacterState]:
-        candidates = self._collect_candidates(text)
-        if not candidates:
-            return []
-        characters: list[CharacterState] = []
-        for idx, (name, _) in enumerate(candidates.most_common(_MAX_LLM_CHARACTERS)):
-            role = "main" if idx < 2 else "support" if idx < 5 else "minor"
-            characters.append(
-                CharacterState(
-                    name=name,
-                    role=role,
-                    aliases=[],
-                    personality=[],
-                    relationships=[],
-                )
-            )
-        return characters
+        raise LLMResponseError(f"Invalid character role: {value!r}")
 
     def _find_character(self, roster: list[CharacterState], candidate: CharacterState) -> CharacterState | None:
         candidate_keys = self._alias_keys(candidate)
@@ -198,14 +160,13 @@ class CharacterExtractor:
         return [item.strip() for item in raw if item and item.strip()]
 
     def _localize_personality(self, traits: Iterable[str]) -> list[str]:
-        localized: list[str] = []
+        normalized_traits: list[str] = []
         for trait in traits:
             normalized = trait.strip()
             if not normalized:
                 continue
-            translation = self.TRAIT_TRANSLATIONS.get(normalized.lower())
-            localized.append(translation or normalized)
-        return list(dict.fromkeys(localized))
+            normalized_traits.append(normalized)
+        return list(dict.fromkeys(normalized_traits))
 
 
 class PersonalityAnalyzer:

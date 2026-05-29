@@ -1,102 +1,129 @@
-"""Hint interpretation for ending writer.
-
-Parses user hints into structured directives for story continuation.
-"""
+"""LLM-backed user directive extraction for ending generation."""
 
 from __future__ import annotations
 
-import re
+import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
+
+from story_for_you.core.exceptions import LLMResponseError
+from story_for_you.core.prompting import fill_template, format_context_sections, load_template
+from story_for_you.llm.base import LLMProvider
+from story_for_you.utils.json_utils import load_json_response
 
 if TYPE_CHECKING:
     from story_for_you.analysis.context import StoryContext
+    from story_for_you.config.settings import RenderingLimits
 
 __all__ = [
     "HintDirectives",
     "HintInterpreter",
 ]
 
+_VALID_CLOSURES = {"open", "closed", "unspecified"}
+_VALID_DIRECTIONS = {"HE", "BE", "OE"}
+
 
 @dataclass
 class HintDirectives:
-    """归一化后的读者意图，便于在不同阶段复用。"""
+    """Structured reader intent extracted by the model."""
 
     normalized_text: str = "无特别要求"
     ending_direction: str | None = None
     emotional_tone: str | None = None
     focus_characters: list[str] = field(default_factory=list)
+    closure: str = "unspecified"
+    required_outcomes: list[str] = field(default_factory=list)
+    forbidden_outcomes: list[str] = field(default_factory=list)
+    required_resolutions: list[str] = field(default_factory=list)
+    style_constraints: list[str] = field(default_factory=list)
 
     def for_prompt(self) -> str:
-        """将结构化指令转成短句，用于 prompt 占位。"""
+        """Render structured directives for downstream generation prompts."""
 
-        parts: list[str] = []
-        base = self.normalized_text.strip()
-        if base and base != "无特别要求":
-            parts.append(base)
-        if self.ending_direction:
-            parts.append(f"结局方向：{self.ending_direction}")
-        if self.emotional_tone:
-            parts.append(f"情感氛围：{self.emotional_tone}")
-        if self.focus_characters:
-            parts.append("重点人物：" + ", ".join(self.focus_characters))
-        return "；".join(parts) if parts else "无特别要求"
+        payload = {
+            "normalized_text": self.normalized_text,
+            "closure": self.closure,
+            "ending_direction": self.ending_direction,
+            "emotional_tone": self.emotional_tone,
+            "focus_characters": self.focus_characters,
+            "required_outcomes": self.required_outcomes,
+            "forbidden_outcomes": self.forbidden_outcomes,
+            "required_resolutions": self.required_resolutions,
+            "style_constraints": self.style_constraints,
+        }
+        return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
 class HintInterpreter:
-    """Interprets user hints into structured directives."""
+    """Delegates semantic interpretation of user hints to the configured LLM."""
 
-    # Ending direction keywords
-    DIRECTION_ALIASES = {
-        "HE": {"HE", "HAPPY", "HAPPY END", "HAPPY ENDING", "圆满", "大团圆", "皆大欢喜", "治愈", "希望", "甜"},
-        "BE": {"BE", "BAD", "BE结局", "悲", "刀", "虐", "悲剧", "凄凉"},
-        "OE": {"OE", "OPEN", "留白", "开放", "未知", "OE结局"},
-    }
-
-    # Emotional tone keywords
-    TONE_ALIASES = {
-        "温暖": ["温暖", "治愈", "柔和", "明亮", "希望"],
-        "苍凉": ["苍凉", "萧瑟", "凄冷", "孤独"],
-        "热烈": ["热烈", "激昂", "燃", "热血"],
-        "哀伤": ["哀伤", "忧伤", "悲怆", "痛"],
-        "平静": ["平静", "克制", "淡然", "沉稳"],
-    }
+    def __init__(self, llm: LLMProvider, rendering_limits: RenderingLimits | None = None):
+        self.llm = llm
+        self._limits = rendering_limits
+        self.template = load_template("ending_directive")
 
     def interpret(self, raw_hint: str, context: StoryContext) -> HintDirectives:
-        """Parse简写、情绪词汇以及人物指向，生成统一指令。"""
+        """Extract structured directives without local keyword matching."""
 
-        hint = (raw_hint or "").strip()
-        directives = HintDirectives(normalized_text=hint or "无特别要求")
-        if not hint:
-            directives.focus_characters = []
-            return directives
+        hint = (raw_hint or "").strip() or "无特别要求"
+        context_block = format_context_sections(context.for_prompt(limits=self._limits))
+        prompt = fill_template(
+            self.template,
+            raw_hint=hint,
+            context_block=context_block or "(无上下文)",
+        )
+        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        payload = load_json_response(response.content)
+        if not isinstance(payload, dict):
+            raise LLMResponseError("Ending directive extraction returned invalid JSON object.")
+        return self._from_payload(payload, hint)
 
-        lowered = hint.lower()
-        upper_tokens = {token.upper() for token in re.findall(r"[A-Za-z]+", hint)}
+    def _from_payload(self, payload: dict[str, Any], raw_hint_text: str) -> HintDirectives:
+        for field_name in (
+            "normalized_text",
+            "closure",
+            "ending_direction",
+            "emotional_tone",
+            "focus_characters",
+            "required_outcomes",
+            "forbidden_outcomes",
+            "required_resolutions",
+            "style_constraints",
+        ):
+            if field_name not in payload:
+                raise LLMResponseError(f"Ending directive missing required field: {field_name}")
+        closure = str(payload.get("closure")).strip().lower()
+        if closure not in _VALID_CLOSURES:
+            raise LLMResponseError(f"Invalid closure value from directive extractor: {closure!r}")
 
-        # Detect ending direction
-        for label, keywords in self.DIRECTION_ALIASES.items():
-            if label in upper_tokens:
-                directives.ending_direction = label
-                break
-            if any(keyword.lower() in lowered for keyword in keywords if keyword.isascii()):
-                directives.ending_direction = label
-                break
-            if any(keyword in hint for keyword in keywords if not keyword.isascii()):
-                directives.ending_direction = label
-                break
+        ending_direction = payload.get("ending_direction")
+        if ending_direction is not None:
+            ending_direction = str(ending_direction).strip() or None
+            if ending_direction and ending_direction not in _VALID_DIRECTIONS:
+                raise LLMResponseError(f"Invalid ending direction: {ending_direction!r}")
 
-        # Detect emotional tone
-        for tone, keywords in self.TONE_ALIASES.items():
-            if any(keyword in hint for keyword in keywords):
-                directives.emotional_tone = tone
-                break
+        return HintDirectives(
+            normalized_text=str(payload.get("normalized_text") or raw_hint_text).strip() or "无特别要求",
+            ending_direction=ending_direction,
+            emotional_tone=self._optional_str(payload.get("emotional_tone")),
+            focus_characters=self._str_list(payload.get("focus_characters")),
+            closure=closure,
+            required_outcomes=self._str_list(payload.get("required_outcomes")),
+            forbidden_outcomes=self._str_list(payload.get("forbidden_outcomes")),
+            required_resolutions=self._str_list(payload.get("required_resolutions")),
+            style_constraints=self._str_list(payload.get("style_constraints")),
+        )
 
-        # Detect focus characters
-        focus: list[str] = []
-        for name in context.characters.keys():
-            if name and name in hint:
-                focus.append(name)
-        directives.focus_characters = focus[:4]
+    def _optional_str(self, value: Any) -> str | None:
+        if value is None:
+            return None
+        text = str(value).strip()
+        return text or None
 
-        return directives
+    def _str_list(self, value: Any) -> list[str]:
+        if value is None:
+            return []
+        if not isinstance(value, list):
+            raise LLMResponseError("Ending directive list fields must be JSON arrays.")
+        return [str(item).strip() for item in value if str(item).strip()]

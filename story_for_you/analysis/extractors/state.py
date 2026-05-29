@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 import json
-import logging
 from dataclasses import asdict
 from typing import Any
 
 from story_for_you.analysis.context import PlotEvent, StoryState
 from story_for_you.analysis.prompting import fill_template, load_template
+from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
 
-logger = logging.getLogger(__name__)
+
+_VALID_ARCS = {"setup", "journey", "twist", "climax", "dark-night", "resolution"}
+_VALID_TENSIONS = {"low", "medium", "high"}
 
 
 class StateSynthesizer:
@@ -38,61 +40,33 @@ class StateSynthesizer:
             recent_context=recent_context.strip() or "暂无历史上下文。",
         )
         response = self.llm.generate(prompt=prompt, options={"no_think": True})
-        try:
-            data = load_json_response(response.content)
-            if not isinstance(data, dict):
-                raise ValueError("Story state response is not a JSON object.")
-            state = StoryState(
-                current_arc=str(data.get("current_arc") or (story_state.current_arc if story_state else "setup")),
-                world_tension=str(data.get("world_tension") or (story_state.world_tension if story_state else "low")),
-                major_conflicts=[str(item) for item in data.get("major_conflicts", [])][:5],
-                time_constraints=[str(item) for item in data.get("time_constraints", [])][:3],
-                unresolved_events=[str(item) for item in data.get("unresolved_events", [])][:5],
-            )
-            return self._stabilize_arc(state, events)
-        except (TypeError, ValueError) as exc:
-            logger.warning("Failed to synthesize story state via LLM: %s", exc)
-            state = self._fallback_update(story_state, events)
-            return self._stabilize_arc(state, events)
+        data = load_json_response(response.content)
+        if not isinstance(data, dict):
+            raise LLMResponseError("Story state response is not a JSON object.")
+        for field_name in (
+            "current_arc",
+            "world_tension",
+            "major_conflicts",
+            "time_constraints",
+            "unresolved_events",
+        ):
+            if field_name not in data:
+                raise LLMResponseError(f"Story state response missing required field: {field_name}")
+        current_arc = str(data.get("current_arc")).strip()
+        world_tension = str(data.get("world_tension")).strip()
+        if current_arc not in _VALID_ARCS:
+            raise LLMResponseError(f"Invalid story arc: {current_arc!r}")
+        if world_tension not in _VALID_TENSIONS:
+            raise LLMResponseError(f"Invalid world tension: {world_tension!r}")
+        return StoryState(
+            current_arc=current_arc,
+            world_tension=world_tension,
+            major_conflicts=self._required_str_list(data.get("major_conflicts"), "major_conflicts")[:5],
+            time_constraints=self._required_str_list(data.get("time_constraints"), "time_constraints")[:3],
+            unresolved_events=self._required_str_list(data.get("unresolved_events"), "unresolved_events")[:5],
+        )
 
-    # Fallback heuristics ----------------------------------------------------------
-    def _fallback_update(self, story_state: StoryState | None, events: list[PlotEvent]) -> StoryState:
-        if story_state is None:
-            story_state = StoryState(
-                current_arc="setup",
-                world_tension="low",
-                major_conflicts=[],
-                time_constraints=[],
-                unresolved_events=[],
-            )
-        for event in events:
-            if event.type in {"conflict", "setback"}:
-                story_state.world_tension = "high"
-                story_state.major_conflicts.append(event.summary)
-            elif event.type == "reveal":
-                if story_state.world_tension == "low":
-                    story_state.world_tension = "medium"
-                story_state.major_conflicts.append(f"Revelation: {event.summary}")
-            if event.is_irreversible:
-                story_state.unresolved_events.append(event.summary)
-        story_state.major_conflicts = story_state.major_conflicts[-5:]
-        story_state.unresolved_events = list(dict.fromkeys(story_state.unresolved_events))[-5:]
-        return story_state
-
-    def _stabilize_arc(self, story_state: StoryState, events: list[PlotEvent]) -> StoryState:
-        if not events:
-            return story_state
-        irreversible_seen = any(event.is_irreversible for event in events)
-        conflict_seen = any(event.type in {"conflict", "setback"} for event in events)
-        reveal_seen = any(event.type == "reveal" for event in events)
-
-        if story_state.current_arc == "setup":
-            if conflict_seen:
-                story_state.current_arc = "journey"
-            if irreversible_seen:
-                story_state.current_arc = "dark-night" if conflict_seen else "twist"
-            elif reveal_seen:
-                story_state.current_arc = "twist"
-        elif story_state.current_arc in {"journey", "twist"} and irreversible_seen:
-            story_state.current_arc = "dark-night"
-        return story_state
+    def _required_str_list(self, value: Any, field_name: str) -> list[str]:
+        if not isinstance(value, list):
+            raise LLMResponseError(f"Story state field must be a list: {field_name}")
+        return [str(item).strip() for item in value if str(item).strip()]

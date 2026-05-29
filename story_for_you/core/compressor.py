@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-import logging
-
 from story_for_you.analysis.context import PlotEvent, StoryContext
 from story_for_you.config.settings import RenderingLimits
-from story_for_you.core.exceptions import LLMError
+from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
 from story_for_you.core.prompting import (
@@ -16,8 +14,6 @@ from story_for_you.core.prompting import (
     format_style_samples,
     load_template,
 )
-
-logger = logging.getLogger(__name__)
 
 _SCORE_MAIN_CHARACTER = 2.0
 _SCORE_SUPPORT_CHARACTER = 1.0
@@ -61,14 +57,11 @@ class StoryCompressor:
             style_guide=style_guide,
             style_samples=style_samples,
         )
-        try:
-            response = self.llm.generate(prompt=prompt)
-            content = response.content.strip()
-            if content:
-                return content
-        except LLMError as exc:  # pragma: no cover - defensive
-            logger.warning("Story compression failed, falling back to raw segments: %s", exc)
-        return self._fallback_content(ordered, context)
+        response = self.llm.generate(prompt=prompt)
+        content = response.content.strip()
+        if not content:
+            raise LLMResponseError("Story compression returned empty content.")
+        return content
 
     # Internal helpers -------------------------------------------------
     def _select_segments(self, context: StoryContext) -> list["SegmentScore"]:
@@ -100,15 +93,6 @@ class StoryCompressor:
             if segment.chapter and event.chapter == segment.chapter:
                 matches.append(event)
         return matches
-
-    def _fallback_content(self, targets: list["SegmentScore"], context: StoryContext) -> str:
-        """Fallback concatenation when LLM compression fails."""
-        content = "\n\n".join(item.segment.content.strip() for item in targets)
-        if context.story_state and context.story_state.current_arc:
-            marker = f"[Compression:{context.story_state.current_arc}] "
-            return marker + content
-        return content
-
 
 @dataclass
 class SegmentScore:

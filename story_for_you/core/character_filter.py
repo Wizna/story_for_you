@@ -1,10 +1,8 @@
 from dataclasses import dataclass, field
 
-import logging
-
 from story_for_you.analysis.context import StoryContext
 from story_for_you.config.settings import RenderingLimits
-from story_for_you.core.exceptions import LLMError
+from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment
 from story_for_you.llm.base import LLMProvider
@@ -15,9 +13,6 @@ from story_for_you.core.prompting import (
     load_template,
 )
 from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN
-
-logger = logging.getLogger(__name__)
-
 
 @dataclass
 class BridgeInfo:
@@ -90,15 +85,11 @@ class CharacterFilter:
             after_excerpt=gap.after_excerpt or "(无后文摘录)",
             style_guide=style_guide,
         )
-        try:
-            response = self.llm.generate(prompt=prompt)
-            text = response.content.strip()
-            if text:
-                return text
-        except LLMError as exc:  # pragma: no cover
-            logger.warning("Bridge generation failed, falling back to marker: %s", exc)
-        fallback_name = characters[0] if characters else "人物"
-        return f"[Bridge] 期间与 {fallback_name} 相关的情节被省略。"
+        response = self.llm.generate(prompt=prompt)
+        text = response.content.strip()
+        if not text:
+            raise LLMResponseError("Bridge generation returned empty content.")
+        return text
 
     def _excerpt(self, content: str, tail: bool) -> str:
         snippet = content.strip()

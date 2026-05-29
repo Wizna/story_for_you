@@ -3,7 +3,6 @@ from __future__ import annotations
 import itertools
 import json
 import logging
-import re
 from typing import Any
 
 from story_for_you.analysis.context import EventImpact, PlotEvent
@@ -13,7 +12,7 @@ from story_for_you.analysis.prompting import (
     load_template,
     render_prompt_with_budget,
 )
-from story_for_you.core.exceptions import LLMError
+from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.utils.json_utils import load_json_response
 
@@ -77,22 +76,42 @@ class EventExtractor:
             error or "Unknown parse failure",
             raw_content,
         )
-        return self._fallback_extract(chapter_text, participants, chapter_no)
+        raise LLMResponseError(f"Event extraction failed after repair: {error or 'unknown parse failure'}")
 
     def _from_payload(self, payload: Any, chapter_no: int) -> PlotEvent:
+        for field_name in (
+            "chapter",
+            "type",
+            "participants",
+            "summary",
+            "impact",
+            "is_irreversible",
+        ):
+            if field_name not in payload:
+                raise LLMResponseError(f"Event item missing required field: {field_name}")
         event_id = payload.get("event_id") or f"CH{chapter_no:03d}-E{next(self._counter):02d}"
         impact_payload = payload.get("impact") or {}
+        if not isinstance(impact_payload, dict):
+            raise LLMResponseError("Event impact must be an object.")
+        for field_name in ("power_shifts", "relation_changes", "world_flags"):
+            if field_name not in impact_payload:
+                raise LLMResponseError(f"Event impact missing required field: {field_name}")
+        event_type = str(payload.get("type", "")).strip()
+        if event_type not in {"conflict", "reveal", "progress", "setback"}:
+            raise LLMResponseError(f"Invalid event type: {event_type!r}")
+        summary = str(payload.get("summary", "")).strip()
+        if not summary:
+            raise LLMResponseError("Event summary is required.")
         impact = EventImpact(
             power_shifts=dict(impact_payload.get("power_shifts") or {}),
             relation_changes=dict(impact_payload.get("relation_changes") or {}),
             world_flags=list(impact_payload.get("world_flags") or []),
         )
         participants = [str(name) for name in payload.get("participants", [])]
-        summary = str(payload.get("summary", "")).strip()
         return PlotEvent(
             event_id=event_id,
             chapter=int(payload.get("chapter", chapter_no)),
-            type=str(payload.get("type", "progress")),
+            type=event_type,
             participants=participants,
             summary=summary,
             impact=impact,
@@ -116,13 +135,11 @@ class EventExtractor:
         events: list[PlotEvent] = []
         for idx, item in enumerate(events_payload, start=1):
             if not isinstance(item, dict):
-                logger.debug(
-                    "Skipping event payload at index %s due to unexpected type %s",
-                    idx,
-                    type(item).__name__,
-                )
-                continue
-            events.append(self._from_payload(item, chapter_no))
+                return None, f"Event payload at index {idx} is not an object."
+            try:
+                events.append(self._from_payload(item, chapter_no))
+            except LLMResponseError as exc:
+                return None, str(exc)
         return events, None
 
     def _coerce_event_payload(self, payload: Any) -> list[Any] | None:
@@ -146,58 +163,5 @@ class EventExtractor:
             error_message=error or "JSON parsing failed.",
             invalid_output=snippet,
         )
-        try:
-            repaired = self.llm.generate(prompt=prompt, options={"no_think": True})
-        except LLMError as exc:
-            logger.warning("Event extraction repair attempt failed: %s", exc)
-            return None
+        repaired = self.llm.generate(prompt=prompt, options={"no_think": True})
         return repaired.content
-
-    # Fallback heuristics ----------------------------------------------------------
-    def _fallback_extract(self, chapter_text: str, participants: list[str], chapter_no: int) -> list[PlotEvent]:
-        events: list[PlotEvent] = []
-        sentences = re.split(r"(?<=[。.!?])\s+", chapter_text.strip())
-        for sentence in sentences:
-            event_type = self._classify(sentence)
-            if not event_type:
-                continue
-            involved = [name for name in participants if name in sentence]
-            if not involved:
-                continue
-            event_id = f"CH{chapter_no:03d}-F{next(self._counter):02d}"
-            impact = self._build_impact(involved, event_type)
-            irreversible = any(keyword in sentence.lower() for keyword in ["death", "destroy", "牺牲"])
-            events.append(
-                PlotEvent(
-                    event_id=event_id,
-                    chapter=chapter_no,
-                    type=event_type,
-                    participants=involved,
-                    summary=sentence.strip(),
-                    impact=impact,
-                    is_irreversible=irreversible,
-                )
-            )
-        return events
-
-    def _classify(self, sentence: str) -> str | None:
-        lowered = sentence.lower()
-        if any(keyword in lowered for keyword in ["battle", "fight", "袭击"]):
-            return "conflict"
-        if any(keyword in lowered for keyword in ["revealed", "秘密", "发现"]):
-            return "reveal"
-        if any(keyword in lowered for keyword in ["plan", "journey", "联盟"]):
-            return "progress"
-        if any(keyword in lowered for keyword in ["fail", "失去", "阻止"]):
-            return "setback"
-        return None
-
-    def _build_impact(self, participants: list[str], event_type: str) -> EventImpact:
-        power_shifts = {name: event_type for name in participants[:2]}
-        relation_changes = {name: event_type for name in participants}
-        world_flags = [event_type]
-        return EventImpact(
-            power_shifts=power_shifts,
-            relation_changes=relation_changes,
-            world_flags=world_flags,
-        )

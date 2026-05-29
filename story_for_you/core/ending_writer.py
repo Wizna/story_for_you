@@ -1,18 +1,17 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass, field
 
 from story_for_you.analysis.context import StoryContext, WritingStyle
 from story_for_you.config.settings import EndingPhaseTemperatures, RenderingLimits
 from story_for_you.core.ending import (
     BANNED_EXPRESSIONS_PROMPT,
-    SCENE_KEYWORDS,
+    EndingValidator,
     HintInterpreter,
     StyleEnforcer,
 )
-from story_for_you.core.exceptions import GenerationError, LLMError
+from story_for_you.core.exceptions import GenerationError, LLMResponseError
 from story_for_you.core.prompting import (
     fill_template,
     format_context_sections,
@@ -33,12 +32,11 @@ _FOCUS_CHARACTERS_FALLBACK = 2
 _MAX_SEGMENT_SNIPPETS = 4
 _MAX_CAST_IN_ANCHORS = 4
 _MAX_CONFLICT_ANCHORS = 2
-_MAX_SCENE_ANCHORS = 3
-_MIN_SCENE_SENTENCE_LEN = 15
-_MAX_SCENE_SENTENCE_LEN = 80
 _MIN_DRAFT_PARAGRAPHS = 3
 _MIN_PARAGRAPH_CHARS = 120
 _MAX_BEAT_PARAGRAPHS = 4
+_VALID_ENDING_DIRECTIONS = {"HE", "BE", "OE"}
+_VALID_RESOLUTION_STATUSES = {"ok", "needs_bridges"}
 
 
 @dataclass
@@ -71,7 +69,8 @@ class EndingWriter:
         self.llm = llm
         self.segment_index = segment_index
         self._limits = rendering_limits or RenderingLimits()
-        self._hint_interpreter = HintInterpreter()
+        self._hint_interpreter = HintInterpreter(llm, rendering_limits=self._limits)
+        self._ending_validator = EndingValidator(llm)
         temps = temperatures or EndingPhaseTemperatures()
         self._phase_llm_options = {
             "outline": {"temperature": temps.outline, "no_think": True},
@@ -96,24 +95,22 @@ class EndingWriter:
         directives = self._hint_interpreter.interpret(hint, context)
         hint_payload = directives.for_prompt()
 
-        try:
-            outline = self._phase_outline(context, context_block, hint_payload)
-            if directives.ending_direction:
-                outline.ending_direction = directives.ending_direction
+        outline = self._phase_outline(context, context_block, hint_payload)
+        if directives.ending_direction:
+            outline.ending_direction = directives.ending_direction
 
-            draft = self._phase_draft(
-                context, outline, style, context_block, hint_payload, style_anchors
-            )
-            polished = self._phase_polish(
-                draft, style, outline, context_block, hint_payload, style_anchors
-            )
-            final = self._phase_resolution_review(polished, context, context_block, style, hint_payload)
+        draft = self._phase_draft(
+            context, outline, style, context_block, hint_payload, style_anchors
+        )
+        polished = self._phase_polish(
+            draft, style, outline, context_block, hint_payload, style_anchors
+        )
+        final = self._phase_resolution_review(polished, context, context_block, style, hint_payload)
 
-            enforcer = StyleEnforcer(style)
-            return enforcer.post_process(final)
-        except (LLMError, GenerationError) as exc:
-            logger.warning("Multi-stage continuation failed, falling back to simple draft: %s", exc)
-            return self._fallback_draft(context, style, context_block, hint_payload, style_anchors)
+        enforcer = StyleEnforcer(style)
+        final = enforcer.post_process(final)
+        self._validate_final(final, directives, context_block)
+        return final
 
     def _phase_outline(self, context: StoryContext, context_block: str, hint: str) -> EndingOutline:
         """阶段1: 分析主题、情感、方向，并规划具体大纲（合并原 inspiration + outline）。"""
@@ -132,32 +129,40 @@ class EndingWriter:
             hint=hint,
         )
 
-        try:
-            response = self.llm.generate(prompt=prompt, options=self._phase_options("outline"))
-            result = load_json_response(response.content)
-            if result:
-                return EndingOutline(
-                    core_theme=result.get("core_theme", ""),
-                    ending_direction=result.get("ending_direction", "OE"),
-                    emotional_tone=result.get("emotional_tone", ""),
-                    timeline=result.get("timeline", ""),
-                    key_beats=result.get("key_beats", []),
-                    emotional_arc=result.get("emotional_arc", ""),
-                    final_image=result.get("final_image", ""),
-                    key_resolution=result.get("key_resolution", ""),
-                )
-        except LLMError as exc:
-            logger.warning("Outline phase failed: %s", exc)
-
+        response = self.llm.generate(prompt=prompt, options=self._phase_options("outline"))
+        result = load_json_response(response.content)
+        if not isinstance(result, dict):
+            raise LLMResponseError("Outline phase returned invalid JSON object.")
+        for field_name in (
+            "core_theme",
+            "ending_direction",
+            "emotional_tone",
+            "timeline",
+            "key_beats",
+            "emotional_arc",
+            "final_image",
+            "key_resolution",
+        ):
+            if field_name not in result:
+                raise LLMResponseError(f"Outline phase missing required field: {field_name}")
+        ending_direction = str(result.get("ending_direction")).strip()
+        if ending_direction not in _VALID_ENDING_DIRECTIONS:
+            raise LLMResponseError(f"Invalid outline ending direction: {ending_direction!r}")
+        key_beats_payload = result.get("key_beats")
+        if not isinstance(key_beats_payload, list):
+            raise LLMResponseError("Outline key_beats must be a list.")
+        key_beats = [str(item).strip() for item in key_beats_payload if str(item).strip()]
+        if not key_beats:
+            raise LLMResponseError("Outline key_beats must not be empty.")
         return EndingOutline(
-            core_theme="命运与抉择",
-            ending_direction="OE",
-            emotional_tone="沉稳",
-            timeline="当天",
-            key_beats=["情节推进", "情感转折", "结局揭示"],
-            emotional_arc="平稳→高潮→释然",
-            final_image="留白意象",
-            key_resolution="核心冲突的自然收束",
+            core_theme=str(result.get("core_theme")).strip(),
+            ending_direction=ending_direction,
+            emotional_tone=str(result.get("emotional_tone")).strip(),
+            timeline=str(result.get("timeline")).strip(),
+            key_beats=key_beats,
+            emotional_arc=str(result.get("emotional_arc")).strip(),
+            final_image=str(result.get("final_image")).strip(),
+            key_resolution=str(result.get("key_resolution")).strip(),
         )
 
     def _phase_draft(
@@ -194,15 +199,11 @@ class EndingWriter:
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
 
-        try:
-            response = self.llm.generate(prompt=prompt, options=self._phase_options("draft"))
-            content = response.content.strip()
-            if content:
-                return content
-        except LLMError as exc:
-            logger.warning("Draft phase failed: %s", exc)
-
-        return f"[初稿生成失败] 基于大纲「{outline.core_theme}」的续写内容。"
+        response = self.llm.generate(prompt=prompt, options=self._phase_options("draft"))
+        content = response.content.strip()
+        if not content:
+            raise LLMResponseError("Draft phase returned empty content.")
+        return content
 
     def _phase_polish(
         self,
@@ -224,8 +225,8 @@ class EndingWriter:
         prompt = fill_template(
             self.polish_template,
             draft=draft,
-            final_image=outline.final_image or "自然意象",
-            emotional_arc=outline.emotional_arc or "情感收束",
+            final_image=outline.final_image,
+            emotional_arc=outline.emotional_arc,
             style_guide=style_guide,
             style_samples=style_samples,
             style_constraints=style_constraints,
@@ -239,15 +240,11 @@ class EndingWriter:
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
 
-        try:
-            response = self.llm.generate(prompt=prompt, options=self._phase_options("polish"))
-            content = response.content.strip()
-            if content:
-                return content
-        except LLMError as exc:
-            logger.warning("Polish phase failed: %s", exc)
-
-        return draft
+        response = self.llm.generate(prompt=prompt, options=self._phase_options("polish"))
+        content = response.content.strip()
+        if not content:
+            raise LLMResponseError("Polish phase returned empty content.")
+        return content
 
     def _phase_resolution_review(
         self,
@@ -275,28 +272,31 @@ class EndingWriter:
             hint=hint,
         )
 
-        try:
-            response = self.llm.generate(prompt=prompt, options=self._phase_options("resolution"))
-            payload = load_json_response(response.content)
-            if not payload:
-                return polished
-            status = payload.get("status", "ok")
-            if status == "ok":
-                return polished
-            bridges = [item.strip() for item in payload.get("bridges", []) if isinstance(item, str) and item.strip()]
-            if not bridges:
-                return polished
-            enforcer = StyleEnforcer(style)
-            bridges = enforcer.filter_duplicate_bridges(polished, bridges)
-            if not bridges:
-                logger.debug("All bridges filtered as duplicates")
-                return polished
-            notes = payload.get("notes")
-            note_text = notes.strip() if isinstance(notes, str) else None
-            return self._append_bridges(polished, bridges, note_text)
-        except LLMError as exc:
-            logger.warning("Resolution phase failed: %s", exc)
+        response = self.llm.generate(prompt=prompt, options=self._phase_options("resolution"))
+        payload = load_json_response(response.content)
+        if not isinstance(payload, dict):
+            raise LLMResponseError("Resolution phase returned invalid JSON object.")
+        for field_name in ("status", "missing_threads", "bridges", "notes"):
+            if field_name not in payload:
+                raise LLMResponseError(f"Resolution phase missing required field: {field_name}")
+        status = str(payload.get("status")).strip().lower()
+        if status not in _VALID_RESOLUTION_STATUSES:
+            raise LLMResponseError(f"Invalid resolution status: {status!r}")
+        if status == "ok":
             return polished
+        bridges_payload = payload.get("bridges")
+        if not isinstance(bridges_payload, list):
+            raise LLMResponseError("Resolution bridges must be a list.")
+        bridges = [item.strip() for item in bridges_payload if isinstance(item, str) and item.strip()]
+        if not bridges:
+            raise GenerationError("Resolution phase requested changes but returned no bridge text.")
+        enforcer = StyleEnforcer(style)
+        bridges = enforcer.filter_duplicate_bridges(polished, bridges)
+        if not bridges:
+            raise GenerationError("Resolution bridge text duplicated existing content.")
+        notes = payload.get("notes")
+        note_text = notes.strip() if isinstance(notes, str) else None
+        return self._append_bridges(polished, bridges, note_text)
 
     # Helper methods ---------------------------------------------------------
 
@@ -395,12 +395,12 @@ class EndingWriter:
             if not segment:
                 continue
             seen_segments.add(segment.segment_id)
-            snippets.append(self._format_segment_snippet(segment, prefix=f"[{name}]"))
+            snippets.append(self._format_segment_tail_snippet(segment, prefix=f"[{name}]"))
 
         for segment in reversed(self.segment_index.segments):
             if segment.segment_id in seen_segments:
                 continue
-            snippets.append(self._format_segment_snippet(segment))
+            snippets.append(self._format_segment_tail_snippet(segment))
             if len(snippets) >= _MAX_SEGMENT_SNIPPETS:
                 break
 
@@ -427,6 +427,12 @@ class EndingWriter:
         label = prefix or f"[Segment {segment.segment_id}]"
         return f"{label} {snippet}"
 
+    def _format_segment_tail_snippet(self, segment: Segment, prefix: str | None = None) -> str:
+        content = segment.content.strip().replace("\n", " ")
+        snippet = content[-SNIPPET_EXCERPT_LEN:]
+        label = prefix or f"[Segment {segment.segment_id}]"
+        return f"{label} {snippet}"
+
     def _latest_irreversible_event(self, context: StoryContext):
         for event in reversed(context.events):
             if event.is_irreversible:
@@ -449,11 +455,6 @@ class EndingWriter:
         if style and style.characteristic_words:
             keywords = "、".join(style.characteristic_words[:self._limits.max_characteristic_words])
             anchors.append(f"词汇锚点：{keywords}（至少使用其中2个）")
-
-        scene_images = self._scene_anchors(limit=_MAX_SCENE_ANCHORS)
-        if scene_images:
-            anchors.append("场景意象：")
-            anchors.extend(f"  · {scene}" for scene in scene_images)
 
         cast = [
             char.name
@@ -483,36 +484,6 @@ class EndingWriter:
                 lines.append(f"- {item}")
         return "\n".join(lines)
 
-    def _scene_anchors(self, limit: int = _MAX_SCENE_ANCHORS) -> list[str]:
-        scenes: list[str] = []
-        for segment in reversed(self.segment_index.segments):
-            candidates = self._extract_scene_sentences(segment.content)
-            for sentence in candidates:
-                if sentence not in scenes:
-                    scenes.append(sentence)
-                    if len(scenes) >= limit:
-                        return scenes
-        return scenes
-
-    def _extract_scene_sentences(self, text: str) -> list[str]:
-        normalized = text.strip()
-        if not normalized:
-            return []
-        parts = re.split(r"[。！？]", normalized)
-        results: list[str] = []
-        for part in parts:
-            sentence = part.strip()
-            if sentence.startswith('"') or sentence.startswith('\u201c') or '：\u201c' in sentence:
-                continue
-            if sentence.startswith("…") or sentence.startswith("。"):
-                continue
-            if _MIN_SCENE_SENTENCE_LEN <= len(sentence) <= _MAX_SCENE_SENTENCE_LEN and self._has_scene_keyword(sentence):
-                results.append(sentence)
-        return results
-
-    def _has_scene_keyword(self, text: str) -> bool:
-        return any(kw in text for kw in SCENE_KEYWORDS)
-
     def _append_bridges(self, polished: str, bridges: list[str], notes: str | None = None) -> str:
         baseline = polished.rstrip()
         bridge_text = "\n\n".join(bridges)
@@ -524,54 +495,8 @@ class EndingWriter:
     def _phase_options(self, phase: str) -> dict | None:
         return self._phase_llm_options.get(phase)
 
-    # Fallback ---------------------------------------------------------------
-
-    def _fallback_draft(
-        self,
-        context: StoryContext,
-        style: WritingStyle | None,
-        context_block: str,
-        hint: str,
-        style_anchors: str,
-    ) -> str:
-        """Simplified single-call fallback using the draft template."""
-        outline = EndingOutline(
-            core_theme="故事收束",
-            ending_direction="OE",
-            timeline="当天",
-            key_beats=["情节推进", "情感转折", "结局揭示"],
-            emotional_arc="平稳→高潮→释然",
-            final_image="留白意象",
-            key_resolution="核心冲突的自然收束",
-        )
-
-        try:
-            content = self._phase_draft(context, outline, style, context_block, hint, style_anchors)
-            if content and not content.startswith("[初稿生成失败]"):
-                enforcer = StyleEnforcer(style)
-                return enforcer.post_process(content)
-        except LLMError as exc:
-            logger.warning("Fallback draft also failed: %s", exc)
-
-        return self._heuristic_ending(context, hint)
-
-    def _heuristic_ending(self, context: StoryContext, hint: str) -> str:
-        """Last-resort heuristic ending when all LLM calls fail."""
-        last_summary = context.chapter_window[-1] if context.chapter_window else None
-        recent_events = context.events[-3:]
-        tone = context.story_state.world_tension if context.story_state else "medium"
-        paragraphs: list[str] = []
-        if last_summary:
-            paragraphs.append(
-                f"After {last_summary.title}, {last_summary.synopsis.lower()} sets the stage for the finale."
-            )
-        if recent_events:
-            beats = "; ".join(event.summary for event in recent_events)
-            paragraphs.append(f"Consequences converge: {beats}.")
-        if hint:
-            paragraphs.append(f"Guided by the request ({hint}), the protagonists choose a fitting resolution.")
-        tension_line = "The atmosphere eases." if tone == "low" else "Tension peaks before dissolving."
-        paragraphs.append(tension_line)
-        paragraphs.append("Loose threads are acknowledged, promising future tales without contradicting the past.")
-        paragraphs.append("余音袅袅，故事就此落幕。")
-        return "\n\n".join(paragraphs)
+    def _validate_final(self, text: str, directives, context_block: str) -> None:
+        result = self._ending_validator.validate(text, directives, context_block=context_block)
+        if not result.passed:
+            details = "; ".join(result.issues + result.repair_instructions)
+            raise GenerationError("Ending validation failed: " + details)

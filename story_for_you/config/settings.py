@@ -84,10 +84,23 @@ class CompressSettings:
 @dataclass
 class AnalysisSettings:
     window_size: int = 12
+    target_unit_chars: int = 8000
+    min_units: int = 8
+    max_units_per_batch: int = 8
+    batch_context_chars: int = 120000
+    preserve_chapter_boundaries: bool = True
 
     def __post_init__(self) -> None:
         if self.window_size <= 0:
             raise ValueError(f"window_size must be positive, got {self.window_size}")
+        if self.target_unit_chars <= 0:
+            raise ValueError(f"target_unit_chars must be positive, got {self.target_unit_chars}")
+        if self.min_units <= 0:
+            raise ValueError(f"min_units must be positive, got {self.min_units}")
+        if self.max_units_per_batch <= 0:
+            raise ValueError(f"max_units_per_batch must be positive, got {self.max_units_per_batch}")
+        if self.batch_context_chars <= 0:
+            raise ValueError(f"batch_context_chars must be positive, got {self.batch_context_chars}")
 
 
 @dataclass

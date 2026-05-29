@@ -8,21 +8,16 @@ Provides utilities for multi-stage story continuation:
 
 from story_for_you.core.ending.constants import (
     BANNED_EXPRESSIONS_PROMPT,
-    LOW_QUALITY_PHRASES,
-    META_PATTERNS,
-    QUESTION_MARKERS,
-    SCENE_KEYWORDS,
 )
 from story_for_you.core.ending.hint_interpreter import HintDirectives, HintInterpreter
 from story_for_you.core.ending.style_enforcer import StyleEnforcer
+from story_for_you.core.ending.validator import EndingValidationResult, EndingValidator
 
 __all__ = [
     "BANNED_EXPRESSIONS_PROMPT",
-    "LOW_QUALITY_PHRASES",
-    "META_PATTERNS",
-    "QUESTION_MARKERS",
-    "SCENE_KEYWORDS",
     "HintDirectives",
     "HintInterpreter",
     "StyleEnforcer",
+    "EndingValidationResult",
+    "EndingValidator",
 ]
