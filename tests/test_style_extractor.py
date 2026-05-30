@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from story_for_you.analysis.extractors.style import StyleExtractor
 from story_for_you.llm.base import LLMProvider, LLMResponse
+from story_for_you.utils.prompting import CacheablePrompt
 
 
 class _FakeLLM(LLMProvider):
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         return LLMResponse(content="{}", tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
 
 

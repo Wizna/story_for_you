@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from story_for_you.llm.base import LLMProvider, LLMResponse
 from story_for_you.llm.telemetry import TelemetryLLMProvider, telemetry_options
+from story_for_you.utils.prompting import CacheablePrompt, cache_prompt
 
 
 class _FakeLLM(LLMProvider):
@@ -10,7 +11,12 @@ class _FakeLLM(LLMProvider):
     def __init__(self):
         self.options_seen = None
 
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(
+        self,
+        prompt: CacheablePrompt,
+        system: str = "",
+        options: dict | None = None,
+    ) -> LLMResponse:
         self.options_seen = options
         return LLMResponse(
             content="ok",
@@ -21,7 +27,12 @@ class _FakeLLM(LLMProvider):
             cache_miss_prompt_tokens=100,
         )
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(
+        self,
+        prompt: CacheablePrompt,
+        system: str = "",
+        options: dict | None = None,
+    ):
         yield from []
 
 
@@ -32,7 +43,7 @@ def test_telemetry_logs_phase_attempt_usage_and_cost():
     llm.set_plan("analyze", total_expected=2)
 
     response = llm.generate(
-        "第一行\n第二行",
+        cache_prompt("第一行\n第二行"),
         options=telemetry_options(
             {"temperature": 0.1},
             phase="analyze chapter 1",
@@ -47,8 +58,8 @@ def test_telemetry_logs_phase_attempt_usage_and_cost():
     joined = "\n".join(messages)
     assert "[LLM 1/2] analyze chapter 1: chapter summary attempt=1/2" in joined
     assert "prompt: 第一行 / 第二行" in joined
-    assert "in=300 out=50 total=350 cache=200" in joined
-    assert "cost=$0.000174" in joined
+    assert "in=300 out=50 total=350 cache=200 cache_rate=66.7%" in joined
+    assert "cost=$0.000088" in joined
     assert "remaining~1" in joined
 
 
@@ -58,3 +69,13 @@ def test_telemetry_strips_internal_options():
     assert payload["no_think"] is True
     assert payload["_sfy_phase"] == "continue"
     assert payload["_sfy_step"] == ": draft"
+
+
+def test_telemetry_summarizes_cacheable_prompt_prefix_and_task():
+    messages: list[str] = []
+    llm = TelemetryLLMProvider(_FakeLLM(), messages.append)
+
+    llm.generate(CacheablePrompt(prefix="第一章正文\n很长", task="提取人物"))
+
+    joined = "\n".join(messages)
+    assert "prompt: cache-prefix: 第一章正文 / 很长 / task: 提取人物" in joined

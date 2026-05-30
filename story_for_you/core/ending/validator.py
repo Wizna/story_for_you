@@ -12,6 +12,7 @@ from story_for_you.core.prompting import fill_template, load_template
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
+from story_for_you.utils.prompting import cache_prompt
 
 __all__ = ["EndingValidationResult", "EndingValidator"]
 
@@ -44,7 +45,7 @@ class EndingValidator:
             final_text=text.strip(),
         )
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 {"no_think": True},
                 phase="continue",

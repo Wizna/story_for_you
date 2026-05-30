@@ -11,6 +11,7 @@ from story_for_you.exceptions import (
     LLMTimeoutError,
 )
 from story_for_you.llm.base import LLMProvider, LLMResponse
+from story_for_you.utils.prompting import CacheablePrompt
 
 
 class OpenAICompatibleProvider(LLMProvider):
@@ -50,7 +51,7 @@ class OpenAICompatibleProvider(LLMProvider):
     # ------------------------------------------------------------------
 
     def generate(
-        self, prompt: str, system: str = "", options: dict | None = None
+        self, prompt: CacheablePrompt, system: str = "", options: dict | None = None
     ) -> LLMResponse:
         payload = self._build_payload(prompt, system, stream=False, call_options=options)
         try:
@@ -105,7 +106,7 @@ class OpenAICompatibleProvider(LLMProvider):
         )
 
     def generate_stream(
-        self, prompt: str, system: str = "", options: dict | None = None
+        self, prompt: CacheablePrompt, system: str = "", options: dict | None = None
     ) -> Iterator[str]:
         payload = self._build_payload(prompt, system, stream=True, call_options=options)
         try:
@@ -151,7 +152,7 @@ class OpenAICompatibleProvider(LLMProvider):
 
     def _build_payload(
         self,
-        prompt: str,
+        prompt: CacheablePrompt,
         system: str,
         stream: bool,
         call_options: dict | None = None,
@@ -166,14 +167,17 @@ class OpenAICompatibleProvider(LLMProvider):
         # expose an explicit thinking switch.
         no_think = merged.pop("no_think", False)
         if no_think and "qwen" in self.model.lower():
-            prompt = prompt + "\n\n/no_think"
+            prompt = CacheablePrompt(task=prompt.render() + "\n\n/no_think")
         elif no_think and self._is_deepseek_endpoint():
             merged.setdefault("thinking", {"type": "disabled"})
 
         messages: list[dict[str, str]] = []
         if system:
             messages.append({"role": "system", "content": system})
-        messages.append({"role": "user", "content": prompt})
+        if prompt.prefix:
+            messages.append({"role": "user", "content": prompt.prefix})
+        if prompt.task:
+            messages.append({"role": "user", "content": prompt.task})
 
         payload: dict = {
             "model": self.model,

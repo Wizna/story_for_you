@@ -8,12 +8,24 @@ from __future__ import annotations
 from pathlib import Path
 
 from story_for_you.utils.prompting import (
+    CacheablePrompt,
     TemplateLoader,
+    build_cacheable_prompt,
+    cache_prompt,
     fill_template,
     clamp_text_middle,
 )
 
-__all__ = ["load_template", "fill_template", "render_prompt_with_budget", "clamp_text_middle"]
+__all__ = [
+    "CacheablePrompt",
+    "load_template",
+    "cache_prompt",
+    "fill_template",
+    "build_cacheable_prompt",
+    "render_prompt_with_budget",
+    "render_cacheable_prompt_with_budget",
+    "clamp_text_middle",
+]
 
 _TEMPLATE_DIR = Path(__file__).with_name("prompt_templates")
 _loader = TemplateLoader(_TEMPLATE_DIR)
@@ -48,3 +60,40 @@ def render_prompt_with_budget(
     placeholders[text_key] = trimmed_text
     prompt = fill_template(template, **placeholders)
     return prompt, True
+
+
+def render_cacheable_prompt_with_budget(
+    template: str,
+    *,
+    budget: int | None,
+    prefix_key: str,
+    prefix_value: str,
+    min_text: int = 256,
+    head_ratio: float = 0.7,
+    **placeholders: str,
+) -> tuple[CacheablePrompt, bool]:
+    """Render a cache-friendly prompt and clamp the stable prefix if needed."""
+    cacheable = build_cacheable_prompt(
+        prefix_value,
+        template,
+        prefix_placeholder=prefix_key,
+        **placeholders,
+    )
+    rendered = cacheable.render()
+    if budget is None or budget <= 0 or len(rendered) <= budget:
+        return cacheable, False
+
+    overhead = len(rendered) - len(cacheable.prefix)
+    allowance = max(min_text, budget - overhead)
+    if allowance >= len(cacheable.prefix):
+        return cacheable, False
+    trimmed_prefix = clamp_text_middle(cacheable.prefix, allowance, head_ratio=head_ratio)
+    return (
+        build_cacheable_prompt(
+            trimmed_prefix,
+            template,
+            prefix_placeholder=prefix_key,
+            **placeholders,
+        ),
+        True,
+    )

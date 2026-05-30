@@ -13,7 +13,7 @@ from story_for_you.core.prompting import (
     format_style_guide,
     load_template,
 )
-from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN
+from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN, cache_prompt
 
 @dataclass
 class BridgeInfo:
@@ -87,7 +87,7 @@ class CharacterFilter:
             style_guide=style_guide,
         )
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 phase="filter",
                 step=f": bridge segment gap {gap.start_id}->{gap.end_id}",

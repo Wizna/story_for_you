@@ -24,7 +24,7 @@ from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
-from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN
+from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN, cache_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +141,7 @@ class EndingWriter:
         )
 
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 self._phase_options("outline"),
                 phase="continue",
@@ -218,7 +218,7 @@ class EndingWriter:
         )
 
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 self._phase_options("draft"),
                 phase="continue",
@@ -266,7 +266,7 @@ class EndingWriter:
         )
 
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 self._phase_options("polish"),
                 phase="continue",
@@ -305,7 +305,7 @@ class EndingWriter:
         )
 
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 self._phase_options("resolution"),
                 phase="continue",
@@ -616,7 +616,7 @@ class EndingWriter:
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 self._phase_options("final_repair"),
                 phase="continue",

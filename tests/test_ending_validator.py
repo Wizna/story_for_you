@@ -7,10 +7,11 @@ from story_for_you.core.ending.hint_interpreter import HintDirectives
 from story_for_you.core.ending.validator import EndingValidator
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider, LLMResponse
+from story_for_you.utils.prompting import CacheablePrompt
 
 
 class _ReviewLLM(LLMProvider):
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         payload = {
             "passed": False,
             "issues": ["人物结局前后矛盾"],
@@ -18,15 +19,15 @@ class _ReviewLLM(LLMProvider):
         }
         return LLMResponse(content=json.dumps(payload, ensure_ascii=False), tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
 
 
 class _IncompleteReviewLLM(LLMProvider):
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         return LLMResponse(content=json.dumps({"passed": True}, ensure_ascii=False), tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
 
 

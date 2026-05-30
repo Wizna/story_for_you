@@ -9,6 +9,7 @@ from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
+from story_for_you.utils.prompting import cache_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +125,7 @@ class StyleExtractor:
     def _execute_and_parse(self, prompt: str) -> WritingStyle:
         """执行 LLM 调用并解析结果。"""
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 _STRUCTURED_OPTIONS,
                 phase="analyze",

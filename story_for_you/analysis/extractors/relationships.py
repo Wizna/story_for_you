@@ -4,7 +4,7 @@ import json
 from typing import Any
 
 from story_for_you.analysis.context import CharacterState, Relationship
-from story_for_you.analysis.prompting import fill_template, load_template
+from story_for_you.analysis.prompting import build_cacheable_prompt, load_template
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
@@ -27,9 +27,10 @@ class RelationshipMapper:
         roster, alias_map = self._build_roster(characters or [])
         if not roster:
             return []
-        prompt = fill_template(
+        prompt = build_cacheable_prompt(
+            chapter_text.strip(),
             self.template,
-            chapter_text=chapter_text.strip(),
+            prefix_placeholder="chapter_text",
             character_roster=json.dumps(roster, ensure_ascii=False),
         )
         allowed = set(alias_map)

@@ -10,6 +10,7 @@ from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
+from story_for_you.utils.prompting import cache_prompt
 
 
 _VALID_ARCS = {"setup", "journey", "twist", "climax", "dark-night", "resolution"}
@@ -42,7 +43,7 @@ class StateSynthesizer:
             recent_context=recent_context.strip() or "暂无历史上下文。",
         )
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 _STRUCTURED_OPTIONS,
                 phase="analyze chapter",

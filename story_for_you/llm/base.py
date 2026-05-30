@@ -2,6 +2,8 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Iterator, Self
 
+from story_for_you.utils.prompting import CacheablePrompt
+
 
 @dataclass
 class LLMResponse:
@@ -17,12 +19,22 @@ class LLMProvider(ABC):
     """Abstract base provider for language model calls."""
 
     @abstractmethod
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(
+        self,
+        prompt: CacheablePrompt,
+        system: str = "",
+        options: dict | None = None,
+    ) -> LLMResponse:
         """Generate a response for the provided prompt."""
         raise NotImplementedError
 
     @abstractmethod
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None) -> Iterator[str]:
+    def generate_stream(
+        self,
+        prompt: CacheablePrompt,
+        system: str = "",
+        options: dict | None = None,
+    ) -> Iterator[str]:
         """Yield a streaming response iterator."""
         raise NotImplementedError
 

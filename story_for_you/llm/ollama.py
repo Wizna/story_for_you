@@ -12,6 +12,7 @@ from story_for_you.exceptions import (
     LLMTimeoutError,
 )
 from story_for_you.llm.base import LLMProvider, LLMResponse
+from story_for_you.utils.prompting import CacheablePrompt
 
 
 class OllamaProvider(LLMProvider):
@@ -44,7 +45,7 @@ class OllamaProvider(LLMProvider):
             )
         self._client = httpx.Client(base_url=self.base_url, timeout=self.timeout)
 
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         """Synchronously generate a response via Ollama."""
         payload = self._build_payload(prompt, system, stream=False, call_options=options)
         try:
@@ -76,7 +77,7 @@ class OllamaProvider(LLMProvider):
             completion_tokens=completion_tokens,
         )
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None) -> Iterator[str]:
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> Iterator[str]:
         """Stream a response via Ollama's API."""
         payload = self._build_payload(prompt, system, stream=True, call_options=options)
         is_qwen = "qwen" in self.model.lower()
@@ -124,19 +125,26 @@ class OllamaProvider(LLMProvider):
             return text
         return re.sub(r"<think>[\s\S]*?</think>", "", text).strip()
 
-    def _build_payload(self, prompt: str, system: str, stream: bool, call_options: dict | None = None) -> dict:
+    def _build_payload(
+        self,
+        prompt: CacheablePrompt,
+        system: str,
+        stream: bool,
+        call_options: dict | None = None,
+    ) -> dict:
         merged_options = dict(self.options)
         if call_options:
             merged_options.update({key: value for key, value in call_options.items() if value is not None})
+        prompt_text = prompt.render()
 
         # Pop no_think before sending to Ollama; append directive to prompt for Qwen models.
         no_think = merged_options.pop("no_think", False)
         if no_think and "qwen" in self.model.lower():
-            prompt = prompt + "\n\n/no_think"
+            prompt_text = prompt_text + "\n\n/no_think"
 
         payload = {
             "model": self.model,
-            "prompt": prompt,
+            "prompt": prompt_text,
             "system": system or None,
             "stream": stream,
         }

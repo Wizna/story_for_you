@@ -708,12 +708,12 @@ class LLMResponse:
 
 class LLMProvider(ABC):
     @abstractmethod
-    def generate(self, prompt: str, system: str = "") -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "") -> LLMResponse:
         """生成文本"""
         pass
 
     @abstractmethod
-    def generate_stream(self, prompt: str, system: str = ""):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = ""):
         """流式生成"""
         pass
 ```
@@ -726,7 +726,7 @@ class OllamaProvider(LLMProvider):
         self.model = model
         self.base_url = base_url
 
-    def generate(self, prompt: str, system: str = "") -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "") -> LLMResponse:
         # 调用 Ollama /api/generate 接口
         ...
 ```
@@ -1302,8 +1302,11 @@ uv run story --help
 - `Settings.llm` 提供 `provider/model/base_url/temperature/context_window/max_tokens/timeout/seed`，默认使用 `openai` provider，指向 `https://api.deepseek.com` 与 `deepseek-v4-pro`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
 - `max_tokens` 是单次生成输出上限；`context_window` 是模型上下文窗口，用于 Prompt 截断预算。分析阶段通过 `_split_analysis_text()` 使用 `analysis.target_unit_chars` 形成稳定语义单元，避免大上下文模型把整本书压成单个“章节”；`parser.chunk_size` 仍作为业务处理和通用分块上限。
 - `OpenAICompatibleProvider` 默认请求 `/v1/chat/completions`；当 `base_url` 是 DeepSeek 官方域名时，请求官方 OpenAI-compatible 路径 `/chat/completions`。分析抽取类调用传入 `no_think=True` 时，会转换为 DeepSeek 支持的 `thinking: {"type": "disabled"}`，降低结构化 JSON 输出被思考内容污染的概率；非 DeepSeek API 不会收到该专用参数。
-- CLI 使用 `TelemetryLLMProvider` 包装实际 provider。命令开始时输出基线请求计划；每次 `generate()` 会打印阶段、prompt 摘要、attempt/retry、输入/输出 token、缓存命中 token、单次费用估算、累计费用和剩余请求估算。Telemetry 只剥离 `_sfy_*` 内部元数据，不改变真实 provider 的业务参数。
-- 费用统计遵循主流 tracing 工具的近似口径：优先展示 provider 返回的 usage，缓存只作为提示性 breakdown，不尝试做账单级精算。DeepSeek 官方模型按内置价目表估算费用；其他 OpenAI-compatible 服务未配置价目时显示 `cost=n/a`。费用只用于用户侧消耗感知，不参与业务判断。
+- `LLMProvider` 只接受 `CacheablePrompt`，不保留字符串 prompt 兼容路径。`OpenAICompatibleProvider` 会把稳定前缀放在前置 user message，把可变任务放在后续 user message；Ollama 会把两段拼回普通 prompt。该布局针对 DeepSeek Context Caching 的“完全匹配公共前缀”规则设计，参考 https://api-docs.deepseek.com/guides/kv_cache。
+- CLI 使用 `TelemetryLLMProvider` 包装实际 provider。命令开始时输出基线请求计划；每次 `generate()` 会打印阶段、prompt 摘要、attempt/retry、输入/输出 token、缓存命中 token、缓存命中率、单次费用估算、累计费用和剩余请求估算。Telemetry 只剥离 `_sfy_*` 内部元数据，不改变真实 provider 的业务参数。
+- 费用统计遵循主流 tracing 工具的近似口径：优先展示 provider 返回的 usage，并在 DeepSeek usage 提供 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` 时按命中输入折扣估算。其他 OpenAI-compatible 服务未配置价目时显示 `cost=n/a`。费用只用于用户侧消耗感知，不参与业务判断。
+- Telemetry 的内部 metadata 使用 `_sfy_*` option key 传递，例如 `_sfy_phase`、`_sfy_step`、`_sfy_attempt`。`TelemetryLLMProvider` 会在调用真实 provider 前剥离这些 key，确保 DeepSeek/OpenAI/Ollama 只收到业务参数（如 `temperature`、`max_tokens`、`response_format`、`no_think`）。
+- 请求计划是基线估算：`analyze` 约等于 `chapter_chunks * 5 + style`；`continue` 约等于 hint 解析、大纲、初稿、润色、可选伏笔审查和最终验证。任何 repair/retry 都不预先计入基线，而是在发生时按额外请求输出。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 
 ```python
@@ -1311,10 +1314,10 @@ class FakeLLM(LLMProvider):
     def __init__(self, mapping: dict[str, str]):
         self.mapping = mapping
 
-    def generate(self, prompt: str, system: str = "") -> LLMResponse:
-        return LLMResponse(content=self.mapping.get(prompt, ""), tokens_used=0)
+    def generate(self, prompt: CacheablePrompt, system: str = "") -> LLMResponse:
+        return LLMResponse(content=self.mapping.get(prompt.render(), ""), tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = ""):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = ""):
         yield from []
 ```
 
@@ -1322,23 +1325,26 @@ class FakeLLM(LLMProvider):
 
 所有抽取与业务 Prompt 遵循统一骨架，便于替换底模：
 
-1. **System 层**：描述抽取/处理目标（位于 `analysis/prompt_templates/` 或各业务模块旁）。
-2. **上下文层**：`StoryContext.for_prompt()` 输出的四段（世界观 → 人物 → 当前剧情 → 最近章节）。
-3. **任务层**：描述当前步骤（如“列出事件”“压缩以下段落”）。
+1. **稳定前缀层**：长正文、章节原文、固定大段上下文，优先用 `CacheablePrompt.prefix` 放在消息最前面。
+2. **上下文层**：`StoryContext.for_prompt()` 输出的四段（世界观 → 人物 → 当前剧情 → 最近章节），只有跨多个任务完全复用时才上移到稳定前缀。
+3. **任务层**：描述当前步骤（如“列出事件”“压缩以下段落”），放在稳定前缀之后，避免破坏 DeepSeek 公共前缀命中。
 4. **输出约束**：强制 JSON/YAML schema，避免模型自由发挥。
 
 示意：
 
 ```python
 from story_for_you.utils.json_utils import load_json_response
+from story_for_you.utils.prompting import CacheablePrompt
 
-system = templates.load("event_extraction")
-context_block = "\n".join(context.for_prompt().values())
-task = EVENT_TASK_TEMPLATE.format(chapter_no=chapter_no, text=chapter_text)
-prompt = f"{context_block}\n\n{task}"
-response = llm.generate(prompt=prompt, system=system)
+task = EVENT_TASK_TEMPLATE.format(
+    chapter_no=chapter_no,
+    context_block="\n".join(context.for_prompt().values()),
+)
+response = llm.generate(prompt=CacheablePrompt(prefix=chapter_text, task=task))
 payload = load_json_response(response.content)
 ```
+
+分析器的章节级多任务调用必须共享同一个 `chapter_text.strip()` 前缀：人物抽取、关系映射、章节摘要和事件抽取都应只在 task 段变化。新增 Prompt 时如果需要复用同一长输入，先确认 telemetry 中同章节后续请求的 `cache_rate` 是否上升；若长期为 0%，通常说明公共前缀前插入了任务特有文本或动态 metadata。
 
 ### 11.3 资源与容错策略
 

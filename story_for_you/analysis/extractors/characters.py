@@ -6,15 +6,17 @@ import logging
 
 from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.prompting import (
+    CacheablePrompt,
     clamp_text_middle,
     fill_template,
     load_template,
-    render_prompt_with_budget,
+    render_cacheable_prompt_with_budget,
 )
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
+from story_for_you.utils.prompting import cache_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -52,20 +54,20 @@ class CharacterExtractor:
             self._merge_into(target, character)
         return roster
 
-    def _build_prompt(self, text: str) -> str:
+    def _build_prompt(self, text: str) -> CacheablePrompt:
         chapter_text = text.strip()
-        prompt, truncated = render_prompt_with_budget(
+        prompt, truncated = render_cacheable_prompt_with_budget(
             self.template,
             budget=self.prompt_budget,
-            text_key="chapter_text",
-            text_value=chapter_text,
+            prefix_key="chapter_text",
+            prefix_value=chapter_text,
         )
         if truncated:
-            logger.debug("Character prompt truncated to %s chars", len(prompt))
+            logger.debug("Character prompt truncated to %s chars", len(prompt.render()))
         return prompt
 
     # Internal helpers -------------------------------------------------
-    def _prompt_characters(self, prompt: str) -> list[CharacterState]:
+    def _prompt_characters(self, prompt: CacheablePrompt) -> list[CharacterState]:
         """Use the configured LLM to extract structured characters."""
         response = self.llm.generate(
             prompt=prompt,
@@ -215,7 +217,7 @@ class CharacterExtractor:
             invalid_output=snippet,
         )
         repaired = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 _STRUCTURED_OPTIONS,
                 phase="analyze chapter",

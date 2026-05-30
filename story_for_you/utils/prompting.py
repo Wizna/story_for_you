@@ -7,13 +7,17 @@ analysis/prompting.py and core/prompting.py.
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
 
 __all__ = [
+    "CacheablePrompt",
     "TemplateLoader",
+    "cache_prompt",
     "fill_template",
     "clamp_text_middle",
+    "build_cacheable_prompt",
     "PLACEHOLDER_PATTERN",
     "SNIPPET_EXCERPT_LEN",
 ]
@@ -21,6 +25,26 @@ __all__ = [
 SNIPPET_EXCERPT_LEN = 280
 
 PLACEHOLDER_PATTERN = re.compile(r"\{\{(\w+)\}\}")
+
+
+@dataclass(frozen=True)
+class CacheablePrompt:
+    """Prompt split into a stable prefix and variable task suffix."""
+
+    prefix: str
+    task: str
+
+    def render(self) -> str:
+        if not self.prefix:
+            return self.task
+        if not self.task:
+            return self.prefix
+        return f"{self.prefix}\n\n{self.task}"
+
+
+def cache_prompt(task: str, prefix: str = "") -> CacheablePrompt:
+    """Build the only prompt shape accepted by LLM providers."""
+    return CacheablePrompt(prefix=prefix.strip(), task=task.strip())
 
 
 class TemplateLoader:
@@ -54,6 +78,31 @@ def fill_template(template: str, **placeholders: str) -> str:
         return str(placeholders.get(key, ""))
 
     return PLACEHOLDER_PATTERN.sub(_replace, template)
+
+
+def build_cacheable_prompt(
+    prefix: str,
+    template: str,
+    *,
+    prefix_placeholder: str,
+    prefix_reference: str = "见前一条 user 消息中的完整文本。",
+    **placeholders: str,
+) -> CacheablePrompt:
+    """Render a prompt while moving a long stable placeholder into the prefix.
+
+    DeepSeek's context cache matches complete request prefixes. Keeping the
+    repeated long text as the first user message lets later task variants reuse
+    that prefix without requiring all templates to share identical instructions.
+    """
+    normalized_prefix = prefix.strip()
+    rendered = fill_template(
+        template,
+        **{
+            **placeholders,
+            prefix_placeholder: prefix_reference,
+        },
+    ).strip()
+    return cache_prompt(prefix=normalized_prefix, task=rendered)
 
 
 def clamp_text_middle(text: str, max_chars: int, head_ratio: float = 0.7) -> str:

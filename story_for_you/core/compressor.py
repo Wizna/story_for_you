@@ -8,6 +8,7 @@ from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
+from story_for_you.utils.prompting import cache_prompt
 from story_for_you.core.prompting import (
     fill_template,
     format_context_sections,
@@ -59,7 +60,7 @@ class StoryCompressor:
             style_samples=style_samples,
         )
         response = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(phase="compress", step=": rewrite selected segments"),
         )
         content = response.content.strip()

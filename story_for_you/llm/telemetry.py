@@ -5,24 +5,28 @@ import time
 from typing import Callable, Iterator
 
 from story_for_you.llm.base import LLMProvider, LLMResponse
+from story_for_you.utils.prompting import CacheablePrompt
 
 _TELEMETRY_PREFIX = "_sfy_"
 
 
 @dataclass(slots=True)
 class LLMPriceCard:
-    input: float
+    input_cache_hit: float
+    input_cache_miss: float
     output: float
     currency: str = "USD"
 
 
 _DEEPSEEK_PRICES: dict[str, LLMPriceCard] = {
     "deepseek-v4-pro": LLMPriceCard(
-        input=0.435,
+        input_cache_hit=0.003625,
+        input_cache_miss=0.435,
         output=0.87,
     ),
     "deepseek-v4-flash": LLMPriceCard(
-        input=0.14,
+        input_cache_hit=0.0028,
+        input_cache_miss=0.14,
         output=0.28,
     ),
 }
@@ -60,7 +64,12 @@ class TelemetryLLMProvider(LLMProvider):
         self._state.cached_prompt_tokens = 0
         self._state.estimated_cost = 0.0
 
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(
+        self,
+        prompt: CacheablePrompt,
+        system: str = "",
+        options: dict | None = None,
+    ) -> LLMResponse:
         metadata, call_options = self._split_options(options)
         self._state.request_index += 1
         attempt = metadata.get("attempt")
@@ -100,6 +109,7 @@ class TelemetryLLMProvider(LLMProvider):
             f"[LLM {request_label}] done in {elapsed:.1f}s | "
             f"in={response.prompt_tokens} out={response.completion_tokens} "
             f"total={response.tokens_used} cache={response.cache_hit_prompt_tokens} "
+            f"cache_rate={self._format_cache_rate(response)} "
             f"cost={self._format_cost(cost)} "
             f"cumulative={self._format_cost(self._state.estimated_cost)}"
         )
@@ -108,7 +118,12 @@ class TelemetryLLMProvider(LLMProvider):
             self._emit(f"[LLM {request_label}] remaining~{remaining}")
         return response
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None) -> Iterator[str]:
+    def generate_stream(
+        self,
+        prompt: CacheablePrompt,
+        system: str = "",
+        options: dict | None = None,
+    ) -> Iterator[str]:
         metadata, call_options = self._split_options(options)
         self._state.request_index += 1
         request_label = self._format_request_label(self._state.request_index)
@@ -135,8 +150,13 @@ class TelemetryLLMProvider(LLMProvider):
             call_options[key] = value
         return metadata, call_options or None
 
-    def _summarize_prompt(self, prompt: str) -> str:
-        text = self._summarize_text(prompt)
+    def _summarize_prompt(self, prompt: CacheablePrompt) -> str:
+        task_head = self._summarize_text(prompt.task)
+        if prompt.prefix:
+            prefix_head = self._summarize_text(prompt.prefix)
+            text = f"cache-prefix: {prefix_head} / task: {task_head}"
+        else:
+            text = task_head
         return text if len(text) <= 180 else text[:177] + "..."
 
     def _summarize_text(self, text: str) -> str:
@@ -165,12 +185,26 @@ class TelemetryLLMProvider(LLMProvider):
             return "n/a"
         return f"${value:.6f}"
 
+    def _format_cache_rate(self, response: LLMResponse) -> str:
+        total = response.cache_hit_prompt_tokens + response.cache_miss_prompt_tokens
+        if total <= 0 and response.prompt_tokens > 0:
+            total = response.prompt_tokens
+        if total <= 0:
+            return "n/a"
+        return f"{(response.cache_hit_prompt_tokens / total) * 100:.1f}%"
+
     def _estimate_cost(self, response: LLMResponse) -> float:
         model = getattr(self._provider, "model", "").lower()
         prices = _DEEPSEEK_PRICES.get(model)
         if not prices:
             return 0.0
-        prompt_cost = (response.prompt_tokens * prices.input) / 1_000_000
+        if response.cache_hit_prompt_tokens or response.cache_miss_prompt_tokens:
+            prompt_cost = (
+                response.cache_hit_prompt_tokens * prices.input_cache_hit
+                + response.cache_miss_prompt_tokens * prices.input_cache_miss
+            ) / 1_000_000
+        else:
+            prompt_cost = (response.prompt_tokens * prices.input_cache_miss) / 1_000_000
         output_cost = (response.completion_tokens * prices.output) / 1_000_000
         return prompt_cost + output_cost
 

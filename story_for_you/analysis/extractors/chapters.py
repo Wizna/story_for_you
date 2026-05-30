@@ -9,12 +9,13 @@ from story_for_you.analysis.prompting import (
     clamp_text_middle,
     fill_template,
     load_template,
-    render_prompt_with_budget,
+    render_cacheable_prompt_with_budget,
 )
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
+from story_for_you.utils.prompting import cache_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -56,16 +57,16 @@ class ChapterSummarizer:
             meta_payload.update(chapter_meta)
         recent_context_text = recent_context.strip() or "暂无历史上下文。"
         chapter_body = chapter_text.strip()
-        prompt, truncated = render_prompt_with_budget(
+        prompt, truncated = render_cacheable_prompt_with_budget(
             self.template,
             budget=self.prompt_budget,
-            text_key="chapter_text",
-            text_value=chapter_body,
+            prefix_key="chapter_text",
+            prefix_value=chapter_body,
             chapter_meta=json.dumps(meta_payload, ensure_ascii=False),
             recent_context=recent_context_text,
         )
         if truncated:
-            logger.debug("Chapter summary prompt truncated to %s chars", len(prompt))
+            logger.debug("Chapter summary prompt truncated to %s chars", len(prompt.render()))
         last_error: str | None = None
         for attempt in range(1, _MAX_CHAPTER_ATTEMPTS + 1):
             response = self.llm.generate(
@@ -177,7 +178,7 @@ class ChapterSummarizer:
             invalid_output=snippet,
         )
         repaired = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 _JSON_OBJECT_OPTIONS,
                 phase=f"analyze chapter {chapter_no}",

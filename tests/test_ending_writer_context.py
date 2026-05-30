@@ -9,18 +9,19 @@ from story_for_you.core.exceptions import GenerationError
 from story_for_you.core.ending_writer import EndingWriter
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider, LLMResponse
+from story_for_you.utils.prompting import CacheablePrompt
 
 
 class _FakeLLM(LLMProvider):
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         return LLMResponse(content="", tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
 
 
 class _BlockedResolutionLLM(LLMProvider):
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         payload = {
             "status": "blocked",
             "missing_threads": ["傩送归宿未交代"],
@@ -29,19 +30,19 @@ class _BlockedResolutionLLM(LLMProvider):
         }
         return LLMResponse(content=json.dumps(payload, ensure_ascii=False), tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
 
 
 class _RepairLLM(LLMProvider):
     def __init__(self):
-        self.prompts: list[str] = []
+        self.prompts: list[CacheablePrompt] = []
 
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         self.prompts.append(prompt)
         return LLMResponse(content="修复后的正文", tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
 
 
@@ -118,4 +119,4 @@ def test_final_validation_failure_repairs_once():
 
     assert repaired == "修复后的正文"
     assert validator.calls == 2
-    assert "删除少年过渡情节" in llm.prompts[0]
+    assert "删除少年过渡情节" in llm.prompts[0].render()

@@ -9,12 +9,13 @@ from story_for_you.analysis.prompting import (
     clamp_text_middle,
     fill_template,
     load_template,
-    render_prompt_with_budget,
+    render_cacheable_prompt_with_budget,
 )
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
+from story_for_you.utils.prompting import cache_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -42,17 +43,17 @@ class EventExtractor:
         roster, alias_map = self._build_roster(participants)
         recent_context_text = recent_context.strip() or "暂无历史上下文。"
         chapter_body = chapter_text.strip()
-        prompt, truncated = render_prompt_with_budget(
+        prompt, truncated = render_cacheable_prompt_with_budget(
             self.template,
             budget=self.prompt_budget,
-            text_key="chapter_text",
-            text_value=chapter_body,
+            prefix_key="chapter_text",
+            prefix_value=chapter_body,
             chapter_no=str(chapter_no),
             character_roster=json.dumps(roster, ensure_ascii=False),
             recent_context=recent_context_text,
         )
         if truncated:
-            logger.debug("Event extraction prompt truncated to %s chars", len(prompt))
+            logger.debug("Event extraction prompt truncated to %s chars", len(prompt.render()))
         response = self.llm.generate(
             prompt=prompt,
             options=telemetry_options(
@@ -247,7 +248,7 @@ class EventExtractor:
             invalid_output=snippet,
         )
         repaired = self.llm.generate(
-            prompt=prompt,
+            prompt=cache_prompt(prompt),
             options=telemetry_options(
                 _STRUCTURED_OPTIONS,
                 phase=f"analyze chapter {chapter_no}",

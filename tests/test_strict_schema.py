@@ -12,16 +12,17 @@ from story_for_you.analysis.layers.state_store import StateStore
 from story_for_you.core.ending.hint_interpreter import HintInterpreter
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider, LLMResponse
+from story_for_you.utils.prompting import CacheablePrompt
 
 
 class _FakeLLM(LLMProvider):
     def __init__(self, content: str):
         self.content = content
 
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         return LLMResponse(content=self.content, tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
 
 
@@ -29,12 +30,12 @@ class _SequencedLLM(LLMProvider):
     def __init__(self, contents: list[str]):
         self.contents = list(contents)
 
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         if not self.contents:
             raise AssertionError("No more queued responses.")
         return LLMResponse(content=self.contents.pop(0), tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
 
 

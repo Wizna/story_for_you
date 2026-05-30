@@ -15,7 +15,9 @@ from story_for_you.core.exceptions import (
     LLMTimeoutError,
 )
 from story_for_you.llm.factory import build_llm
+from story_for_you.llm.ollama import OllamaProvider
 from story_for_you.llm.openai_compat import OpenAICompatibleProvider
+from story_for_you.utils.prompting import CacheablePrompt, cache_prompt
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +98,7 @@ class TestGenerate:
             return httpx.Response(200, json=_ok_response("Hi there!", 42))
 
         p = _provider(_make_transport(handler))
-        resp = p.generate("Say hi")
+        resp = p.generate(cache_prompt("Say hi"))
         assert resp.content == "Hi there!"
         assert resp.tokens_used == 42
         assert resp.prompt_tokens == 5
@@ -112,7 +114,7 @@ class TestGenerate:
             model="deepseek-v4-pro",
         )
 
-        resp = p.generate("Say hi")
+        resp = p.generate(cache_prompt("Say hi"))
 
         assert resp.tokens_used == 350
         assert resp.prompt_tokens == 300
@@ -130,7 +132,7 @@ class TestGenerate:
             base_url="https://api.deepseek.com",
             model="deepseek-v4-pro",
         )
-        p.generate("Say hi")
+        p.generate(cache_prompt("Say hi"))
 
     def test_system_prompt_included(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -141,7 +143,7 @@ class TestGenerate:
             return httpx.Response(200, json=_ok_response())
 
         p = _provider(_make_transport(handler))
-        p.generate("Hi", system="You are helpful.")
+        p.generate(cache_prompt("Hi"), system="You are helpful.")
 
     def test_no_system_prompt_when_empty(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -152,7 +154,46 @@ class TestGenerate:
             return httpx.Response(200, json=_ok_response())
 
         p = _provider(_make_transport(handler))
-        p.generate("Hi")
+        p.generate(cache_prompt("Hi"))
+
+    def test_cacheable_prompt_uses_stable_prefix_message_before_task(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert body["messages"] == [
+                {"role": "user", "content": "章节正文"},
+                {"role": "user", "content": "提取人物"},
+            ]
+            return httpx.Response(200, json=_ok_response())
+
+        p = _provider(_make_transport(handler))
+        p.generate(CacheablePrompt(prefix="章节正文", task="提取人物"))
+
+    def test_cacheable_prompt_with_system_keeps_prefix_before_task(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            body = json.loads(request.content)
+            assert body["messages"] == [
+                {"role": "system", "content": "按 JSON 输出。"},
+                {"role": "user", "content": "章节正文"},
+                {"role": "user", "content": "提取事件"},
+            ]
+            return httpx.Response(200, json=_ok_response())
+
+        p = _provider(_make_transport(handler))
+        p.generate(
+            CacheablePrompt(prefix="章节正文", task="提取事件"),
+            system="按 JSON 输出。",
+        )
+
+    def test_ollama_cacheable_prompt_is_merged_for_generate_api(self):
+        provider = OllamaProvider(model="test-model")
+        payload = provider._build_payload(
+            CacheablePrompt(prefix="章节正文", task="提取人物"),
+            system="",
+            stream=False,
+        )
+
+        assert payload["prompt"] == "章节正文\n\n提取人物"
+        provider.close()
 
     def test_options_merged_into_payload(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -167,7 +208,7 @@ class TestGenerate:
             options={"temperature": 0.3, "max_tokens": 1024, "seed": 99},
         )
         # Call-level options override instance options.
-        p.generate("test", options={"temperature": 0.5})
+        p.generate(cache_prompt("test"), options={"temperature": 0.5})
 
     def test_deepseek_no_think_disables_thinking(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -180,7 +221,7 @@ class TestGenerate:
             base_url="https://api.deepseek.com",
             model="deepseek-v4-pro",
         )
-        p.generate("return json", options={"no_think": True})
+        p.generate(cache_prompt("return json"), options={"no_think": True})
 
     def test_no_think_not_sent_to_generic_openai_endpoint(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -190,7 +231,7 @@ class TestGenerate:
             return httpx.Response(200, json=_ok_response())
 
         p = _provider(_make_transport(handler), base_url="https://api.example.com")
-        p.generate("return json", options={"no_think": True})
+        p.generate(cache_prompt("return json"), options={"no_think": True})
 
     def test_auth_header_present(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -198,7 +239,7 @@ class TestGenerate:
             return httpx.Response(200, json=_ok_response())
 
         p = _provider(_make_transport(handler), api_key="sk-my-key")
-        p.generate("test")
+        p.generate(cache_prompt("test"))
 
     def test_invalid_json_response(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -206,7 +247,7 @@ class TestGenerate:
 
         p = _provider(_make_transport(handler))
         with pytest.raises(LLMResponseError, match="Invalid JSON"):
-            p.generate("test")
+            p.generate(cache_prompt("test"))
 
     def test_unexpected_response_structure(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -214,7 +255,7 @@ class TestGenerate:
 
         p = _provider(_make_transport(handler))
         with pytest.raises(LLMResponseError, match="Unexpected response structure"):
-            p.generate("test")
+            p.generate(cache_prompt("test"))
 
 
 # ---------------------------------------------------------------------------
@@ -231,7 +272,7 @@ class TestGenerateStream:
             return httpx.Response(200, text=_sse_chunks(chunks))
 
         p = _provider(_make_transport(handler))
-        result = list(p.generate_stream("Say hi"))
+        result = list(p.generate_stream(cache_prompt("Say hi")))
         assert result == chunks
 
     def test_stream_ignores_empty_and_non_data_lines(self):
@@ -241,7 +282,7 @@ class TestGenerateStream:
             return httpx.Response(200, text=raw)
 
         p = _provider(_make_transport(handler))
-        result = list(p.generate_stream("test"))
+        result = list(p.generate_stream(cache_prompt("test")))
         assert result == ["ok"]
 
 
@@ -256,7 +297,7 @@ class TestErrorMapping:
 
         p = _provider(_make_transport(handler))
         with pytest.raises(LLMConnectionError, match="401"):
-            p.generate("test")
+            p.generate(cache_prompt("test"))
 
     def test_429_maps_to_timeout_error(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -264,7 +305,7 @@ class TestErrorMapping:
 
         p = _provider(_make_transport(handler))
         with pytest.raises(LLMTimeoutError, match="429"):
-            p.generate("test")
+            p.generate(cache_prompt("test"))
 
     def test_500_maps_to_response_error(self):
         def handler(request: httpx.Request) -> httpx.Response:
@@ -272,7 +313,7 @@ class TestErrorMapping:
 
         p = _provider(_make_transport(handler))
         with pytest.raises(LLMResponseError, match="500"):
-            p.generate("test")
+            p.generate(cache_prompt("test"))
 
 
 # ---------------------------------------------------------------------------
@@ -334,7 +375,7 @@ class TestContextManager:
 
         p = _provider(_make_transport(handler))
         with p:
-            resp = p.generate("test")
+            resp = p.generate(cache_prompt("test"))
             assert resp.content == "Hello!"
         # After exiting, client should be closed.
         assert p._client.is_closed

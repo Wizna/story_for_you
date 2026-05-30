@@ -5,10 +5,11 @@ import json
 from story_for_you.analysis.context import StoryContext
 from story_for_you.core.ending.hint_interpreter import HintInterpreter
 from story_for_you.llm.base import LLMProvider, LLMResponse
+from story_for_you.utils.prompting import CacheablePrompt
 
 
 class _DirectiveLLM(LLMProvider):
-    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+    def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         payload = {
             "normalized_text": "写成明确收束的非开放式结局",
             "closure": "closed",
@@ -22,7 +23,7 @@ class _DirectiveLLM(LLMProvider):
         }
         return LLMResponse(content=json.dumps(payload, ensure_ascii=False), tokens_used=0)
 
-    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+    def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
 
 
