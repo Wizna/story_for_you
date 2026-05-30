@@ -4,6 +4,7 @@ import json
 import pytest
 
 from story_for_you.analysis.context import CharacterState, StoryContext
+from story_for_you.core.ending import StyleEnforcer
 from story_for_you.core.exceptions import GenerationError
 from story_for_you.core.ending_writer import EndingWriter
 from story_for_you.indexer.segment import Segment, SegmentIndex
@@ -30,6 +31,34 @@ class _BlockedResolutionLLM(LLMProvider):
 
     def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
         yield from []
+
+
+class _RepairLLM(LLMProvider):
+    def __init__(self):
+        self.prompts: list[str] = []
+
+    def generate(self, prompt: str, system: str = "", options: dict | None = None) -> LLMResponse:
+        self.prompts.append(prompt)
+        return LLMResponse(content="修复后的正文", tokens_used=0)
+
+    def generate_stream(self, prompt: str, system: str = "", options: dict | None = None):
+        yield from []
+
+
+class _ValidationResult:
+    def __init__(self, passed: bool):
+        self.passed = passed
+        self.issues = [] if passed else ["傩送归宿前后矛盾"]
+        self.repair_instructions = [] if passed else ["删除少年过渡情节"]
+
+
+class _FailThenPassValidator:
+    def __init__(self):
+        self.calls = 0
+
+    def validate(self, text: str, directives, *, context_block: str):
+        self.calls += 1
+        return _ValidationResult(self.calls > 1)
 
 
 def test_recent_segment_digest_uses_tail_excerpt():
@@ -67,3 +96,26 @@ def test_resolution_blocked_status_raises():
 
     with pytest.raises(GenerationError, match="傩送归宿未交代"):
         writer._phase_resolution_review("正文", context, "上下文", None, "{}")
+
+
+def test_final_validation_failure_repairs_once():
+    llm = _RepairLLM()
+    validator = _FailThenPassValidator()
+    writer = EndingWriter(
+        llm,
+        SegmentIndex(segments=[], char_index={}, chapter_index={}, gap_map={}),
+    )
+    writer._ending_validator = validator
+
+    repaired = writer._validate_or_repair_final(
+        "有矛盾的正文",
+        directives={},
+        context_block="上下文",
+        style=None,
+        hint="续写一个非开放式结局。",
+        enforcer=StyleEnforcer(None),
+    )
+
+    assert repaired == "修复后的正文"
+    assert validator.calls == 2
+    assert "删除少年过渡情节" in llm.prompts[0]

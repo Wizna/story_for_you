@@ -37,6 +37,7 @@ _MIN_PARAGRAPH_CHARS = 120
 _MAX_BEAT_PARAGRAPHS = 4
 _VALID_ENDING_DIRECTIONS = {"HE", "BE", "OE"}
 _VALID_RESOLUTION_STATUSES = {"ok", "needs_bridges", "blocked"}
+_MAX_FINAL_REPAIR_ATTEMPTS = 1
 
 
 @dataclass
@@ -77,6 +78,7 @@ class EndingWriter:
             "draft": {"temperature": temps.draft},
             "polish": {"temperature": temps.polish},
             "resolution": {"temperature": temps.resolution, "no_think": True},
+            "final_repair": {"temperature": temps.polish, "no_think": True},
         }
         self._load_templates()
 
@@ -86,6 +88,7 @@ class EndingWriter:
         self.draft_template = load_template("ending_draft")
         self.polish_template = load_template("ending_polish")
         self.resolution_template = load_template("ending_resolution")
+        self.final_repair_template = load_template("ending_final_repair")
 
     def continue_story(self, text: str, context: StoryContext, hint: str = "") -> str:
         """执行完整的 4 阶段续写流程。"""
@@ -109,7 +112,14 @@ class EndingWriter:
 
         enforcer = StyleEnforcer(style)
         final = enforcer.post_process(final)
-        self._validate_final(final, directives, context_block)
+        final = self._validate_or_repair_final(
+            final,
+            directives,
+            context_block,
+            style,
+            hint_payload,
+            enforcer,
+        )
         return final
 
     def _phase_outline(self, context: StoryContext, context_block: str, hint: str) -> EndingOutline:
@@ -525,3 +535,59 @@ class EndingWriter:
         if not result.passed:
             details = "; ".join(result.issues + result.repair_instructions)
             raise GenerationError("Ending validation failed: " + details)
+
+    def _validate_or_repair_final(
+        self,
+        text: str,
+        directives,
+        context_block: str,
+        style: WritingStyle | None,
+        hint: str,
+        enforcer: StyleEnforcer,
+    ) -> str:
+        current = text
+        last_details = ""
+        for attempt in range(_MAX_FINAL_REPAIR_ATTEMPTS + 1):
+            result = self._ending_validator.validate(current, directives, context_block=context_block)
+            if result.passed:
+                return current
+            last_details = "; ".join(result.issues + result.repair_instructions)
+            if attempt >= _MAX_FINAL_REPAIR_ATTEMPTS:
+                break
+            current = self._phase_final_repair(
+                current,
+                context_block,
+                hint,
+                style,
+                result.issues,
+                result.repair_instructions,
+            )
+            current = enforcer.post_process(current)
+        raise GenerationError("Ending validation failed: " + last_details)
+
+    def _phase_final_repair(
+        self,
+        final_text: str,
+        context_block: str,
+        hint: str,
+        style: WritingStyle | None,
+        issues: list[str],
+        repair_instructions: list[str],
+    ) -> str:
+        prompt = fill_template(
+            self.final_repair_template,
+            final_text=final_text,
+            context_block=context_block or "(无上下文)",
+            hint=hint,
+            issues="\n".join(f"- {item}" for item in issues) or "(无)",
+            repair_instructions="\n".join(f"- {item}" for item in repair_instructions) or "(无)",
+            style_guide=format_style_guide(style),
+            style_samples=format_style_samples(style),
+            style_constraints=format_style_constraints(style),
+            banned_expressions=BANNED_EXPRESSIONS_PROMPT,
+        )
+        response = self.llm.generate(prompt=prompt, options=self._phase_options("final_repair"))
+        content = response.content.strip()
+        if not content:
+            raise LLMResponseError("Final repair phase returned empty content.")
+        return content
