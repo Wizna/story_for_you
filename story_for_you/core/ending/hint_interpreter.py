@@ -9,6 +9,7 @@ from typing import Any, TYPE_CHECKING
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.core.prompting import fill_template, format_context_sections, load_template
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 
 if TYPE_CHECKING:
@@ -73,7 +74,14 @@ class HintInterpreter:
             raw_hint=hint,
             context_block=context_block or "(无上下文)",
         )
-        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                {"no_think": True},
+                phase="continue",
+                step=": interpret user hint",
+            ),
+        )
         payload = load_json_response(response.content)
         if not isinstance(payload, dict):
             raise LLMResponseError("Ending directive extraction returned invalid JSON object.")

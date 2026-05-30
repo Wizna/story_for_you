@@ -7,6 +7,7 @@ from story_for_you.analysis.context import ChapterSummary, StyleSample, WritingS
 from story_for_you.analysis.prompting import fill_template, load_template
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
@@ -122,7 +123,14 @@ class StyleExtractor:
 
     def _execute_and_parse(self, prompt: str) -> WritingStyle:
         """执行 LLM 调用并解析结果。"""
-        response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                _STRUCTURED_OPTIONS,
+                phase="analyze",
+                step=": extract writing style",
+            ),
+        )
         return self._parse_response(response.content)
 
     def _parse_response(self, content: str) -> WritingStyle:

@@ -9,6 +9,7 @@ from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.core.prompting import (
     fill_template,
     format_context_sections,
@@ -86,7 +87,14 @@ class CharacterRemover:
             segment_text=segment.content.strip(),
             style_guide=style_guide,
         )
-        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                {"no_think": True},
+                phase="remove",
+                step=f": decide rewrite/delete for segment {segment.segment_id}",
+            ),
+        )
         payload = load_json_response(response.content)
         if not isinstance(payload, dict):
             raise LLMResponseError("Character remover returned invalid JSON object.")

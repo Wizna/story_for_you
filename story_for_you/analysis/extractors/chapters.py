@@ -13,6 +13,7 @@ from story_for_you.analysis.prompting import (
 )
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
@@ -67,14 +68,23 @@ class ChapterSummarizer:
             logger.debug("Chapter summary prompt truncated to %s chars", len(prompt))
         last_error: str | None = None
         for attempt in range(1, _MAX_CHAPTER_ATTEMPTS + 1):
-            response = self.llm.generate(prompt=prompt, options=_JSON_OBJECT_OPTIONS)
+            response = self.llm.generate(
+                prompt=prompt,
+                options=telemetry_options(
+                    _JSON_OBJECT_OPTIONS,
+                    phase=f"analyze chapter {chapter_no}",
+                    step=": chapter summary",
+                    attempt=attempt,
+                    max_attempts=_MAX_CHAPTER_ATTEMPTS,
+                ),
+            )
             summary, error = self._parse_response(response.content)
             if summary is not None:
                 return summary
             last_error = error
             if error:
                 logger.debug("Chapter summary parse failed (%s). Attempting repair.", error)
-            repaired_content = self._attempt_repair(response.content, error)
+            repaired_content = self._attempt_repair(response.content, error, chapter_no)
             if repaired_content:
                 summary, repair_error = self._parse_response(repaired_content)
                 if summary is not None:
@@ -156,7 +166,7 @@ class ChapterSummarizer:
             return text
         return text[: max(limit - 3, 0)].rstrip() + "..."
 
-    def _attempt_repair(self, raw_response: str | None, error: str | None) -> str | None:
+    def _attempt_repair(self, raw_response: str | None, error: str | None, chapter_no: int) -> str | None:
         """Ask the LLM to repair malformed chapter-summary JSON once."""
         if not raw_response:
             return None
@@ -166,5 +176,12 @@ class ChapterSummarizer:
             error_message=error or "JSON parsing failed.",
             invalid_output=snippet,
         )
-        repaired = self.llm.generate(prompt=prompt, options=_JSON_OBJECT_OPTIONS)
+        repaired = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                _JSON_OBJECT_OPTIONS,
+                phase=f"analyze chapter {chapter_no}",
+                step=": repair chapter summary JSON",
+            ),
+        )
         return repaired.content

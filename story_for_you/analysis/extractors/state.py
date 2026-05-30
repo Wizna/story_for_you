@@ -8,6 +8,7 @@ from story_for_you.analysis.context import PlotEvent, StoryState
 from story_for_you.analysis.prompting import fill_template, load_template
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 
 
@@ -40,7 +41,14 @@ class StateSynthesizer:
             events=json.dumps(events_payload, ensure_ascii=False),
             recent_context=recent_context.strip() or "暂无历史上下文。",
         )
-        response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                _STRUCTURED_OPTIONS,
+                phase="analyze chapter",
+                step=": update story state",
+            ),
+        )
         data = load_json_response(response.content)
         if not isinstance(data, dict):
             raise LLMResponseError("Story state response is not a JSON object.")

@@ -7,6 +7,10 @@ from typing import Iterator, Self
 class LLMResponse:
     content: str
     tokens_used: int
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    cache_hit_prompt_tokens: int = 0
+    cache_miss_prompt_tokens: int = 0
 
 
 class LLMProvider(ABC):

@@ -66,8 +66,15 @@ class OllamaProvider(LLMProvider):
 
         content = data.get("response", "").strip()
         content = self._strip_thinking(content)
-        tokens_used = data.get("eval_count") or data.get("prompt_eval_count") or 0
-        return LLMResponse(content=content, tokens_used=tokens_used)
+        prompt_tokens = data.get("prompt_eval_count") or 0
+        completion_tokens = data.get("eval_count") or 0
+        tokens_used = prompt_tokens + completion_tokens
+        return LLMResponse(
+            content=content,
+            tokens_used=tokens_used,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
 
     def generate_stream(self, prompt: str, system: str = "", options: dict | None = None) -> Iterator[str]:
         """Stream a response via Ollama's API."""

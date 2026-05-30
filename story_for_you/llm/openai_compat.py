@@ -77,12 +77,32 @@ class OpenAICompatibleProvider(LLMProvider):
         except (KeyError, IndexError, TypeError) as exc:
             raise LLMResponseError(f"Unexpected response structure: {exc}") from exc
 
+        prompt_tokens = 0
+        completion_tokens = 0
+        cache_hit_prompt_tokens = 0
+        cache_miss_prompt_tokens = 0
         tokens_used = 0
         usage = data.get("usage")
         if usage:
             tokens_used = usage.get("total_tokens", 0)
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            prompt_details = usage.get("prompt_tokens_details") or {}
+            cache_hit_prompt_tokens = (
+                usage.get("prompt_cache_hit_tokens")
+                or prompt_details.get("cached_tokens")
+                or 0
+            )
+            cache_miss_prompt_tokens = usage.get("prompt_cache_miss_tokens") or 0
 
-        return LLMResponse(content=content, tokens_used=tokens_used)
+        return LLMResponse(
+            content=content,
+            tokens_used=tokens_used,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+            cache_hit_prompt_tokens=cache_hit_prompt_tokens,
+            cache_miss_prompt_tokens=cache_miss_prompt_tokens,
+        )
 
     def generate_stream(
         self, prompt: str, system: str = "", options: dict | None = None

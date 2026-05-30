@@ -13,6 +13,7 @@ from story_for_you.analysis.prompting import (
 )
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
@@ -66,7 +67,14 @@ class CharacterExtractor:
     # Internal helpers -------------------------------------------------
     def _prompt_characters(self, prompt: str) -> list[CharacterState]:
         """Use the configured LLM to extract structured characters."""
-        response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                _STRUCTURED_OPTIONS,
+                phase="analyze chapter",
+                step=": extract characters",
+            ),
+        )
         characters, error = self._parse_response(response.content)
         if characters is not None:
             return characters
@@ -206,7 +214,14 @@ class CharacterExtractor:
             error_message=error or "JSON parsing failed.",
             invalid_output=snippet,
         )
-        repaired = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+        repaired = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                _STRUCTURED_OPTIONS,
+                phase="analyze chapter",
+                step=": repair character JSON",
+            ),
+        )
         return repaired.content
 
 

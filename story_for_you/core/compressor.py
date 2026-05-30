@@ -7,6 +7,7 @@ from story_for_you.config.settings import RenderingLimits
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.core.prompting import (
     fill_template,
     format_context_sections,
@@ -57,7 +58,10 @@ class StoryCompressor:
             style_guide=style_guide,
             style_samples=style_samples,
         )
-        response = self.llm.generate(prompt=prompt)
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(phase="compress", step=": rewrite selected segments"),
+        )
         content = response.content.strip()
         if not content:
             raise LLMResponseError("Story compression returned empty content.")

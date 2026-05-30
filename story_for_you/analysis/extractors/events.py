@@ -13,6 +13,7 @@ from story_for_you.analysis.prompting import (
 )
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 
 logger = logging.getLogger(__name__)
@@ -52,7 +53,14 @@ class EventExtractor:
         )
         if truncated:
             logger.debug("Event extraction prompt truncated to %s chars", len(prompt))
-        response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                _STRUCTURED_OPTIONS,
+                phase=f"analyze chapter {chapter_no}",
+                step=": extract plot events",
+            ),
+        )
         allowed_participants = set(alias_map)
         events, error = self._parse_response(response.content, chapter_no, alias_map, allowed_participants)
         if events is not None:
@@ -60,7 +68,7 @@ class EventExtractor:
 
         if error:
             logger.debug("Event extraction parse failed (%s). Attempting repair.", error)
-        repaired_content = self._attempt_repair(response.content, error)
+        repaired_content = self._attempt_repair(response.content, error, chapter_no)
         if repaired_content:
             events, repair_error = self._parse_response(
                 repaired_content,
@@ -228,7 +236,7 @@ class EventExtractor:
                 alias_map[alias] = name
         return [roster_by_name[name] for name in sorted(roster_by_name)], alias_map
 
-    def _attempt_repair(self, raw_response: str | None, error: str | None) -> str | None:
+    def _attempt_repair(self, raw_response: str | None, error: str | None, chapter_no: int) -> str | None:
         """Ask the LLM to fix its malformed JSON response."""
         if not raw_response:
             return None
@@ -238,5 +246,12 @@ class EventExtractor:
             error_message=error or "JSON parsing failed.",
             invalid_output=snippet,
         )
-        repaired = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+        repaired = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                _STRUCTURED_OPTIONS,
+                phase=f"analyze chapter {chapter_no}",
+                step=": repair event JSON",
+            ),
+        )
         return repaired.content

@@ -22,6 +22,7 @@ from story_for_you.core.prompting import (
 )
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN
 
@@ -139,7 +140,14 @@ class EndingWriter:
             hint=hint,
         )
 
-        response = self.llm.generate(prompt=prompt, options=self._phase_options("outline"))
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                self._phase_options("outline"),
+                phase="continue",
+                step=": outline",
+            ),
+        )
         result = load_json_response(response.content)
         if not isinstance(result, dict):
             raise LLMResponseError("Outline phase returned invalid JSON object.")
@@ -209,7 +217,14 @@ class EndingWriter:
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
 
-        response = self.llm.generate(prompt=prompt, options=self._phase_options("draft"))
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                self._phase_options("draft"),
+                phase="continue",
+                step=": draft",
+            ),
+        )
         content = response.content.strip()
         if not content:
             raise LLMResponseError("Draft phase returned empty content.")
@@ -250,7 +265,14 @@ class EndingWriter:
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
 
-        response = self.llm.generate(prompt=prompt, options=self._phase_options("polish"))
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                self._phase_options("polish"),
+                phase="continue",
+                step=": polish",
+            ),
+        )
         content = response.content.strip()
         if not content:
             raise LLMResponseError("Polish phase returned empty content.")
@@ -282,7 +304,14 @@ class EndingWriter:
             hint=hint,
         )
 
-        response = self.llm.generate(prompt=prompt, options=self._phase_options("resolution"))
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                self._phase_options("resolution"),
+                phase="continue",
+                step=": resolution review",
+            ),
+        )
         payload = load_json_response(response.content)
         if not isinstance(payload, dict):
             raise LLMResponseError("Resolution phase returned invalid JSON object.")
@@ -586,7 +615,14 @@ class EndingWriter:
             style_constraints=format_style_constraints(style),
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
-        response = self.llm.generate(prompt=prompt, options=self._phase_options("final_repair"))
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                self._phase_options("final_repair"),
+                phase="continue",
+                step=": final repair",
+            ),
+        )
         content = response.content.strip()
         if not content:
             raise LLMResponseError("Final repair phase returned empty content.")

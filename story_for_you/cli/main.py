@@ -30,6 +30,7 @@ from story_for_you.indexer.serialization import (
 )
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.factory import build_llm
+from story_for_you.llm.telemetry import TelemetryLLMProvider
 from story_for_you.parser.text_splitter import TextChunk, TextSplitter
 from story_for_you.utils.file_io import compute_file_hash, read_text_file, write_text_file
 
@@ -41,6 +42,64 @@ app.add_typer(cache_app, name="cache")
 def _load_settings(config: Optional[Path]) -> Settings:
     loader = SettingsLoader(config_path=config)
     return loader.load()
+
+
+def _build_cli_llm(settings: Settings) -> LLMProvider:
+    return TelemetryLLMProvider(build_llm(settings), typer.echo)
+
+
+def _set_llm_plan(llm: LLMProvider, label: str, total_expected: int | None = None) -> None:
+    if isinstance(llm, TelemetryLLMProvider):
+        llm.set_plan(label=label, total_expected=total_expected)
+
+
+def _announce_llm_plan(label: str, total_expected: int | None, phases: list[str]) -> None:
+    estimate = f"~{total_expected}" if total_expected is not None else "unknown"
+    typer.echo(f"LLM plan for {label}: baseline {estimate} request(s). Repairs/retries are logged as extra requests.")
+    for phase in phases:
+        typer.echo(f"  - {phase}")
+
+
+def _analysis_request_estimate(chapter_count: int) -> int:
+    return chapter_count * 5 + 1
+
+
+def _announce_analysis_plan(chapter_count: int) -> None:
+    _announce_llm_plan(
+        "analyze",
+        _analysis_request_estimate(chapter_count),
+        [
+            f"for each of {chapter_count} chapter chunk(s): characters, relationships, summary, events, story state",
+            "final writing style extraction",
+        ],
+    )
+
+
+def _has_unresolved_threads(context: StoryContext) -> bool:
+    if any(character.unresolved for character in context.characters.values()):
+        return True
+    return bool(context.story_state and context.story_state.unresolved_events)
+
+
+def _announce_continue_plan(context: StoryContext) -> int:
+    has_resolution_review = _has_unresolved_threads(context)
+    total = 5 + (1 if has_resolution_review else 0)
+    phases = [
+        "interpret user hint",
+        "outline ending",
+        "draft ending",
+        "polish ending",
+    ]
+    if has_resolution_review:
+        phases.append("review unresolved threads")
+    phases.extend(
+        [
+            "validate ending",
+            "optional final repair and re-validation if validation fails",
+        ]
+    )
+    _announce_llm_plan("continue", total, phases)
+    return total
 
 
 def _split_text(
@@ -112,6 +171,8 @@ def _reanalyze(text: str, settings: Settings, llm):
     chapters = [chunk.content for chunk in chunks]
     total_chapters = len(chapters)
     typer.echo(f"Preparing {total_chapters} chapter-sized chunk(s) for analysis...")
+    _set_llm_plan(llm, "analyze", _analysis_request_estimate(total_chapters))
+    _announce_analysis_plan(total_chapters)
     analyzer = StoryAnalyzer(
         llm=llm,
         window_size=settings.analysis.window_size,
@@ -187,7 +248,7 @@ def _prepare(
 ) -> _CommandContext:
     settings = _load_settings(config)
     text = read_text_file(input_file)
-    llm = build_llm(settings)
+    llm = _build_cli_llm(settings)
     context, segments, segment_index = _load_artifacts(
         input_file=input_file,
         text=text,
@@ -235,7 +296,7 @@ def analyze(
 ) -> None:
     """Analyze the input story and persist a StoryContext artifact."""
     settings = _load_settings(config)
-    llm = build_llm(settings)
+    llm = _build_cli_llm(settings)
     if format not in {"json", "yaml"}:
         raise typer.BadParameter("Format must be 'json' or 'yaml'.")
     text = read_text_file(input_file)
@@ -256,6 +317,11 @@ def analyze(
         chapters = [chunk.content for chunk in chunks]
         total_chapters = len(chapters)
         typer.echo(f"Preparing {total_chapters} chapter-sized chunk(s) for analysis...")
+        remaining_chapters = total_chapters
+        if existing_progress and existing_progress.total_chapters == total_chapters:
+            remaining_chapters = max(total_chapters - existing_progress.completed_chapters, 0)
+        _set_llm_plan(llm, "analyze", _analysis_request_estimate(remaining_chapters))
+        _announce_analysis_plan(remaining_chapters)
 
         analyzer = ResumableStoryAnalyzer(
             llm=llm,
@@ -305,6 +371,8 @@ def compress(
 ) -> None:
     """Compress story beats according to the configured level."""
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
+    _set_llm_plan(cc.llm, "compress", 1)
+    _announce_llm_plan("compress", 1, ["rewrite selected story segments"])
     compressor = StoryCompressor(
         cc.llm, cc.segment_index, level=level, levels=cc.settings.compress.levels.__dict__,
         rendering_limits=cc.settings.rendering,
@@ -330,6 +398,8 @@ def filter_characters(
     """Filter story content by the provided character list."""
     targets = _parse_character_names(characters)
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
+    _set_llm_plan(cc.llm, "filter", None)
+    _announce_llm_plan("filter", None, ["generate bridge text for each gap between selected segments"])
     retriever = SegmentRetriever(cc.segment_index)
     filterer = CharacterFilter(cc.llm, retriever, rendering_limits=cc.settings.rendering)
     result = filterer.filter(cc.text, targets, cc.context, mode)
@@ -354,6 +424,9 @@ def remove(
     targets = _parse_character_names(characters)
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
     retriever = SegmentRetriever(cc.segment_index)
+    affected_count = len(retriever.retrieve_by_characters(include=targets, mode="strict"))
+    _set_llm_plan(cc.llm, "remove", affected_count)
+    _announce_llm_plan("remove", affected_count, ["decide rewrite/delete for each affected segment"])
     remover = CharacterRemover(cc.llm, retriever, rendering_limits=cc.settings.rendering)
     result = remover.remove(cc.text, targets, cc.context, mode)
     target = output or input_file.with_name(f"{input_file.stem}_rewritten.txt")
@@ -378,6 +451,8 @@ def continue_story(
 ) -> None:
     """Continue the story with an optional hint about the desired ending."""
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
+    continue_requests = _announce_continue_plan(cc.context)
+    _set_llm_plan(cc.llm, "continue", continue_requests)
     writer = EndingWriter(
         cc.llm, cc.segment_index,
         temperatures=cc.settings.ending.temperatures,

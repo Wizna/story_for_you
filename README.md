@@ -200,6 +200,11 @@ uv run story analyze novel.txt --config config.yaml
 `no_think` 选项转换为 DeepSeek 支持的 `thinking: {"type": "disabled"}`，以减少推理内容对
 JSON 输出的干扰；其他 OpenAI 兼容服务不会收到这个 DeepSeek 专用参数。
 
+CLI 会为 LLM 请求输出可见进度：命令开始时列出基线请求计划，每次请求会显示当前阶段、
+prompt 摘要、attempt/retry、输入/输出 token、缓存命中 token、剩余请求估算和累计费用。
+DeepSeek 官方模型会按内置价目估算费用；其他 OpenAI-compatible 服务若未配置价目则显示
+`cost=n/a`，但仍会展示 token 用量。
+
 `max_tokens` 控制单次生成的最大输出，不代表可用上下文长度；长篇分析的分块预算由
 `context_window - prompt.margin`、`parser.chunk_size` 和 `analysis.target_unit_chars` 共同决定。
 默认配置面向 1M 上下文的 `deepseek-v4-pro`，但语义分析仍按约 8000 字符的分析单元执行，

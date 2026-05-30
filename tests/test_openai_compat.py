@@ -30,6 +30,19 @@ def _ok_response(content: str = "Hello!", tokens: int = 10) -> dict:
     }
 
 
+def _deepseek_usage_response(content: str = "Hello!") -> dict:
+    return {
+        "choices": [{"message": {"content": content}, "finish_reason": "stop"}],
+        "usage": {
+            "prompt_tokens": 300,
+            "completion_tokens": 50,
+            "total_tokens": 350,
+            "prompt_cache_hit_tokens": 200,
+            "prompt_cache_miss_tokens": 100,
+        },
+    }
+
+
 def _sse_chunks(texts: list[str]) -> str:
     """Build a raw SSE response body from a list of delta content strings."""
     lines: list[str] = []
@@ -86,6 +99,26 @@ class TestGenerate:
         resp = p.generate("Say hi")
         assert resp.content == "Hi there!"
         assert resp.tokens_used == 42
+        assert resp.prompt_tokens == 5
+        assert resp.completion_tokens == 5
+
+    def test_generate_extracts_deepseek_cache_usage(self):
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(200, json=_deepseek_usage_response())
+
+        p = _provider(
+            _make_transport(handler),
+            base_url="https://api.deepseek.com",
+            model="deepseek-v4-pro",
+        )
+
+        resp = p.generate("Say hi")
+
+        assert resp.tokens_used == 350
+        assert resp.prompt_tokens == 300
+        assert resp.completion_tokens == 50
+        assert resp.cache_hit_prompt_tokens == 200
+        assert resp.cache_miss_prompt_tokens == 100
 
     def test_deepseek_generate_uses_official_chat_path(self):
         def handler(request: httpx.Request) -> httpx.Response:

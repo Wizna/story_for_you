@@ -1302,6 +1302,8 @@ uv run story --help
 - `Settings.llm` 提供 `provider/model/base_url/temperature/context_window/max_tokens/timeout/seed`，默认使用 `openai` provider，指向 `https://api.deepseek.com` 与 `deepseek-v4-pro`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
 - `max_tokens` 是单次生成输出上限；`context_window` 是模型上下文窗口，用于 Prompt 截断预算。分析阶段通过 `_split_analysis_text()` 使用 `analysis.target_unit_chars` 形成稳定语义单元，避免大上下文模型把整本书压成单个“章节”；`parser.chunk_size` 仍作为业务处理和通用分块上限。
 - `OpenAICompatibleProvider` 默认请求 `/v1/chat/completions`；当 `base_url` 是 DeepSeek 官方域名时，请求官方 OpenAI-compatible 路径 `/chat/completions`。分析抽取类调用传入 `no_think=True` 时，会转换为 DeepSeek 支持的 `thinking: {"type": "disabled"}`，降低结构化 JSON 输出被思考内容污染的概率；非 DeepSeek API 不会收到该专用参数。
+- CLI 使用 `TelemetryLLMProvider` 包装实际 provider。命令开始时输出基线请求计划；每次 `generate()` 会打印阶段、prompt 摘要、attempt/retry、输入/输出 token、缓存命中 token、单次费用估算、累计费用和剩余请求估算。Telemetry 只剥离 `_sfy_*` 内部元数据，不改变真实 provider 的业务参数。
+- 费用统计遵循主流 tracing 工具的近似口径：优先展示 provider 返回的 usage，缓存只作为提示性 breakdown，不尝试做账单级精算。DeepSeek 官方模型按内置价目表估算费用；其他 OpenAI-compatible 服务未配置价目时显示 `cost=n/a`。费用只用于用户侧消耗感知，不参与业务判断。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 
 ```python

@@ -10,6 +10,7 @@ from story_for_you.core.ending.hint_interpreter import HintDirectives
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.core.prompting import fill_template, load_template
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 
 __all__ = ["EndingValidationResult", "EndingValidator"]
@@ -42,7 +43,14 @@ class EndingValidator:
             context_block=context_block or "(无上下文)",
             final_text=text.strip(),
         )
-        response = self.llm.generate(prompt=prompt, options={"no_think": True})
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                {"no_think": True},
+                phase="continue",
+                step=": validate ending",
+            ),
+        )
         payload = load_json_response(response.content)
         if not isinstance(payload, dict):
             raise LLMResponseError("Ending validation returned invalid JSON object.")

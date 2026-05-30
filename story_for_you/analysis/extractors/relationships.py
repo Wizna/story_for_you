@@ -7,6 +7,7 @@ from story_for_you.analysis.context import CharacterState, Relationship
 from story_for_you.analysis.prompting import fill_template, load_template
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 
 _VALID_SENTIMENTS = {"positive", "neutral", "negative"}
@@ -34,7 +35,16 @@ class RelationshipMapper:
         allowed = set(alias_map)
         last_error: str | None = None
         for attempt in range(1, _MAX_RELATIONSHIP_ATTEMPTS + 1):
-            response = self.llm.generate(prompt=prompt, options=_STRUCTURED_OPTIONS)
+            response = self.llm.generate(
+                prompt=prompt,
+                options=telemetry_options(
+                    _STRUCTURED_OPTIONS,
+                    phase="analyze chapter",
+                    step=": map relationships",
+                    attempt=attempt,
+                    max_attempts=_MAX_RELATIONSHIP_ATTEMPTS,
+                ),
+            )
             relationships, error = self._parse_response(response.content, alias_map, allowed)
             if relationships is not None:
                 return relationships
