@@ -20,7 +20,7 @@
 
 ```bash
 # 克隆仓库
-git clone https://github.com/your-username/story_for_you.git
+git clone git@github.com:Wizna/story_for_you.git
 cd story_for_you
 
 # 安装依赖（需要 Python 3.11+）
@@ -295,4 +295,4 @@ uv run pytest -q
 
 ## License
 
-MIT
+GNU General Public License v3.0 or later. See [LICENSE](LICENSE).
