@@ -81,7 +81,7 @@ def _announce_analysis_plan(chapter_count: int) -> None:
         "analyze",
         _analysis_request_estimate(chapter_count),
         [
-            f"for each of {chapter_count} chapter chunk(s): characters, relationships, summary, events, story state",
+            f"for each of {chapter_count} chapter chunk(s): characters, relationships if useful, summary, events, story state if changed",
             "final writing style extraction",
         ],
     )

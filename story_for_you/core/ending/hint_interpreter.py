@@ -7,11 +7,11 @@ from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 
 from story_for_you.core.exceptions import LLMResponseError
-from story_for_you.core.prompting import fill_template, format_context_sections, load_template
+from story_for_you.core.prompting import format_context_sections, load_template
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
-from story_for_you.utils.prompting import cache_prompt
+from story_for_you.utils.prompting import build_cacheable_prompt
 
 if TYPE_CHECKING:
     from story_for_you.analysis.context import StoryContext
@@ -70,13 +70,14 @@ class HintInterpreter:
 
         hint = (raw_hint or "").strip() or "无特别要求"
         context_block = format_context_sections(context.for_prompt(limits=self._limits))
-        prompt = fill_template(
+        prompt = build_cacheable_prompt(
+            context_block or "(无上下文)",
             self.template,
+            prefix_placeholder="context_block",
             raw_hint=hint,
-            context_block=context_block or "(无上下文)",
         )
         response = self.llm.generate(
-            prompt=cache_prompt(prompt),
+            prompt=prompt,
             options=telemetry_options(
                 {"no_think": True},
                 phase="continue",

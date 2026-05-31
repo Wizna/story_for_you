@@ -32,6 +32,8 @@ class StateSynthesizer:
         recent_context: str,
     ) -> StoryState:
         """Synthesize the long-term story state via the LLM."""
+        if story_state is not None and not events:
+            return story_state
         prior_state_payload: Any = asdict(story_state) if story_state else None
         events_payload = [asdict(event) for event in events]
         prompt = fill_template(

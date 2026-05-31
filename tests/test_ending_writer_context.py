@@ -119,4 +119,6 @@ def test_final_validation_failure_repairs_once():
 
     assert repaired == "修复后的正文"
     assert validator.calls == 2
+    assert llm.prompts[0].prefix == "上下文"
     assert "删除少年过渡情节" in llm.prompts[0].render()
+    assert "见前一条 user 消息中的完整文本" in llm.prompts[0].task

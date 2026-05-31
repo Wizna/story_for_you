@@ -25,7 +25,7 @@ class RelationshipMapper:
     def map(self, chapter_text: str, characters: list[str] | list[CharacterState] | None = None) -> list[Relationship]:
         """Return relationship changes observed in the text."""
         roster, alias_map = self._build_roster(characters or [])
-        if not roster:
+        if len(roster) < 2:
             return []
         prompt = build_cacheable_prompt(
             chapter_text.strip(),

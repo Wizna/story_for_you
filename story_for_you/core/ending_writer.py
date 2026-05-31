@@ -13,7 +13,6 @@ from story_for_you.core.ending import (
 )
 from story_for_you.core.exceptions import GenerationError, LLMResponseError
 from story_for_you.core.prompting import (
-    fill_template,
     format_context_sections,
     format_style_constraints,
     format_style_guide,
@@ -24,7 +23,7 @@ from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
-from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN, cache_prompt
+from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN, build_cacheable_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -130,9 +129,10 @@ class EndingWriter:
         characters = self._format_main_characters(context)
         conflicts = self._format_conflicts(context)
 
-        prompt = fill_template(
+        prompt = build_cacheable_prompt(
+            context_block or "(无上下文)",
             self.outline_template,
-            context_block=context_block,
+            prefix_placeholder="context_block",
             recent_events=recent_events,
             unresolved_threads=unresolved,
             characters=characters,
@@ -141,7 +141,7 @@ class EndingWriter:
         )
 
         response = self.llm.generate(
-            prompt=cache_prompt(prompt),
+            prompt=prompt,
             options=telemetry_options(
                 self._phase_options("outline"),
                 phase="continue",
@@ -201,14 +201,15 @@ class EndingWriter:
         required_characters = self._format_main_characters(context)
         loose_threads = self._format_unresolved(context)
 
-        prompt = fill_template(
+        prompt = build_cacheable_prompt(
+            context_block or "(无上下文)",
             self.draft_template,
+            prefix_placeholder="context_block",
             outline=outline_text,
             style_guide=style_guide,
             style_samples=style_samples,
             style_constraints=style_constraints,
             recent_segments=recent_segments,
-            context_block=context_block or "(无上下文)",
             hint=hint,
             required_characters=required_characters or "(未提供人物信息)",
             loose_threads=loose_threads or "(暂无伏笔)",
@@ -218,7 +219,7 @@ class EndingWriter:
         )
 
         response = self.llm.generate(
-            prompt=cache_prompt(prompt),
+            prompt=prompt,
             options=telemetry_options(
                 self._phase_options("draft"),
                 phase="continue",
@@ -247,8 +248,10 @@ class EndingWriter:
         tone_markers = ", ".join(style.tone_markers) if style and style.tone_markers else ""
         checklist = self._revision_checklist(style)
 
-        prompt = fill_template(
+        prompt = build_cacheable_prompt(
+            context_block or "(无上下文)",
             self.polish_template,
+            prefix_placeholder="context_block",
             draft=draft,
             final_image=outline.final_image,
             emotional_arc=outline.emotional_arc,
@@ -258,7 +261,6 @@ class EndingWriter:
             characteristic_words=characteristic_words,
             tone_markers=tone_markers,
             checklist=checklist,
-            context_block=context_block or "(无上下文)",
             hint=hint,
             beat_constraints=self._draft_paragraph_plan(outline),
             style_anchors=style_anchors,
@@ -266,7 +268,7 @@ class EndingWriter:
         )
 
         response = self.llm.generate(
-            prompt=cache_prompt(prompt),
+            prompt=prompt,
             options=telemetry_options(
                 self._phase_options("polish"),
                 phase="continue",
@@ -294,18 +296,19 @@ class EndingWriter:
         unresolved = "\n".join(f"- {item}" for item in threads)
         style_guide = format_style_guide(style)
         style_samples = format_style_samples(style)
-        prompt = fill_template(
+        prompt = build_cacheable_prompt(
+            context_block or "(无上下文)",
             self.resolution_template,
+            prefix_placeholder="context_block",
             final_content=polished,
             unresolved_threads=unresolved,
             style_guide=style_guide or "(无风格约束)",
             style_samples=style_samples or "(暂无示例)",
-            context_block=context_block or "(无上下文)",
             hint=hint,
         )
 
         response = self.llm.generate(
-            prompt=cache_prompt(prompt),
+            prompt=prompt,
             options=telemetry_options(
                 self._phase_options("resolution"),
                 phase="continue",
@@ -603,10 +606,11 @@ class EndingWriter:
         issues: list[str],
         repair_instructions: list[str],
     ) -> str:
-        prompt = fill_template(
+        prompt = build_cacheable_prompt(
+            context_block or "(无上下文)",
             self.final_repair_template,
+            prefix_placeholder="context_block",
             final_text=final_text,
-            context_block=context_block or "(无上下文)",
             hint=hint,
             issues="\n".join(f"- {item}" for item in issues) or "(无)",
             repair_instructions="\n".join(f"- {item}" for item in repair_instructions) or "(无)",
@@ -616,7 +620,7 @@ class EndingWriter:
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
         )
         response = self.llm.generate(
-            prompt=cache_prompt(prompt),
+            prompt=prompt,
             options=telemetry_options(
                 self._phase_options("final_repair"),
                 phase="continue",

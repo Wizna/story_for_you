@@ -8,11 +8,11 @@ from typing import Any
 
 from story_for_you.core.ending.hint_interpreter import HintDirectives
 from story_for_you.core.exceptions import LLMResponseError
-from story_for_you.core.prompting import fill_template, load_template
+from story_for_you.core.prompting import load_template
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
-from story_for_you.utils.prompting import cache_prompt
+from story_for_you.utils.prompting import build_cacheable_prompt
 
 __all__ = ["EndingValidationResult", "EndingValidator"]
 
@@ -38,14 +38,15 @@ class EndingValidator:
         *,
         context_block: str,
     ) -> EndingValidationResult:
-        prompt = fill_template(
+        prompt = build_cacheable_prompt(
+            context_block or "(无上下文)",
             self.template,
+            prefix_placeholder="context_block",
             directives=json.dumps(asdict(directives), ensure_ascii=False, indent=2),
-            context_block=context_block or "(无上下文)",
             final_text=text.strip(),
         )
         response = self.llm.generate(
-            prompt=cache_prompt(prompt),
+            prompt=prompt,
             options=telemetry_options(
                 {"no_think": True},
                 phase="continue",

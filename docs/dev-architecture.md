@@ -1312,7 +1312,7 @@ uv run story --help
 - CLI 使用 `TelemetryLLMProvider` 包装实际 provider。命令开始时输出基线请求计划；每次 `generate()` 会打印阶段、prompt 摘要、attempt/retry、输入/输出 token、缓存命中 token、缓存命中率、单次费用估算、累计费用和剩余请求估算。Telemetry 只剥离 `_sfy_*` 内部元数据，不改变真实 provider 的业务参数。
 - 费用统计遵循主流 tracing 工具的近似口径：优先展示 provider 返回的 usage，并在 DeepSeek usage 提供 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` 时按命中输入折扣估算。其他 OpenAI-compatible 服务未配置价目时显示 `cost=n/a`。费用只用于用户侧消耗感知，不参与业务判断。
 - Telemetry 的内部 metadata 使用 `_sfy_*` option key 传递，例如 `_sfy_phase`、`_sfy_step`、`_sfy_attempt`。`TelemetryLLMProvider` 会在调用真实 provider 前剥离这些 key，确保 DeepSeek/OpenAI/Ollama 只收到业务参数（如 `temperature`、`max_tokens`、`response_format`、`no_think`）。
-- 请求计划是基线估算：`analyze` 约等于 `chapter_chunks * 5 + style`；`continue` 约等于 hint 解析、大纲、初稿、润色、可选伏笔审查和最终验证。任何 repair/retry 都不预先计入基线，而是在发生时按额外请求输出。
+- 请求计划是上限估算：`analyze` 最多约等于 `chapter_chunks * 5 + style`，但 0-1 个角色的章节会跳过关系抽取，没有新事件且已有上一帧状态时会跳过状态合并；`continue` 约等于 hint 解析、大纲、初稿、润色、可选伏笔审查和最终验证。任何 repair/retry 都不预先计入基线，而是在发生时按额外请求输出。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 
 ```python
@@ -1350,7 +1350,7 @@ response = llm.generate(prompt=CacheablePrompt(prefix=chapter_text, task=task))
 payload = load_json_response(response.content)
 ```
 
-分析器的章节级多任务调用必须共享同一个 `chapter_text.strip()` 前缀：人物抽取、关系映射、章节摘要和事件抽取都应只在 task 段变化。新增 Prompt 时如果需要复用同一长输入，先确认 telemetry 中同章节后续请求的 `cache_rate` 是否上升；若长期为 0%，通常说明公共前缀前插入了任务特有文本或动态 metadata。
+分析器的章节级多任务调用必须共享同一个 `chapter_text.strip()` 前缀：人物抽取、关系映射、章节摘要和事件抽取都应只在 task 段变化。续写阶段的 `StoryContext` 上下文同样作为 cache prefix，在 hint 解析、大纲、初稿、润色、伏笔审查和最终审稿之间复用。新增 Prompt 时如果需要复用同一长输入，先确认 telemetry 中同章节或同阶段后续请求的 `cache_rate` 是否上升；若长期为 0%，通常说明公共前缀前插入了任务特有文本或动态 metadata。
 
 ### 11.3 资源与容错策略
 
