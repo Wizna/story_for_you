@@ -7,6 +7,7 @@ name = "story-for-you"
 version = "0.1.0"
 description = "CLI utilities for analyzing and transforming long-form fiction."
 readme = "README.md"
+license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
 dependencies = [
     "typer>=0.9.0",
