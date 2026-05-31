@@ -1315,6 +1315,16 @@ uv run story --help
 - 请求计划是上限估算：`analyze` 最多约等于 `chapter_chunks * 5 + style`，但 0-1 个角色的章节会跳过关系抽取，没有新事件且已有上一帧状态时会跳过状态合并；`continue` 约等于 hint 解析、大纲、初稿、润色、可选伏笔审查和最终验证。任何 repair/retry 都不预先计入基线，而是在发生时按额外请求输出。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 
+请求预算按命令分层：
+
+| 命令 | 请求预算 | 说明 |
+| ---- | -------- | ---- |
+| `analyze` | 最多 `chapter_chunks * 5 + 1` | 每章人物、关系、摘要、事件、状态；单角色跳过关系，无事件跳过状态；最后 1 次风格提取 |
+| `compress` | 缓存命中时 1 次 | 没有缓存时先完整分析；压缩本身只做一次改写 |
+| `filter` | 缓存命中时约等于断点数 | 检索命中的原文直接拼接，只对 gap 生成桥接 |
+| `remove` | 缓存命中时约等于受影响段落数 | 无关段落原样保留，受影响段落才评估/改写 |
+| `continue` | 通常 5 次，存在伏笔时 6 次 | hint 解析、大纲、初稿、润色、验证；有未解决伏笔时增加 resolution review；最终修复只在验证失败时触发 |
+
 ```python
 class FakeLLM(LLMProvider):
     def __init__(self, mapping: dict[str, str]):
