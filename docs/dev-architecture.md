@@ -1050,6 +1050,9 @@ story cache clear
 
 # 查看缓存状态
 story cache status
+
+# 使用配置文件指定的缓存目录
+story cache status --config config.yaml
 ```
 
 | 参数            | 说明                                                | 默认值       |
@@ -1109,7 +1112,7 @@ output:
 # 缓存配置
 cache:
   enabled: true                 # 是否启用自动缓存
-  dir: .story_cache             # 缓存目录
+  directory: .story_cache       # 缓存目录
   auto_save: true               # 分析后自动保存
 ```
 
@@ -1119,6 +1122,9 @@ cache:
 2. 环境变量 `STORY_*`
 3. 配置文件 `config.yaml`
 4. 默认值
+
+配置文件和环境变量覆盖默认值后会重新执行 dataclass 校验；非法的 `chunk_size`、`overlap`、
+`context_window`、temperature 等值会在命令启动时失败，而不是进入分块、缓存或 LLM 调用阶段。
 
 ---
 
@@ -1369,7 +1375,8 @@ payload = load_json_response(response.content)
 - `story <cmd> --config path/to/config.yaml`：快速切换不同模型或 chunk 策略。
 - `--context` / `--segments`：复用既有分析输出，定位问题时不用重复跑 LLM。
 - `--no-cache`：排查缓存污染；`--reanalyze`：强制刷新缓存后再执行业务。
-- `story cache clear` / `story cache status`：对应 `.story_cache/`，可立即清除异常条目或读取缓存规模。
+- `story cache clear` / `story cache status`：默认对应 `.story_cache/`；传入 `--config` 时使用
+  `cache.directory` 指定的目录，可立即清除异常条目或读取缓存规模。
 
 ### 12.2 Prompt & 缓存审计
 

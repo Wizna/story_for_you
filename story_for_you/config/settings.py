@@ -194,6 +194,7 @@ class SettingsLoader:
         settings = Settings()
         if data:
             self._apply(settings, data)
+        self._validate(settings)
         return settings
 
     def dump_example(self) -> dict[str, Any]:
@@ -256,3 +257,12 @@ class SettingsLoader:
                 self._apply(value, update)
             else:
                 setattr(instance, key, update)
+
+    def _validate(self, instance: Any) -> None:
+        if not is_dataclass(instance):
+            return
+        for field_info in fields(instance):
+            self._validate(getattr(instance, field_info.name))
+        post_init = getattr(instance, "__post_init__", None)
+        if callable(post_init):
+            post_init()

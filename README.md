@@ -129,6 +129,7 @@ uv run story continue novel.txt --hint "男主和女二在一起"
 ```bash
 uv run story cache status  # 查看缓存状态
 uv run story cache clear   # 清空所有缓存
+uv run story cache status --config config.yaml  # 查看配置指定的缓存目录
 ```
 
 ## 配置
@@ -150,7 +151,9 @@ export STORY_LLM__MODEL="qwen3.5:9b"
 export STORY_LLM__BASE_URL="http://localhost:11434"
 ```
 
-其他 LLM 参数也可通过 `STORY_LLM__*` 环境变量覆盖 `config.yaml` 中的值。
+所有配置项都可通过 `STORY_<SECTION>__<KEY>` 环境变量覆盖 `config.yaml` 中的值，例如
+`STORY_LLM__TIMEOUT=600` 或 `STORY_CACHE__DIRECTORY=.story_cache_alt`。配置文件和环境变量加载后会重新校验，
+非法的 chunk、overlap、temperature、context window 等值会在命令启动时直接报错。
 
 ### 配置文件
 
@@ -188,6 +191,7 @@ analysis:
 cache:
   enabled: true
   directory: .story_cache
+  auto_save: true
 ```
 
 使用配置文件：

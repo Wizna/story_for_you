@@ -22,9 +22,10 @@ class CachedArtifacts:
 class ContextStore:
     """Manages persistence of StoryContext artifacts."""
 
-    def __init__(self, cache_dir: Path | None = None) -> None:
+    def __init__(self, cache_dir: Path | None = None, *, create: bool = True) -> None:
         self.cache_dir = cache_dir or Path(".story_cache")
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        if create:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     def get(self, file_path: Path, settings: dict[str, Any]) -> CachedArtifacts | None:
         """Retrieve cached artifacts for the provided file if available."""

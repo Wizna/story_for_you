@@ -48,6 +48,18 @@ def _build_cli_llm(settings: Settings) -> LLMProvider:
     return TelemetryLLMProvider(build_llm(settings), typer.echo)
 
 
+def _cache_dir(settings: Settings) -> Path:
+    return Path(settings.cache.directory or ".story_cache")
+
+
+def _context_store(settings: Settings) -> ContextStore:
+    return ContextStore(_cache_dir(settings))
+
+
+def _readonly_context_store(settings: Settings) -> ContextStore:
+    return ContextStore(_cache_dir(settings), create=False)
+
+
 def _set_llm_plan(llm: LLMProvider, label: str, total_expected: int | None = None) -> None:
     if isinstance(llm, TelemetryLLMProvider):
         llm.set_plan(label=label, total_expected=total_expected)
@@ -197,7 +209,8 @@ def _load_artifacts(
     no_cache: bool = False,
     reanalyze: bool = False,
 ) -> Tuple[StoryContext, list[Segment], SegmentIndex]:
-    store = ContextStore()
+    use_cache = settings.cache.enabled and not no_cache
+    store = _context_store(settings) if use_cache else None
     if context_path:
         payload = json.loads(context_path.read_text(encoding="utf-8"))
         context = StoryContext.from_dict(payload)
@@ -208,14 +221,14 @@ def _load_artifacts(
             segments = _chunks_to_segments(_split_analysis_text(text, settings))
         segment_index = SegmentIndexService().build(context, segments)
         return context, segments, segment_index
-    if not no_cache and not reanalyze:
+    if use_cache and not reanalyze and store is not None:
         cached = store.get(input_file, settings)
         if cached:
             segments = deserialize_segments(cached.segments)
             segment_index = deserialize_index(cached.index, segments)
             return cached.context, segments, segment_index
     context, segments, segment_index = _reanalyze(text, settings, llm)
-    if not no_cache:
+    if use_cache and settings.cache.auto_save and store is not None:
         artifacts = CachedArtifacts(
             context=context,
             segments=serialize_segments(segments),
@@ -301,10 +314,9 @@ def analyze(
         raise typer.BadParameter("Format must be 'json' or 'yaml'.")
     text = read_text_file(input_file)
 
-    if resume:
+    if resume and settings.cache.enabled:
         file_hash = compute_file_hash(input_file, length=24)
-        cache_dir = Path(settings.cache.directory) if settings.cache.directory else Path(".story_cache")
-        progress_store = ProgressStore(cache_dir)
+        progress_store = ProgressStore(_cache_dir(settings))
 
         existing_progress = progress_store.get_progress(file_hash)
         if existing_progress:
@@ -341,8 +353,8 @@ def analyze(
     else:
         context, segments, segment_index = _reanalyze(text, settings, llm)
 
-    store = ContextStore()
     if settings.cache.enabled and settings.cache.auto_save:
+        store = _context_store(settings)
         artifacts = CachedArtifacts(
             context=context,
             segments=serialize_segments(segments),
@@ -465,9 +477,10 @@ def continue_story(
 
 
 @cache_app.command()
-def clear() -> None:
+def clear(config: Optional[Path] = typer.Option(None, "--config")) -> None:
     """Clear cached analysis artifacts."""
-    store = ContextStore()
+    settings = _load_settings(config)
+    store = _context_store(settings)
     if store.cache_dir.exists():
         shutil.rmtree(store.cache_dir)
     store.cache_dir.mkdir(parents=True, exist_ok=True)
@@ -475,9 +488,10 @@ def clear() -> None:
 
 
 @cache_app.command()
-def status() -> None:
+def status(config: Optional[Path] = typer.Option(None, "--config")) -> None:
     """Show cache status summary."""
-    store = ContextStore()
+    settings = _load_settings(config)
+    store = _readonly_context_store(settings)
     cache_dir = store.cache_dir
     if not cache_dir.exists():
         typer.echo("Cache directory does not exist.")
