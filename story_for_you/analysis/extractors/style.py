@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
 
 from story_for_you.analysis.context import ChapterSummary, StyleSample, WritingStyle
@@ -15,6 +16,10 @@ logger = logging.getLogger(__name__)
 
 _MAX_STYLE_LIST_ITEMS = 8
 _STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
+_CHAPTER_HEADING = re.compile(
+    r"(?im)^[ \t]*(?:第[^\n]{1,40}?章|chapter[ \t]+\d+)(?:[^\n]*)$"
+)
+_FRONT_MATTER_MARKERS = ("版权", "作者简介", "内容简介", "题记", "前言", "序言", "转载")
 
 
 class StyleExtractor:
@@ -34,7 +39,13 @@ class StyleExtractor:
         pov_summary = self._summarize_pov(summaries)
         mood_summary = self._summarize_mood(summaries)
         prompt = self._build_prompt(samples, pov_summary, mood_summary)
-        return self._execute_and_parse(prompt)
+        return self._execute_and_parse(prompt, phase="analyze")
+
+    def extract_from_raw(self, chapters: list[str]) -> WritingStyle:
+        """Extract style directly from raw chapter text without summaries."""
+        samples = self._select_samples(chapters)
+        prompt = self._build_prompt(samples, "未知", "未知")
+        return self._execute_and_parse(prompt, phase="style")
 
     def _select_samples(self, chapters: list[str]) -> list[tuple[int, str]]:
         """选取代表性章节样本：首、中、尾。"""
@@ -51,7 +62,7 @@ class StyleExtractor:
         """Sample narrative body text, avoiding front matter when possible."""
         if not content:
             return ""
-        cleaned = content
+        cleaned = self._strip_front_matter(content) if position == 0 else content
         if len(cleaned) <= self.SAMPLE_SIZE:
             return cleaned
         if total == 1:
@@ -63,6 +74,25 @@ class StyleExtractor:
             return cleaned[-self.SAMPLE_SIZE :]
         start = max(0, len(cleaned) // 2 - self.SAMPLE_SIZE // 2)
         return cleaned[start : start + self.SAMPLE_SIZE]
+
+    def _strip_front_matter(self, content: str) -> str:
+        """Drop structurally identifiable front matter from the first sample."""
+        heading = _CHAPTER_HEADING.search(content)
+        if heading and heading.start() > 0:
+            return content[heading.start() :].lstrip()
+
+        marker_seen = False
+        offset = 0
+        for line in content.splitlines(keepends=True):
+            stripped = line.strip()
+            if any(marker in stripped for marker in _FRONT_MATTER_MARKERS):
+                marker_seen = True
+            elif marker_seen and not stripped:
+                remainder = content[offset + len(line) :].lstrip()
+                if remainder:
+                    return remainder
+            offset += len(line)
+        return content
 
     def _sample_indices(self, total: int) -> list[int]:
         """根据章节总数选取样本索引。"""
@@ -122,13 +152,13 @@ class StyleExtractor:
             parts.append(f"### 第 {chapter_num} 章节样本\n{content}")
         return "\n\n".join(parts)
 
-    def _execute_and_parse(self, prompt: str) -> WritingStyle:
+    def _execute_and_parse(self, prompt: str, *, phase: str) -> WritingStyle:
         """执行 LLM 调用并解析结果。"""
         response = self.llm.generate(
             prompt=cache_prompt(prompt),
             options=telemetry_options(
                 _STRUCTURED_OPTIONS,
-                phase="analyze",
+                phase=phase,
                 step=": extract writing style",
             ),
         )

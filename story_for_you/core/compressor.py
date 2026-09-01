@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from story_for_you.analysis.context import PlotEvent, StoryContext
 from story_for_you.config.settings import RenderingLimits
 from story_for_you.core.exceptions import LLMResponseError
-from story_for_you.indexer.segment import Segment, SegmentIndex
+from story_for_you.indexer.segment import Segment, SegmentIndex, deduplicate_overlapping_segments
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.prompting import cache_prompt
@@ -46,7 +46,10 @@ class StoryCompressor:
     def compress(self, text: str, context: StoryContext) -> str:
         """Return a compressed version of the provided text."""
         targets = self._select_segments(context)
-        ordered = sorted(targets, key=lambda item: item.segment.segment_id)
+        ordered = sorted(
+            deduplicate_overlapping_segments(item.segment for item in targets),
+            key=lambda segment: segment.segment_id,
+        )
         context_block = format_context_sections(context.for_prompt(limits=self._limits))
         style_guide = format_style_guide(context.writing_style)
         style_samples = format_style_samples(context.writing_style)

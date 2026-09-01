@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
 
@@ -12,6 +12,7 @@ import yaml
 from story_for_you.analysis.context import StoryContext
 from story_for_you.analysis.resumable_analyzer import ResumableStoryAnalyzer
 from story_for_you.analysis.story_analyzer import StoryAnalyzer
+from story_for_you.analysis.extractors.style import StyleExtractor
 from story_for_you.cache.progress_store import ProgressStore
 from story_for_you.cache.store import CachedArtifacts, ContextStore
 from story_for_you.config.settings import Settings, SettingsLoader
@@ -21,7 +22,7 @@ from story_for_you.core.compressor import StoryCompressor
 from story_for_you.core.ending_writer import EndingWriter
 from story_for_you.indexer import SegmentIndexService
 from story_for_you.indexer.retriever import SegmentRetriever
-from story_for_you.indexer.segment import Segment, SegmentIndex
+from story_for_you.indexer.segment import Segment, SegmentIndex, deduplicate_overlapping_segments
 from story_for_you.indexer.serialization import (
     deserialize_index,
     deserialize_segments,
@@ -175,7 +176,7 @@ def _chunks_to_segments(chunks: Iterable[TextChunk]) -> list[Segment]:
                 metadata={"start": chunk.start_pos, "end": chunk.end_pos},
             )
         )
-    return segments
+    return deduplicate_overlapping_segments(segments)
 
 
 def _reanalyze(text: str, settings: Settings, llm):
@@ -260,7 +261,7 @@ def _prepare(
     reanalyze: bool = False,
 ) -> _CommandContext:
     settings = _load_settings(config)
-    text = read_text_file(input_file)
+    text = _require_story_text(read_text_file(input_file), input_file)
     llm = _build_cli_llm(settings)
     context, segments, segment_index = _load_artifacts(
         input_file=input_file,
@@ -289,6 +290,12 @@ def _parse_character_names(characters: str) -> list[str]:
     return targets
 
 
+def _require_story_text(text: str, input_file: Path) -> str:
+    if not text.strip():
+        raise typer.BadParameter(f"Input file is empty: {input_file}")
+    return text
+
+
 def _write_analysis_output(context: StoryContext, output_path: Path, fmt: str) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if fmt == "yaml":
@@ -309,10 +316,10 @@ def analyze(
 ) -> None:
     """Analyze the input story and persist a StoryContext artifact."""
     settings = _load_settings(config)
-    llm = _build_cli_llm(settings)
     if format not in {"json", "yaml"}:
         raise typer.BadParameter("Format must be 'json' or 'yaml'.")
-    text = read_text_file(input_file)
+    text = _require_story_text(read_text_file(input_file), input_file)
+    llm = _build_cli_llm(settings)
 
     if resume and settings.cache.enabled:
         file_hash = compute_file_hash(input_file, length=24)
@@ -368,6 +375,46 @@ def analyze(
         output_path = input_file.with_name(f"{input_file.stem}_analysis.{suffix}")
     _write_analysis_output(context, output_path, format)
     typer.echo(f"Analysis saved to {output_path}")
+
+
+@app.command(name="style")
+def analyze_style(
+    input_file: Path,
+    output: Optional[Path] = typer.Option(None, "--output", "-o"),
+    context_path: Optional[Path] = typer.Option(None, "--context"),
+    inject: bool = typer.Option(False, "--inject", help="Inject style into an existing context JSON."),
+    config: Optional[Path] = typer.Option(None, "--config"),
+) -> None:
+    """Extract writing style independently, optionally injecting it into a context artifact."""
+    settings = _load_settings(config)
+    text = _require_story_text(read_text_file(input_file), input_file)
+    if inject and context_path is None:
+        raise typer.BadParameter("--inject requires --context.")
+    llm = _build_cli_llm(settings)
+    chunks = _split_analysis_text(text, settings)
+    chapters = [chunk.content for chunk in chunks]
+    _set_llm_plan(llm, "style", 1)
+    _announce_llm_plan("style", 1, ["extract writing style from representative raw-text samples"])
+    style = StyleExtractor(llm, prompt_budget=settings.llm.context_window).extract_from_raw(chapters)
+
+    if inject:
+        payload = json.loads(context_path.read_text(encoding="utf-8"))
+        context = StoryContext.from_dict(payload)
+        context.writing_style = style
+        context_path.write_text(
+            json.dumps(context.to_dict(), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        typer.echo(f"Writing style injected into {context_path}")
+        return
+
+    output_path = output or input_file.with_name(f"{input_file.stem}_style.json")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(asdict(style), ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    typer.echo(f"Writing style saved to {output_path}")
 
 
 @app.command()

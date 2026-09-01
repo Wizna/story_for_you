@@ -452,7 +452,16 @@ class StoryContext:
             unresolved = ", ".join(character.unresolved[:limits.max_unresolved_per_char]) if character.unresolved else ""
             # Include aliases so LLM knows the name mappings
             aliases_part = f" (别名: {', '.join(character.aliases[:limits.max_aliases])})" if character.aliases else ""
+            relations = []
+            for relation in character.relationships[:limits.max_relationships_per_char]:
+                targets = ", ".join(relation.targets) or "unknown"
+                detail = f"{targets}: {relation.relation_type}/{relation.sentiment}"
+                if relation.description:
+                    detail += f" ({relation.description})"
+                relations.append(detail)
+            relations_part = " | relations: " + "; ".join(relations) if relations else ""
             suffix = f" | unresolved: {unresolved}" if unresolved else ""
+            suffix += relations_part
             lines.append(f"- {character.name}{aliases_part} ({character.role}): {traits}{suffix}")
         return "\n".join(lines)
 

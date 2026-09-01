@@ -11,3 +11,11 @@ def test_splitter_keeps_configured_overlap():
 
     assert len(chunks) > 1
     assert chunks[0].content[-3:] == chunks[1].content[:3]
+
+
+def test_splitter_positions_match_trimmed_content():
+    text = "  abcdefghij  klmnopqrst  "
+    chunks = TextSplitter(chunk_size=12, overlap=3).split(text)
+
+    for chunk in chunks:
+        assert text[chunk.start_pos : chunk.end_pos] == chunk.content

@@ -27,7 +27,10 @@ class SegmentRetriever:
             return []
         include_ids: set[int] = set()
         for name in include:
-            include_ids.update(self._char_index.get(name, []))
+            wanted = name.strip().lower()
+            for indexed_name, segment_ids in self._char_index.items():
+                if indexed_name.lower() == wanted:
+                    include_ids.update(segment_ids)
         ordered_ids = sorted(include_ids, key=lambda seg_id: self._order.get(seg_id, seg_id))
         segments = [self._by_id[seg_id] for seg_id in ordered_ids]
         if mode == "soft":
@@ -38,11 +41,17 @@ class SegmentRetriever:
         """Return segments that exclude the provided characters."""
         if not exclude:
             return self.segments
-        excluded = {name.lower() for name in exclude}
+        excluded = {name.strip().lower() for name in exclude if name.strip()}
+        excluded_ids = {
+            segment_id
+            for indexed_name, segment_ids in self._char_index.items()
+            if indexed_name.lower() in excluded
+            for segment_id in segment_ids
+        }
         filtered: list[Segment] = []
         for segment in self.segments:
             mentions = {name.lower() for name in segment.characters}
-            overlap = mentions.intersection(excluded)
+            overlap = mentions.intersection(excluded) or ({segment.segment_id} if segment.segment_id in excluded_ids else set())
             if mode == "hard":
                 if not overlap:
                     filtered.append(segment)

@@ -4,7 +4,7 @@ from story_for_you.analysis.context import StoryContext
 from story_for_you.config.settings import RenderingLimits
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.indexer.retriever import SegmentRetriever
-from story_for_you.indexer.segment import Segment
+from story_for_you.indexer.segment import Segment, deduplicate_overlapping_segments
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.core.prompting import (
@@ -42,9 +42,15 @@ class CharacterFilter:
 
     def filter(self, text: str, characters: list[str], context: StoryContext, mode: str = "soft") -> FilterResult:
         """Return filtered content focused on the requested characters."""
-        segments = self.retriever.retrieve_by_characters(include=characters, mode=mode)
+        if mode not in {"soft", "strict"}:
+            raise LLMResponseError(f"Invalid character filter mode: {mode!r}")
+        segments = deduplicate_overlapping_segments(
+            self.retriever.retrieve_by_characters(include=characters, mode=mode)
+        )
         if not segments:
-            return FilterResult(content="", original_ratio=0.0)
+            raise LLMResponseError(
+                "No story segments matched the requested characters: " + ", ".join(characters)
+            )
         gaps = self._find_gaps(segments)
         context_block = format_context_sections(context.for_prompt(limits=self._limits))
         style_guide = format_style_guide(context.writing_style)

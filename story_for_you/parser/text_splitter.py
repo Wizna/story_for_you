@@ -30,16 +30,19 @@ class TextSplitter:
         while cursor < length:
             upper = min(cursor + self.chunk_size, length)
             boundary = self._find_boundary(text, cursor, upper)
-            content = text[cursor:boundary].strip()
+            raw_content = text[cursor:boundary]
+            content = raw_content.strip()
             if not content:
                 cursor = boundary
                 continue
+            leading_trim = len(raw_content) - len(raw_content.lstrip())
+            trailing_trim = len(raw_content) - len(raw_content.rstrip())
             chapter = self._detect_chapter(content)
             chunks.append(
                 TextChunk(
                     content=content,
-                    start_pos=cursor,
-                    end_pos=boundary,
+                    start_pos=cursor + leading_trim,
+                    end_pos=boundary - trailing_trim,
                     chapter=chapter,
                 )
             )

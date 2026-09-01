@@ -20,6 +20,11 @@ class SegmentIndexService:
         for segment in tagged_segments:
             for name in segment.characters:
                 char_index.setdefault(name, []).append(segment.segment_id)
+                character = context.characters.get(name)
+                if character:
+                    for alias in character.aliases:
+                        if alias:
+                            char_index.setdefault(alias, []).append(segment.segment_id)
             if segment.chapter is not None:
                 try:
                     chapter_key = int(segment.chapter)

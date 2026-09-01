@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, is_dataclass
+from dataclasses import asdict, dataclass, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -82,11 +82,11 @@ class ContextStore:
     def _filter_cache_relevant(self, settings: Any) -> dict[str, Any]:
         data = settings.__dict__
         relevant = {}
-        for key in ("llm", "parser", "cache"):
+        for key in ("llm", "parser", "analysis", "prompt", "cache"):
             value = data.get(key)
             if value is None:
                 continue
-            relevant[key] = value.__dict__ if is_dataclass(value) else value
+            relevant[key] = asdict(value) if is_dataclass(value) else value
         return relevant
 
     def _get_cache_dir(self, file_path: Path, settings: dict[str, Any] | Any) -> Path:

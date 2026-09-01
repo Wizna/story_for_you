@@ -98,11 +98,12 @@ class StateStore:
         self._register_aliases(existing.name, [existing.name, *existing.aliases, character.name])
 
     def _merge_relationship(self, relationship: Relationship) -> None:
-        if not relationship.source or relationship.source not in self._characters:
+        source = self._resolve_label(relationship.source)
+        if not source or source not in self._characters:
             return
         if not relationship.targets:
             return
-        owner = self._characters[relationship.source]
+        owner = self._characters[source]
         normalized_targets = self._normalize_targets(relationship.targets)
         for existing in owner.relationships:
             if existing.targets == normalized_targets:
@@ -117,14 +118,21 @@ class StateStore:
                 relation_type=relationship.relation_type,
                 sentiment=relationship.sentiment,
                 description=relationship.description,
-                source=relationship.source,
+                source=source,
             )
         )
 
     def _normalize_targets(self, targets: Iterable[str]) -> list[str]:
         """Return a deterministic, deduplicated target list."""
-        cleaned = [target.strip() for target in targets if target]
+        cleaned = [self._resolve_label(target) or target.strip() for target in targets if target]
         return sorted(dict.fromkeys(cleaned))
+
+    def _resolve_label(self, label: str | None) -> str | None:
+        """Resolve a canonical character name from a name or known alias."""
+        if not label or not label.strip():
+            return None
+        cleaned = label.strip()
+        return self._alias_index.get(cleaned.lower(), cleaned)
 
     def _render_world_state(self, limits: RenderingLimits) -> list[str]:
         if not self._story_state:

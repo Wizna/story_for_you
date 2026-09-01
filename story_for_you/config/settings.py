@@ -137,6 +137,7 @@ class RenderingLimits:
     max_unresolved_events: int = 5
     max_characteristic_words: int = 5
     max_tone_markers: int = 5
+    max_relationships_per_char: int = 3
 
 
 @dataclass

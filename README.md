@@ -52,7 +52,10 @@ ollama pull qwen3.5:9b
 # 1. 分析小说（首次运行，会自动缓存结果）
 uv run story analyze novel.txt -o analysis.json
 
-# 2. 使用分析结果进行处理
+# 2. 需要单独更新风格分析时（可选）
+uv run story style novel.txt -o novel_style.json
+
+# 3. 使用分析结果进行处理
 uv run story compress novel.txt --level medium      # 压缩剧情
 uv run story filter novel.txt -c "张三,李四"        # 筛选角色
 uv run story remove novel.txt -c "王五"             # 删除角色
@@ -72,6 +75,18 @@ uv run story analyze novel.txt --format yaml  # 输出 YAML 格式
 ```
 
 分析结果会自动缓存到 `.story_cache/`，后续命令直接复用。
+
+### `style` - 独立风格分析
+
+从原文首、中、尾样本提取写作风格，不需要重新执行完整故事分析。默认输出到
+`{input}_style.json`；使用 `--inject` 时会把结果写入已有的 context JSON。
+
+```bash
+uv run story style novel.txt -o novel_style.json
+uv run story style novel.txt --context analysis.json --inject
+```
+
+`--inject` 必须同时提供 `--context`，且会原地更新该 JSON 文件。
 
 ### `compress` - 剧情压缩
 
@@ -259,7 +274,7 @@ LLM plan for analyze: baseline ~41 request(s). Repairs/retries are logged as ext
 
 ```
 CLI Layer (Typer)
-    story analyze | compress | filter | remove | continue | cache
+    story analyze | style | compress | filter | remove | continue | cache
          │
 Core Business Layer
     Compressor, CharacterFilter, CharacterRemover, EndingWriter (多阶段)
