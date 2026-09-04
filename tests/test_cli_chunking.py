@@ -47,3 +47,14 @@ def test_analysis_split_uses_analysis_granularity_under_large_context():
 
     assert len(chunks) > 1
     assert len(chunks[0].content) <= settings.analysis.target_unit_chars
+
+
+def test_analysis_split_prefers_real_chapter_boundaries_when_available():
+    settings = Settings()
+    settings.analysis.target_unit_chars = 1000
+    text = "版权信息\n\n一\n甲。\n\n二\n乙。\n\n三\n丙。"
+
+    chunks = _split_analysis_text(text, settings)
+
+    assert [chunk.chapter for chunk in chunks] == ["1", "2", "3"]
+    assert [chunk.content for chunk in chunks] == ["一\n甲。", "二\n乙。", "三\n丙。"]

@@ -121,6 +121,7 @@ def _split_text(
     *,
     chunk_size: int | None = None,
     overlap: int | None = None,
+    preserve_chapter_boundaries: bool = False,
 ) -> list[TextChunk]:
     context_window = settings.llm.context_window or settings.llm.max_tokens
     chunk_budget = max(settings.prompt.min_chunk, context_window - settings.prompt.margin)
@@ -128,7 +129,11 @@ def _split_text(
     effective_overlap = settings.parser.overlap if overlap is None else overlap
     if effective_overlap >= effective_chunk_size:
         effective_overlap = max(0, effective_chunk_size // 4)
-    splitter = TextSplitter(chunk_size=effective_chunk_size, overlap=effective_overlap)
+    splitter = TextSplitter(
+        chunk_size=effective_chunk_size,
+        overlap=effective_overlap,
+        preserve_chapter_boundaries=preserve_chapter_boundaries,
+    )
     chunks = splitter.split(text)
     if not chunks:
         chunks = [TextChunk(content=text, start_pos=0, end_pos=len(text), chapter="1")]
@@ -156,7 +161,13 @@ def _analysis_chunk_size(text: str, settings: Settings) -> int:
 def _split_analysis_text(text: str, settings: Settings) -> list[TextChunk]:
     chunk_size = _analysis_chunk_size(text, settings)
     overlap = min(settings.parser.overlap, max(0, chunk_size // 4))
-    return _split_text(text, settings, chunk_size=chunk_size, overlap=overlap)
+    return _split_text(
+        text,
+        settings,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        preserve_chapter_boundaries=settings.analysis.preserve_chapter_boundaries,
+    )
 
 
 def _chunks_to_segments(chunks: Iterable[TextChunk]) -> list[Segment]:

@@ -10,6 +10,8 @@ import json
 from story_for_you.analysis.context import StoryContext
 from story_for_you.utils.file_io import compute_file_hash
 
+_ANALYSIS_CACHE_FORMAT_VERSION = 2
+
 
 @dataclass
 class CachedArtifacts:
@@ -87,6 +89,7 @@ class ContextStore:
             if value is None:
                 continue
             relevant[key] = asdict(value) if is_dataclass(value) else value
+        relevant["analysis_cache_format_version"] = _ANALYSIS_CACHE_FORMAT_VERSION
         return relevant
 
     def _get_cache_dir(self, file_path: Path, settings: dict[str, Any] | Any) -> Path:

@@ -10,6 +10,7 @@ from story_for_you.analysis.context import (
     Relationship,
     StoryState,
 )
+from story_for_you.analysis.names import normalize_character_label
 from story_for_you.core.exceptions import LLMResponseError
 
 if TYPE_CHECKING:
@@ -132,7 +133,7 @@ class StateStore:
         if not label or not label.strip():
             return None
         cleaned = label.strip()
-        return self._alias_index.get(cleaned.lower(), cleaned)
+        return self._alias_index.get(self._normalize_token(cleaned), cleaned)
 
     def _render_world_state(self, limits: RenderingLimits) -> list[str]:
         if not self._story_state:
@@ -235,4 +236,4 @@ class StateStore:
         return [cleaned]
 
     def _normalize_token(self, token: str) -> str:
-        return token.strip().lower()
+        return normalize_character_label(token)

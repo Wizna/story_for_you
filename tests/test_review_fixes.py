@@ -103,6 +103,49 @@ def test_state_store_resolves_aliases_for_relationships():
     assert relationship.targets == ["翠翠"]
 
 
+def test_state_store_merges_possessive_kinship_name_variants():
+    store = StateStore()
+    store.update(
+        [
+            CharacterState(name="翠翠的母亲", role="minor"),
+            CharacterState(name="翠翠母亲", role="minor"),
+        ],
+        [],
+        [],
+    )
+
+    assert list(store.characters_snapshot()) == ["翠翠的母亲"]
+
+
+def test_state_store_keeps_relationships_for_normalized_canonical_name():
+    store = StateStore()
+    store.update(
+        [
+            CharacterState(name="翠翠的母亲", role="minor"),
+            CharacterState(name="翠翠", role="main"),
+        ],
+        [],
+        [],
+    )
+    store.update(
+        [],
+        [
+            Relationship(
+                source="翠翠的母亲",
+                targets=["翠翠"],
+                relation_type="母女",
+                sentiment="positive",
+                description="母亲牵挂女儿",
+            )
+        ],
+        [],
+    )
+
+    relationship = store.characters_snapshot()["翠翠的母亲"].relationships[0]
+    assert relationship.source == "翠翠的母亲"
+    assert relationship.targets == ["翠翠"]
+
+
 def test_context_prompt_includes_character_relationships():
     context = StoryContext(
         characters={

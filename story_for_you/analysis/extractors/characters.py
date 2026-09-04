@@ -5,6 +5,7 @@ from typing import Any, Iterable
 import logging
 
 from story_for_you.analysis.context import CharacterState
+from story_for_you.analysis.names import normalize_character_label
 from story_for_you.analysis.prompting import (
     CacheablePrompt,
     clamp_text_middle,
@@ -173,7 +174,11 @@ class CharacterExtractor:
             target.role = incoming.role
 
     def _alias_keys(self, character: CharacterState) -> set[str]:
-        return {name.strip().lower() for name in [character.name, *character.aliases] if name.strip()}
+        return {
+            normalize_character_label(name)
+            for name in [character.name, *character.aliases]
+            if name.strip()
+        }
 
     def _merge_list(self, base: list[str], incoming: list[str]) -> list[str]:
         merged = list(dict.fromkeys(item for item in base + incoming if item))

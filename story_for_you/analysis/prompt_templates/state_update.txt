@@ -21,5 +21,7 @@
 1. 输入事件为空时，延用上一帧的 `current_arc` 和 `world_tension`。
 2. 冲突或 setback 事件 → `world_tension` 至少 `medium`。
 3. `major_conflicts` 3~5 条；`time_constraints` 0~3 条。
-4. `unresolved_events` 仅当事件明确解决才移除，进入 resolution 时清理已解决事项；列表最多 5 项。
+4. `unresolved_events` 只保留仍待收尾的承诺、选择、谜团、债务或明确伏笔；不要写入永久世界设定、
+   角色既有身份、已完成事实或仅用于背景说明的事件。仅当事件明确解决才移除，进入 resolution 时清理
+   已解决事项；列表最多 5 项。
 5. 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

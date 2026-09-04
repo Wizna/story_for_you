@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import asdict
+import re
 from typing import Any, Iterable, List
 
 from story_for_you.analysis.context import PlotEvent
@@ -15,16 +16,31 @@ class EventLedger:
         self._events: list[PlotEvent] = []
         self._char_index: dict[str, list[PlotEvent]] = defaultdict(list)
         self._irreversible: list[PlotEvent] = []
+        self._event_keys: set[tuple[str, tuple[str, ...], str]] = set()
 
-    def record(self, events: Iterable[PlotEvent]) -> None:
-        """Append events into the ledger."""
+    def record(self, events: Iterable[PlotEvent]) -> list[PlotEvent]:
+        """Append new events and return the events actually retained.
+
+        Adjacent analysis units can describe the same plot change at a natural
+        boundary.  Exact semantic duplicates must not be fed back into later
+        state updates or writing prompts.  The key intentionally requires the
+        same type, cast and normalized summary; it does not use fuzzy matching
+        that could discard distinct repeated actions in a story.
+        """
+        recorded: list[PlotEvent] = []
         for event in events:
+            key = self._event_key(event)
+            if key in self._event_keys:
+                continue
+            self._event_keys.add(key)
             self._events.append(event)
+            recorded.append(event)
             for participant in event.participants:
                 if participant:
                     self._char_index[participant].append(event)
             if event.is_irreversible:
                 self._irreversible.append(event)
+        return recorded
 
     def timeline(self) -> List[PlotEvent]:
         """Return the recorded events ordered by insertion."""
@@ -51,6 +67,11 @@ class EventLedger:
         self._events.clear()
         self._char_index.clear()
         self._irreversible.clear()
+        self._event_keys.clear()
+
+    def _event_key(self, event: PlotEvent) -> tuple[str, tuple[str, ...], str]:
+        normalized_summary = re.sub(r"\s+", "", event.summary).casefold()
+        return event.type, tuple(sorted(set(event.participants))), normalized_summary
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the ledger state to a dictionary."""

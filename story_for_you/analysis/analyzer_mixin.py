@@ -117,24 +117,27 @@ class AnalyzerMixin:
         Returns the updated story state and the chapter summary.
         """
         characters = self.character_extractor.extract(chapter_text)
-        relationships = self.relationship_mapper.map(chapter_text, characters)
+        # Register new names before later extractors build their roster.  This
+        # keeps aliases such as "祖父" and "二老" mapped to the canonical
+        # characters discovered in earlier chapters.
+        self.state_store.update(characters, [], [])
+        known_characters = list(self.state_store.characters_snapshot().values())
+        relationships = self.relationship_mapper.map(chapter_text, known_characters)
         recent_context = self._build_recent_context(chapter_no)
         chapter_meta = self._build_chapter_meta(chapter_no, chapter_text, story_state)
 
         summary = self.chapter_summarizer.summarize(
             chapter_text, chapter_no, recent_context, chapter_meta
         )
-        events = self.event_extractor.extract(
-            chapter_text, characters, chapter_no, recent_context
-        )
+        events = self.event_extractor.extract(chapter_text, known_characters, chapter_no, recent_context)
         for event in events:
             event.chapter = chapter_no
+        events = self.event_ledger.record(events)
 
         story_state = self.state_synthesizer.update(story_state, events, recent_context)
 
         self.chapter_window.append(summary)
-        self.event_ledger.record(events)
-        self.state_store.update(characters, relationships, events)
+        self.state_store.update([], relationships, events)
         if story_state:
             self.state_store.set_story_state(story_state)
 
