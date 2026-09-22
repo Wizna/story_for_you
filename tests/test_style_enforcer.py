@@ -31,3 +31,15 @@ def test_duplicate_bridge_filtered():
     result = enforcer.filter_duplicate_bridges(polished, bridges)
 
     assert len(result) == 0
+
+
+def test_shared_opening_with_new_plot_is_preserved():
+    enforcer = StyleEnforcer()
+    text = (
+        "林凡再度运转周身的灵力。石门依旧纹丝不动。\n\n"
+        "林凡再度运转周身的灵力。这一次石门轰然洞开，他终于逃出了地牢。"
+    )
+
+    result = enforcer.post_process(text)
+
+    assert "终于逃出了地牢" in result

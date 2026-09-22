@@ -35,9 +35,12 @@ _MAX_CONFLICT_ANCHORS = 2
 _MIN_DRAFT_PARAGRAPHS = 3
 _MIN_PARAGRAPH_CHARS = 120
 _MAX_BEAT_PARAGRAPHS = 4
-_VALID_ENDING_DIRECTIONS = {"HE", "BE", "OE"}
 _VALID_RESOLUTION_STATUSES = {"ok", "needs_bridges", "blocked"}
 _MAX_FINAL_REPAIR_ATTEMPTS = 1
+_MAX_HARD_FACTS = 20
+_SOURCE_TAIL_CHARS = 6000
+_MAX_RECENT_SCENES = 4
+_DEATH_MARKERS = ("死亡", "身亡", "战死", "尸体", "死去", "毙命", "殒命", "去世", "葬")
 
 
 @dataclass
@@ -45,7 +48,12 @@ class EndingOutline:
     """续写大纲结构"""
 
     core_theme: str = ""
-    ending_direction: str = ""  # HE/BE/OE
+    # Kept as a compatibility field for older cached prompts. New planning
+    # uses continuation_intent and closure_level instead of a fixed ending
+    # taxonomy such as HE/BE/OE.
+    ending_direction: str = ""
+    continuation_intent: str = ""
+    closure_level: str = ""
     emotional_tone: str = ""
     timeline: str = ""  # 时间跨度描述
     key_beats: list[str] = field(default_factory=list)
@@ -54,11 +62,59 @@ class EndingOutline:
     key_resolution: str = ""
 
 
-class EndingWriter:
-    """多阶段续写器，模拟人类作者创作流程。
+@dataclass
+class EndingChapterPlan:
+    """One narrative movement in an adaptive continuation plan."""
 
-    4 阶段流程：构思大纲 → 初稿写作 → 修订润色 → 伏笔检查
+    number: int
+    title: str
+    purpose: str
+    viewpoint: str
+    setting: str
+    beats: list[str] = field(default_factory=list)
+    focus_characters: list[str] = field(default_factory=list)
+    resolutions: list[str] = field(default_factory=list)
+    carry_forward: list[str] = field(default_factory=list)
+    end_state: str = ""
+
+
+@dataclass
+class ContinuationPlan:
+    """Global continuation plan chosen from story evidence and reader intent.
+
+    ``chapter_count`` and ``ending_direction`` remain as compatibility
+    properties for callers written against the earlier ending-only planner.
+    The model is free to choose an ongoing arc, a partial resolution, or a
+    full closure; the writer does not assume that every continuation is an
+    ending.
     """
+
+    unit_count: int
+    rationale: str
+    continuation_intent: str
+    narrative_horizon: str
+    closure_level: str
+    unit_type: str
+    chapters: list[EndingChapterPlan] = field(default_factory=list)
+
+    @property
+    def chapter_count(self) -> int:
+        return self.unit_count
+
+    @property
+    def ending_direction(self) -> str:
+        """Compatibility view for old prompt consumers."""
+
+        return self.closure_level
+
+
+# Public compatibility alias. The command and old integrations used this
+# name before continuation became a generic operation.
+EndingPlan = ContinuationPlan
+
+
+class EndingWriter:
+    """Adaptive continuation writer: plan the required units, then write them."""
 
     def __init__(
         self,
@@ -89,40 +145,195 @@ class EndingWriter:
         self.polish_template = load_template("ending_polish")
         self.resolution_template = load_template("ending_resolution")
         self.final_repair_template = load_template("ending_final_repair")
+        self.plan_template = load_template("ending_plan")
 
-    def continue_story(self, text: str, context: StoryContext, hint: str = "") -> str:
-        """执行完整的 4 阶段续写流程。"""
+    def continue_story(
+        self,
+        text: str,
+        context: StoryContext,
+        hint: str = "",
+        *,
+        max_chapters: int = 6,
+    ) -> str:
+        """Plan and write an adaptive continuation."""
+        if max_chapters < 1:
+            raise ValueError("max_chapters must be positive")
         style = context.writing_style
-        context_block = format_context_sections(context.for_prompt(limits=self._limits))
+        context_block = self._build_continuation_context(text, context)
         style_anchors = self._build_style_anchors(context)
         directives = self._hint_interpreter.interpret(hint, context)
         hint_payload = directives.for_prompt()
 
-        outline = self._phase_outline(context, context_block, hint_payload)
-        if directives.ending_direction:
-            outline.ending_direction = directives.ending_direction
+        plan = self._phase_plan(context_block, hint_payload, max_chapters)
+        if directives.continuation_intent:
+            plan.continuation_intent = directives.continuation_intent
+        if directives.closure != "unspecified":
+            plan.closure_level = directives.closure
 
-        draft = self._phase_draft(
-            context, outline, style, context_block, hint_payload, style_anchors
+        generated: list[str] = []
+        for chapter in plan.chapters:
+            chapter_context = context_block
+            if generated:
+                prior = "\n\n".join(generated)[-8000:]
+                chapter_context += "\n\n## 已生成的前文（只用于承接，不要重复）\n" + prior
+            outline = self._outline_from_chapter(plan, chapter)
+            instruction = self._chapter_instruction(plan, chapter, directives.closure)
+            draft = self._phase_draft(
+                context, outline, style, chapter_context, hint_payload, style_anchors, instruction
+            )
+            polished = self._phase_polish(
+                draft, style, outline, chapter_context, hint_payload, style_anchors, instruction
+            )
+            generated.append(f"第{chapter.number}{plan.unit_type} {chapter.title}\n\n{polished}")
+
+        final = "\n\n".join(generated).strip()
+        final = self._phase_resolution_review(
+            final, context, context_block, style, hint_payload, plan.closure_level
         )
-        polished = self._phase_polish(
-            draft, style, outline, context_block, hint_payload, style_anchors
+        validation_context = (
+            context_block
+            + "\n\n## Continuation Plan\n"
+            + self._format_continuation_plan(plan)
         )
-        final = self._phase_resolution_review(polished, context, context_block, style, hint_payload)
 
         enforcer = StyleEnforcer(style)
         final = enforcer.post_process(final)
         final = self._validate_or_repair_final(
             final,
             directives,
-            context_block,
+            validation_context,
             style,
             hint_payload,
             enforcer,
         )
         return final
 
-    def _phase_outline(self, context: StoryContext, context_block: str, hint: str) -> EndingOutline:
+    def _phase_plan(self, context_block: str, hint: str, max_chapters: int) -> ContinuationPlan:
+        prompt = build_cacheable_prompt(
+            context_block or "(无上下文)",
+            self.plan_template,
+            prefix_placeholder="context_block",
+            hint=hint,
+            max_chapters=str(max_chapters),
+        )
+        response = self.llm.generate(
+            prompt=prompt,
+            options=telemetry_options(
+                self._phase_options("outline"), phase="continue", step=": continuation plan"
+            ),
+        )
+        payload = load_json_response(response.content)
+        if not isinstance(payload, dict):
+            raise LLMResponseError("Ending plan returned invalid JSON object.")
+        for field_name in ("rationale", "chapters"):
+            if field_name not in payload:
+                raise LLMResponseError(f"Continuation plan missing required field: {field_name}")
+
+        # Accept the old schema so cached/fake providers and user integrations
+        # do not break during the migration. New prompts use unit_count and
+        # free-form continuation semantics.
+        count = payload.get("unit_count", payload.get("chapter_count"))
+        if not isinstance(count, int) or isinstance(count, bool) or not 1 <= count <= max_chapters:
+            raise LLMResponseError(f"Continuation plan unit_count must be between 1 and {max_chapters}.")
+        intent = payload.get("continuation_intent", payload.get("core_theme", "继续推进当前叙事"))
+        horizon = payload.get("narrative_horizon", payload.get("timeline", "由本章计划决定"))
+        closure = payload.get("closure_level", payload.get("ending_direction", "adaptive"))
+        unit_type = payload.get("unit_type", "章")
+        intent = self._required_str(intent, "continuation_intent")
+        horizon = self._required_str(horizon, "narrative_horizon")
+        closure = self._required_str(closure, "closure_level")
+        unit_type = self._required_str(unit_type, "unit_type")
+        chapters_payload = payload.get("chapters")
+        if not isinstance(chapters_payload, list) or len(chapters_payload) != count:
+            raise LLMResponseError("Continuation plan chapters must match unit_count.")
+        chapters: list[EndingChapterPlan] = []
+        for index, item in enumerate(chapters_payload, start=1):
+            if not isinstance(item, dict):
+                raise LLMResponseError("Ending plan chapter must be an object.")
+            for field_name in ("title", "purpose", "viewpoint", "setting", "beats", "focus_characters"):
+                if field_name not in item:
+                    raise LLMResponseError(f"Continuation plan unit missing required field: {field_name}")
+            resolutions = item.get("resolved_threads", item.get("resolutions", []))
+            carry_forward = item.get("carry_forward", [])
+            chapters.append(
+                EndingChapterPlan(
+                    number=index,
+                    title=self._required_str(item.get("title"), "title"),
+                    purpose=self._required_str(item.get("purpose"), "purpose"),
+                    viewpoint=self._required_str(item.get("viewpoint"), "viewpoint"),
+                    setting=self._required_str(item.get("setting"), "setting"),
+                    beats=self._required_str_list(item.get("beats"), "beats"),
+                    focus_characters=self._required_str_list(item.get("focus_characters"), "focus_characters"),
+                    resolutions=self._required_str_list(resolutions, "resolved_threads"),
+                    carry_forward=self._required_str_list(carry_forward, "carry_forward"),
+                    end_state=self._required_str(item.get("end_state", item.get("result", "自然形成下一状态")), "end_state"),
+                )
+            )
+        return ContinuationPlan(
+            unit_count=count,
+            rationale=self._required_str(payload.get("rationale"), "rationale"),
+            continuation_intent=intent,
+            narrative_horizon=horizon,
+            closure_level=closure,
+            unit_type=unit_type,
+            chapters=chapters,
+        )
+
+    def _outline_from_chapter(self, plan: ContinuationPlan, chapter: EndingChapterPlan) -> EndingOutline:
+        return EndingOutline(
+            core_theme=plan.continuation_intent,
+            ending_direction=plan.closure_level,
+            continuation_intent=plan.continuation_intent,
+            closure_level=plan.closure_level,
+            emotional_tone=chapter.purpose,
+            timeline=chapter.setting,
+            key_beats=chapter.beats,
+            emotional_arc="；".join(chapter.carry_forward),
+            final_image="本章结尾由场景自然落点决定",
+            key_resolution="；".join(chapter.resolutions) or chapter.end_state or "推进本章目标",
+        )
+
+    def _chapter_instruction(self, plan: EndingPlan, chapter: EndingChapterPlan, closure: str) -> str:
+        is_last = chapter.number == plan.chapter_count
+        if plan.closure_level in {"full", "closed"} and is_last:
+            close = "本章可以完成本次计划允许的主要收束，但只交代有证据支持的结果"
+        elif is_last:
+            close = "本章结束于当前叙事自然形成的状态，保留尚未到时的线索与余波"
+        else:
+            close = "本章只完成列出的推进，保留下一单元所需的因果张力"
+        return (
+            f"本次续写计划共 {plan.chapter_count} 个{plan.unit_type}，本单元是第 {chapter.number} 个。"
+            f"目的：{chapter.purpose}；视角：{chapter.viewpoint}；场景：{chapter.setting}。"
+            f"重点人物：{'、'.join(chapter.focus_characters) or '以当前场景人物为准'}。"
+            f"本单元结果：{chapter.end_state or '由行动和场景自然形成'}。{close}。"
+            f"读者收束要求为 {closure}；不要擅自改变它。"
+        )
+
+    def _format_continuation_plan(self, plan: ContinuationPlan) -> str:
+        lines = [
+            f"续写单元数: {plan.chapter_count}（粒度：{plan.unit_type}）",
+            f"续写意图: {plan.continuation_intent}",
+            f"叙事跨度: {plan.narrative_horizon}",
+            f"收束程度: {plan.closure_level}",
+            f"判断理由: {plan.rationale}",
+        ]
+        for chapter in plan.chapters:
+            lines.append(
+                f"- 单元{chapter.number}《{chapter.title}》: {chapter.purpose}; "
+                f"已处理={'; '.join(chapter.resolutions) or '无'}; "
+                f"结果={chapter.end_state or '自然形成'}; "
+                f"承接={'; '.join(chapter.carry_forward) or '无'}"
+            )
+        return "\n".join(lines)
+
+    def _format_ending_plan(self, plan: ContinuationPlan) -> str:
+        """Compatibility alias for integrations using the old method name."""
+
+        return self._format_continuation_plan(plan)
+
+    def _phase_outline(
+        self, context: StoryContext, context_block: str, hint: str, chapter_instruction: str
+    ) -> EndingOutline:
         """阶段1: 分析主题、情感、方向，并规划具体大纲（合并原 inspiration + outline）。"""
         recent_events = self._format_recent_events(context)
         unresolved = self._format_unresolved(context)
@@ -138,6 +349,7 @@ class EndingWriter:
             characters=characters,
             conflicts=conflicts,
             hint=hint,
+            chapter_instruction=chapter_instruction,
         )
 
         response = self.llm.generate(
@@ -151,21 +363,13 @@ class EndingWriter:
         result = load_json_response(response.content)
         if not isinstance(result, dict):
             raise LLMResponseError("Outline phase returned invalid JSON object.")
-        for field_name in (
-            "core_theme",
-            "ending_direction",
-            "emotional_tone",
-            "timeline",
-            "key_beats",
-            "emotional_arc",
-            "final_image",
-            "key_resolution",
-        ):
+        for field_name in ("timeline", "key_beats", "emotional_arc", "final_image", "key_resolution"):
             if field_name not in result:
-                raise LLMResponseError(f"Outline phase missing required field: {field_name}")
-        ending_direction = self._required_str(result.get("ending_direction"), "ending_direction")
-        if ending_direction not in _VALID_ENDING_DIRECTIONS:
-            raise LLMResponseError(f"Invalid outline ending direction: {ending_direction!r}")
+                raise LLMResponseError(f"Continuation outline missing required field: {field_name}")
+        ending_direction = self._required_str(
+            result.get("ending_direction", result.get("closure_level", "adaptive")),
+            "ending_direction",
+        )
         key_beats_payload = result.get("key_beats")
         if not isinstance(key_beats_payload, list):
             raise LLMResponseError("Outline key_beats must be a list.")
@@ -173,9 +377,21 @@ class EndingWriter:
         if not key_beats:
             raise LLMResponseError("Outline key_beats must not be empty.")
         return EndingOutline(
-            core_theme=self._required_str(result.get("core_theme"), "core_theme"),
+            core_theme=self._required_str(
+                result.get("core_theme", result.get("continuation_intent", "继续推进当前叙事")),
+                "core_theme",
+            ),
             ending_direction=ending_direction,
-            emotional_tone=self._required_str(result.get("emotional_tone"), "emotional_tone"),
+            continuation_intent=self._required_str(
+                result.get("continuation_intent", result.get("core_theme")),
+                "continuation_intent",
+            ),
+            closure_level=self._required_str(
+                result.get("closure_level", ending_direction), "closure_level"
+            ),
+            emotional_tone=self._required_str(
+                result.get("emotional_tone", "由当前场景和原作基调决定"), "emotional_tone"
+            ),
             timeline=self._required_str(result.get("timeline"), "timeline"),
             key_beats=key_beats,
             emotional_arc=self._required_str(result.get("emotional_arc"), "emotional_arc"),
@@ -191,6 +407,7 @@ class EndingWriter:
         context_block: str,
         hint: str,
         style_anchors: str,
+        chapter_instruction: str,
     ) -> str:
         """阶段2: 按大纲写作初稿，应用风格指南。"""
         outline_text = self._format_outline(outline)
@@ -216,6 +433,7 @@ class EndingWriter:
             beat_constraints=self._draft_paragraph_plan(outline),
             style_anchors=style_anchors,
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
+            chapter_instruction=chapter_instruction,
         )
 
         response = self.llm.generate(
@@ -239,6 +457,7 @@ class EndingWriter:
         context_block: str,
         hint: str,
         style_anchors: str,
+        chapter_instruction: str,
     ) -> str:
         """阶段3: 修订并润色初稿（合并原 revision + polish）。"""
         style_guide = format_style_guide(style)
@@ -265,6 +484,7 @@ class EndingWriter:
             beat_constraints=self._draft_paragraph_plan(outline),
             style_anchors=style_anchors,
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
+            chapter_instruction=chapter_instruction,
         )
 
         response = self.llm.generate(
@@ -287,8 +507,9 @@ class EndingWriter:
         context_block: str,
         style: WritingStyle | None,
         hint: str,
+        closure_level: str = "closed",
     ) -> str:
-        """阶段4: 校验伏笔收束情况，必要时补写桥段。"""
+        """阶段4: 检查承接与伏笔，按模型判断的收束程度决定是否补桥。"""
         threads = self._collect_unresolved_threads(context)
         if not threads:
             return polished
@@ -305,6 +526,7 @@ class EndingWriter:
             style_guide=style_guide or "(无风格约束)",
             style_samples=style_samples or "(暂无示例)",
             hint=hint,
+            closure_level=closure_level,
         )
 
         response = self.llm.generate(
@@ -333,6 +555,12 @@ class EndingWriter:
         if status == "ok":
             if missing_threads or bridges:
                 raise LLMResponseError("Resolution status ok requires empty missing_threads and bridges.")
+            return polished
+        if status == "blocked" and closure_level not in {"full", "closed"}:
+            # An ongoing or partial continuation is allowed to leave threads
+            # deliberately open. Keep the generated prose and record no
+            # artificial bridge in the output.
+            logger.info("Leaving unresolved threads open for continuation level %s", closure_level)
             return polished
         if status == "blocked":
             details = "; ".join(missing_threads) or notes
@@ -364,12 +592,29 @@ class EndingWriter:
         lines = []
         for char in context.characters.values():
             if char.role in ("main", "support"):
+                if self._is_dead_character(char.name, context):
+                    continue
                 traits = ", ".join(char.personality[:self._limits.max_personality_traits]) if char.personality else "特征未知"
                 alias_info = ""
                 if char.aliases:
                     alias_info = f"，别名/称呼：{'、'.join(char.aliases[:self._limits.max_aliases])}"
                 lines.append(f"- {char.name} ({char.role}): {traits}{alias_info}")
         return "\n".join(lines) if lines else "(无主要人物信息)"
+
+    def _is_dead_character(self, name: str, context: StoryContext) -> bool:
+        """Return true only for an explicit irreversible death fact."""
+        character = context.characters.get(name)
+        if character and character.status == "dead":
+            return True
+        for event in context.events:
+            if not event.is_irreversible or name not in event.participants:
+                continue
+            evidence = " ".join(
+                [event.summary, *event.impact.world_flags, *event.impact.power_shifts.values()]
+            )
+            if any(marker in evidence for marker in _DEATH_MARKERS):
+                return True
+        return False
 
     def _format_conflicts(self, context: StoryContext) -> str:
         if not context.story_state or not context.story_state.major_conflicts:
@@ -380,7 +625,8 @@ class EndingWriter:
     def _format_outline(self, outline: EndingOutline) -> str:
         lines = [
             f"主题: {outline.core_theme}",
-            f"结局方向: {outline.ending_direction}",
+            f"续写意图: {outline.continuation_intent or outline.core_theme}",
+            f"本单元收束程度: {outline.closure_level or outline.ending_direction}",
             f"时间跨度: {outline.timeline}",
             f"情感曲线: {outline.emotional_arc}",
             "关键情节点:",
@@ -426,30 +672,10 @@ class EndingWriter:
         if not self.segment_index.segments:
             return "(无可参考片段)"
 
-        focus_characters = [
-            name
-            for name, char in context.characters.items()
-            if char.role in ("main", "support")
-        ]
-        if not focus_characters and context.characters:
-            focus_characters = list(context.characters.keys())[:_FOCUS_CHARACTERS_FALLBACK]
-
         snippets: list[str] = []
-        seen_segments: set[int] = set()
-
-        for name in focus_characters[:_MAX_FOCUS_CHARACTERS]:
-            segment = self._latest_segment_for_character(name)
-            if not segment:
-                continue
-            seen_segments.add(segment.segment_id)
-            snippets.append(self._format_segment_tail_snippet(segment, prefix=f"[{name}]"))
-
-        for segment in reversed(self.segment_index.segments):
-            if segment.segment_id in seen_segments:
-                continue
+        for segment in reversed(self.segment_index.segments[-_MAX_RECENT_SCENES:]):
             snippets.append(self._format_segment_tail_snippet(segment))
-            if len(snippets) >= _MAX_SEGMENT_SNIPPETS:
-                break
+        snippets = snippets[:_MAX_RECENT_SCENES]
 
         recent_event = self._latest_irreversible_event(context)
         if recent_event:
@@ -457,6 +683,27 @@ class EndingWriter:
             snippets.append(f"{flag} {recent_event.summary}")
 
         return "\n".join(snippets) if snippets else "(无可参考片段)"
+
+    def _build_continuation_context(self, text: str, context: StoryContext) -> str:
+        """Build one evidence block reused by outline, draft, polish and review."""
+        sections = context.for_prompt(limits=self._limits)
+        base = format_context_sections(sections)
+        hard_facts = [
+            event for event in context.events if event.is_irreversible
+        ][-_MAX_HARD_FACTS:]
+        fact_lines = [
+            f"- [CH{event.chapter:03d}] {event.type}: {event.summary} "
+            f"({', '.join(event.participants) or 'unknown'})"
+            for event in hard_facts
+        ]
+        source_tail = (text or "").strip()[-_SOURCE_TAIL_CHARS:]
+        evidence = [
+            base,
+            "## Hard Facts\n" + ("\n".join(fact_lines) if fact_lines else "(无已记录不可逆事实)"),
+            "## Recent Source Scene\n" + (source_tail or "(无原文尾部)"),
+            "## Indexed Scene Tails\n" + self._recent_segment_digest(context),
+        ]
+        return "\n\n".join(item for item in evidence if item)
 
     def _latest_segment_for_character(self, name: str) -> Segment | None:
         segment_ids = self.segment_index.char_index.get(name)
@@ -477,7 +724,7 @@ class EndingWriter:
     def _format_segment_tail_snippet(self, segment: Segment, prefix: str | None = None) -> str:
         content = segment.content.strip().replace("\n", " ")
         snippet = content[-SNIPPET_EXCERPT_LEN:]
-        label = prefix or f"[Segment {segment.segment_id}]"
+        label = prefix or f"[Segment {segment.segment_id}, source chapter {segment.chapter or '?'}]"
         return f"{label} {snippet}"
 
     def _latest_irreversible_event(self, context: StoryContext):
@@ -593,6 +840,7 @@ class EndingWriter:
                 style,
                 result.issues,
                 result.repair_instructions,
+                self._closure_instruction(directives),
             )
             current = enforcer.post_process(current)
         raise GenerationError("Ending validation failed: " + last_details)
@@ -605,6 +853,7 @@ class EndingWriter:
         style: WritingStyle | None,
         issues: list[str],
         repair_instructions: list[str],
+        closure_instruction: str = "按用户要求决定是否收束，不要改变开放/闭合方向。",
     ) -> str:
         prompt = build_cacheable_prompt(
             context_block or "(无上下文)",
@@ -618,6 +867,7 @@ class EndingWriter:
             style_samples=format_style_samples(style),
             style_constraints=format_style_constraints(style),
             banned_expressions=BANNED_EXPRESSIONS_PROMPT,
+            closure_instruction=closure_instruction,
         )
         response = self.llm.generate(
             prompt=prompt,
@@ -631,3 +881,15 @@ class EndingWriter:
         if not content:
             raise LLMResponseError("Final repair phase returned empty content.")
         return content
+
+    def _closure_instruction(self, directives) -> str:
+        closure = getattr(directives, "closure", "unspecified")
+        if closure == "open":
+            return "保持开放或留白的本轮落点；不要把尚未到时的问题强行解释完，也不要无故改成确定终止。"
+        if closure == "closed":
+            return "保持本轮要求的闭合程度；明确交代要求的结果，但不要加入原文没有依据的新人物或复盘。"
+        return "保持当前稿件自然的落点；不得擅自把尚未到终止点的续写改成全书结局。"
+
+
+# Generic public name; keep EndingWriter for source compatibility.
+ContinuationWriter = EndingWriter

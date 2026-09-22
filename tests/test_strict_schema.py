@@ -72,6 +72,18 @@ def test_character_extractor_requires_list_fields():
         CharacterExtractor(llm).extract("翠翠在渡口。")
 
 
+def test_character_extractor_keeps_two_people_with_same_generic_alias():
+    extractor = CharacterExtractor(_FakeLLM("[]"))
+    roster = extractor.merge_aliases(
+        [
+            CharacterState(name="李长老", aliases=["师父"], role="support"),
+            CharacterState(name="王长老", aliases=["师父"], role="support"),
+        ]
+    )
+
+    assert [item.name for item in roster] == ["李长老", "王长老"]
+
+
 def test_character_extractor_repairs_missing_required_field_once():
     llm = _SequencedLLM(
         [

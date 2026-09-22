@@ -7,11 +7,11 @@
 - **剧情压缩** - 智能提取核心剧情，去除水分内容，保留 90%+ 原文风格
 - **角色筛选** - 只保留指定角色相关的剧情线，快速追踪 CP 或主角故事
 - **角色删除** - 从文本中移除不喜欢的角色，自动修补叙事连贯性
-- **结局续写** - 四阶段创作流程（构思大纲→初稿→修订润色→伏笔检查），生成符合原作风格的新结局
+- **自适应续写** - 先由模型判断叙事阶段、范围和收束程度，再按单元生成符合原作风格的承接、展开或结局
 
 ## 设计准则
 
-- **LLM 负责语义**：人物、事件、关系、故事状态、读者 hint、结局审查、删除/桥接文本都交给 LLM 判断。
+- **LLM 负责语义**：人物、事件、关系、故事状态、读者 hint、续写范围、叙事阶段、承接审查、删除/桥接文本都交给 LLM 判断。
 - **Python 负责流程**：本地代码只做分块、排序、缓存、索引、去重、prompt 渲染、JSON/schema 校验和错误上报。
 - **不做语义兜底**：LLM 不可用、返回空内容、坏 JSON 或缺少必需字段时直接失败，不用关键词、正则、计数或默认值伪造结果。
 - **大上下文不等于粗粒度**：即使模型支持 1M 上下文，分析仍按稳定语义单元执行，再聚合成全局上下文。
@@ -59,7 +59,7 @@ uv run story style novel.txt -o novel_style.json
 uv run story compress novel.txt --level medium      # 压缩剧情
 uv run story filter novel.txt -c "张三,李四"        # 筛选角色
 uv run story remove novel.txt -c "王五"             # 删除角色
-uv run story continue novel.txt --hint "希望是HE"   # 续写结局
+uv run story continue novel.txt --hint "续写后四十回，保持原作余韵"   # 模型判断范围与叙事阶段
 ```
 
 ## 命令详解
@@ -122,21 +122,23 @@ uv run story remove novel.txt -c "王五" --mode hard  # 硬删除：完全移�
 uv run story remove novel.txt -c "王五" --mode soft  # 软删除：弱化存在感
 ```
 
-### `continue` - 结局续写
+### `continue` - 自适应续写
 
-基于原作风格续写新结局，先由 LLM 解析读者 hint 为结构化指令，再采用四阶段创作流程，最终由 LLM reviewer 审查用户约束、剧情一致性和结局闭合度：
+先由模型判断本次是承接场景、展开阶段、转折、高潮、余波还是自然终止，再决定需要多少个叙事单元。单元可以对应一回、一个场景、一个大章节或多个回目的结构段；调用 `continue` 不会强迫故事进入结局。续写上下文同时包含原文尾部、索引场景尾部、不可逆事实、人物位置/目标/知情状态和关系状态。
 
-| 阶段     | 温度 | 说明                           |
-| -------- | ---- | ------------------------------ |
-| 构思大纲 | 0.55 | 分析主题，规划情节点和情感弧线 |
-| 初稿写作 | 0.65 | 按风格指南撰写初稿             |
-| 修订润色 | 0.35 | 检查风格一致性，强化意象表达   |
-| 伏笔检查 | 0.35 | 校验伏笔收束，必要时补写桥段   |
+| 阶段 | 说明 |
+| --- | --- |
+| 续写范围与结构规划 | 判断叙事阶段、时间/回目范围、单元数量和本轮收束程度 |
+| 单元初稿与润色 | 每个单元独立生成，承接前单元结果并保持人物知情范围 |
+| 跨单元承接检查 | 检查关系、人物状态、不可逆事实、视角和信息差是否前后一致 |
+| 最终审查 | 根据读者要求修复范围、推进程度和事实矛盾 |
 
 ```bash
-uv run story continue novel.txt                      # 自动续写
-uv run story continue novel.txt --hint "希望是HE"    # 带提示续写
-uv run story continue novel.txt --hint "男主和女二在一起"
+uv run story continue novel.txt                              # 自动判断续写范围与单元数
+uv run story continue novel.txt --hint "续写后四十回"         # 明确指定回目范围
+uv run story continue novel.txt --hint "续写后四十回" --max-units 40  # 允许回目级计划覆盖 40 回
+uv run story continue novel.txt --hint "补足家族衰败和人物归宿，保留悲剧余韵"
+uv run story continue novel.txt --max-units 6                  # 单次运行的安全上限（--max-chapters 是兼容别名）
 ```
 
 ### `cache` - 缓存管理
@@ -242,7 +244,7 @@ DeepSeek 官方模型会按内置价目估算费用；其他 OpenAI-compatible �
 | `compress` | 1 次改写请求 | 先跑 `analyze`，再 1 次改写 | 复用缓存的 `StoryContext + SegmentIndex`，避免重复分析 |
 | `filter` | 每个断点 1 次桥接请求 | 先跑 `analyze`，再按断点桥接 | 原文段落直接拼接，仅断点调用 LLM |
 | `remove` | 每个受影响段落最多 1 次处理请求 | 先跑 `analyze`，再处理受影响段落 | 未受影响段落原样保留 |
-| `continue` | 约 5 次，存在伏笔时 +1 | 先跑 `analyze`，再续写 | 固定 `StoryContext` 作为 cache prefix；只有存在未解决伏笔才做 resolution review |
+| `continue` | `3 + 2×max_units` 的上限估算，存在伏笔时 +1 | 先跑 `analyze`，再续写 | 实际单元数由模型选择；固定 `StoryContext` 作为 cache prefix；ongoing/partial 计划不会强行补完所有伏笔 |
 
 示例输出：
 

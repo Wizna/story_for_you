@@ -28,7 +28,12 @@ _VALID_DIRECTIONS = {"HE", "BE", "OE"}
 
 @dataclass
 class HintDirectives:
-    """Structured reader intent extracted by the model."""
+    """Structured reader intent extracted by the model.
+
+    The fields describe what kind of continuation the reader wants without
+    forcing every request into a predefined ending category. Legacy ending
+    fields remain available for old integrations and cached responses.
+    """
 
     normalized_text: str = "无特别要求"
     ending_direction: str | None = None
@@ -39,6 +44,8 @@ class HintDirectives:
     forbidden_outcomes: list[str] = field(default_factory=list)
     required_resolutions: list[str] = field(default_factory=list)
     style_constraints: list[str] = field(default_factory=list)
+    continuation_intent: str | None = None
+    requested_scope: str | None = None
 
     def for_prompt(self) -> str:
         """Render structured directives for downstream generation prompts."""
@@ -53,6 +60,8 @@ class HintDirectives:
             "forbidden_outcomes": self.forbidden_outcomes,
             "required_resolutions": self.required_resolutions,
             "style_constraints": self.style_constraints,
+            "continuation_intent": self.continuation_intent,
+            "requested_scope": self.requested_scope,
         }
         return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -90,17 +99,7 @@ class HintInterpreter:
         return self._from_payload(payload, hint)
 
     def _from_payload(self, payload: dict[str, Any], raw_hint_text: str) -> HintDirectives:
-        for field_name in (
-            "normalized_text",
-            "closure",
-            "ending_direction",
-            "emotional_tone",
-            "focus_characters",
-            "required_outcomes",
-            "forbidden_outcomes",
-            "required_resolutions",
-            "style_constraints",
-        ):
+        for field_name in ("normalized_text", "closure"):
             if field_name not in payload:
                 raise LLMResponseError(f"Ending directive missing required field: {field_name}")
         closure = self._required_str(payload.get("closure"), "closure").lower()
@@ -125,6 +124,8 @@ class HintInterpreter:
             forbidden_outcomes=self._str_list(payload.get("forbidden_outcomes")),
             required_resolutions=self._str_list(payload.get("required_resolutions")),
             style_constraints=self._str_list(payload.get("style_constraints")),
+            continuation_intent=self._optional_str(payload.get("continuation_intent")),
+            requested_scope=self._optional_str(payload.get("requested_scope")),
         )
 
     def _optional_str(self, value: Any) -> str | None:

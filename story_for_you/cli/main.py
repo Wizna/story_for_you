@@ -94,20 +94,21 @@ def _has_unresolved_threads(context: StoryContext) -> bool:
     return bool(context.story_state and context.story_state.unresolved_events)
 
 
-def _announce_continue_plan(context: StoryContext) -> int:
+def _announce_continue_plan(context: StoryContext, max_chapters: int) -> int:
     has_resolution_review = _has_unresolved_threads(context)
-    total = 5 + (1 if has_resolution_review else 0)
+    # The planner chooses the actual count at runtime; this is a conservative
+    # upper-bound estimate for telemetry rather than a promise.
+    total = 3 + (2 * max_chapters) + (1 if has_resolution_review else 0)
     phases = [
         "interpret user hint",
-        "outline ending",
-        "draft ending",
-        "polish ending",
+        f"plan 1-{max_chapters} continuation units (the model chooses the scope)",
+        "draft and polish each planned unit",
     ]
     if has_resolution_review:
         phases.append("review unresolved threads")
     phases.extend(
         [
-            "validate ending",
+            "validate continuation for continuity and knowledge-boundary errors",
             "optional final repair and re-validation if validation fails",
         ]
     )
@@ -193,6 +194,7 @@ def _chunks_to_segments(chunks: Iterable[TextChunk]) -> list[Segment]:
 def _reanalyze(text: str, settings: Settings, llm):
     chunks = _split_analysis_text(text, settings)
     chapters = [chunk.content for chunk in chunks]
+    chapter_labels = [_numeric_chapter_label(chunk.chapter) for chunk in chunks]
     total_chapters = len(chapters)
     typer.echo(f"Preparing {total_chapters} chapter-sized chunk(s) for analysis...")
     _set_llm_plan(llm, "analyze", _analysis_request_estimate(total_chapters))
@@ -204,10 +206,17 @@ def _reanalyze(text: str, settings: Settings, llm):
     )
     progress_label = "Analyzing chapters"
     with typer.progressbar(chapters, length=total_chapters, label=progress_label) as progress_iter:
-        context = analyzer.analyze(progress_iter)
+        context = analyzer.analyze(progress_iter, chapter_labels=chapter_labels)
     segments = _chunks_to_segments(chunks)
     segment_index = SegmentIndexService().build(context, segments)
     return context, segments, segment_index
+
+
+def _numeric_chapter_label(value: str | None) -> int | None:
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _load_artifacts(
@@ -345,6 +354,7 @@ def analyze(
 
         chunks = _split_analysis_text(text, settings)
         chapters = [chunk.content for chunk in chunks]
+        chapter_labels = [_numeric_chapter_label(chunk.chapter) for chunk in chunks]
         total_chapters = len(chapters)
         typer.echo(f"Preparing {total_chapters} chapter-sized chunk(s) for analysis...")
         remaining_chapters = total_chapters
@@ -364,7 +374,12 @@ def analyze(
             def update_progress(current: int, total: int) -> None:
                 progress.update(1)
 
-            context = analyzer.analyze(chapters, file_hash, progress_callback=update_progress)
+            context = analyzer.analyze(
+                chapters,
+                file_hash,
+                progress_callback=update_progress,
+                chapter_labels=chapter_labels,
+            )
 
         segments = _chunks_to_segments(chunks)
         segment_index = SegmentIndexService().build(context, segments)
@@ -518,18 +533,28 @@ def continue_story(
     segments_path: Optional[Path] = typer.Option(None, "--segments"),
     no_cache: bool = typer.Option(False, "--no-cache"),
     reanalyze: bool = typer.Option(False, "--reanalyze"),
+    max_units: int = typer.Option(
+        6,
+        "--max-units",
+        "--max-chapters",
+        min=1,
+        help="单次续写允许的最大叙事单元数；--max-chapters 为兼容别名。模型根据原作、要求和当前状态自行判断实际数量。",
+    ),
 ) -> None:
-    """Continue the story with an optional hint about the desired ending."""
+    """Plan and write an adaptive continuation."""
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
-    continue_requests = _announce_continue_plan(cc.context)
+    effective_max_chapters = min(max_units, cc.settings.ending.max_chapters)
+    continue_requests = _announce_continue_plan(cc.context, effective_max_chapters)
     _set_llm_plan(cc.llm, "continue", continue_requests)
     writer = EndingWriter(
         cc.llm, cc.segment_index,
         temperatures=cc.settings.ending.temperatures,
         rendering_limits=cc.settings.rendering,
     )
-    continuation = writer.continue_story(cc.text, cc.context, hint)
-    target = output or input_file.with_name(f"{input_file.stem}_ending.txt")
+    continuation = writer.continue_story(
+        cc.text, cc.context, hint, max_chapters=effective_max_chapters
+    )
+    target = output or input_file.with_name(f"{input_file.stem}_continued.txt")
     write_text_file(target, continuation)
     typer.echo(f"Continuation saved to {target}")
 

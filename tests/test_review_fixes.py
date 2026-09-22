@@ -117,6 +117,36 @@ def test_state_store_merges_possessive_kinship_name_variants():
     assert list(store.characters_snapshot()) == ["翠翠的母亲"]
 
 
+def test_state_store_does_not_merge_distinct_people_with_generic_title():
+    store = StateStore()
+    store.update(
+        [
+            CharacterState(name="李长老", aliases=["师父"], role="support"),
+            CharacterState(name="王长老", aliases=["师父"], role="support"),
+        ],
+        [],
+        [],
+    )
+
+    assert set(store.characters_snapshot()) == {"李长老", "王长老"}
+
+
+def test_state_store_accepts_new_affiliation_observation():
+    store = StateStore()
+    store.update([CharacterState(name="林凡", realm="青云宗")], [], [])
+    store.update([CharacterState(name="林凡", realm="魔宗")], [], [])
+
+    assert store.characters_snapshot()["林凡"].realm == "魔宗"
+
+
+def test_state_store_replaces_current_unresolved_observation():
+    store = StateStore()
+    store.update([CharacterState(name="林凡", unresolved=["寻找妹妹"])], [], [])
+    store.update([CharacterState(name="林凡", unresolved=[])], [], [])
+
+    assert store.characters_snapshot()["林凡"].unresolved == []
+
+
 def test_state_store_keeps_relationships_for_normalized_canonical_name():
     store = StateStore()
     store.update(
@@ -168,6 +198,27 @@ def test_context_prompt_includes_character_relationships():
     rendered = context.for_prompt()["characters"]
     assert "relations" in rendered
     assert "乙: 盟友/positive" in rendered
+
+
+def test_context_prompt_includes_dynamic_character_state():
+    context = StoryContext(
+        characters={
+            "林凡": CharacterState(
+                name="林凡",
+                role="main",
+                status="alive",
+                location="城门",
+                goal="阻止决战",
+                knowledge=["敌军已入城"],
+            )
+        }
+    )
+
+    rendered = context.for_prompt()["characters"]
+
+    assert "location=城门" in rendered
+    assert "goal=阻止决战" in rendered
+    assert "敌军已入城" in rendered
 
 
 def test_cache_directory_changes_when_analysis_settings_change(tmp_path):

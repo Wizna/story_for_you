@@ -45,6 +45,9 @@ class StyleEnforcer:
             normalized_seen.add(norm)
             last_norm = norm
 
+        # Similarity is useful for a reviewer, but unsafe as a destructive
+        # post-processing rule: two Chinese paragraphs often share a lead-in
+        # while the second one contains the actual plot advancement.
         cleaned = self._dedupe_similar_paragraphs(cleaned)
         return "\n\n".join(cleaned) if cleaned else text
 
@@ -58,12 +61,7 @@ class StyleEnforcer:
 
         # Extract existing sentences and first-sentences from polished content
         existing_paragraphs = [p.strip() for p in polished.split("\n\n") if p.strip()]
-        existing_sentences = self._extract_sentences_for_dedup(polished)
-        existing_first_sentences: set[str] = set()
-        for para in existing_paragraphs:
-            first = para.split("。")[0].strip()
-            if first:
-                existing_first_sentences.add(first)
+        existing_normalized = {self._normalize_paragraph(item) for item in existing_paragraphs}
 
         filtered: list[str] = []
         for bridge in bridges:
@@ -71,23 +69,13 @@ class StyleEnforcer:
             if not bridge_stripped:
                 continue
 
-            # Check first-sentence overlap
-            bridge_first = bridge_stripped.split("。")[0].strip()
-            if bridge_first and bridge_first in existing_first_sentences:
-                logger.debug("Bridge被过滤（首句重复）: %s...", bridge_first[:30])
-                continue
-
-            # Check Jaccard similarity with existing content
-            bridge_sentences = self._extract_sentences_for_dedup(bridge_stripped)
-            if self._jaccard_similarity(bridge_sentences, existing_sentences) >= self.DEDUP_SIMILARITY_THRESHOLD:
-                logger.debug("Bridge被过滤（相似度过高）: %s...", bridge_stripped[:30])
+            normalized_bridge = self._normalize_paragraph(bridge_stripped)
+            if normalized_bridge in existing_normalized:
+                logger.debug("Bridge被过滤（整段重复）: %s...", bridge_stripped[:30])
                 continue
 
             filtered.append(bridge_stripped)
-            # Add this bridge's sentences to existing set to avoid inter-bridge duplicates
-            existing_sentences.update(bridge_sentences)
-            if bridge_first:
-                existing_first_sentences.add(bridge_first)
+            existing_normalized.add(normalized_bridge)
 
         return filtered
 
@@ -100,51 +88,26 @@ class StyleEnforcer:
         if len(paragraphs) <= 1:
             return paragraphs
 
-        def extract_sentences(text: str) -> set[str]:
-            """提取段落中的句子集合。"""
-            parts = re.split(r"[。！？]", text)
-            return {s.strip() for s in parts if len(s.strip()) >= 6}
-
-        def extract_first_sentence(text: str) -> str:
-            """提取段落的首句（用于快速去重）。"""
-            first = text.split("。")[0].strip()
-            # 如果首句过短，尝试取更长的开头
-            if len(first) < 10:
-                first = text[:30].strip()
-            return first
-
         result: list[str] = []
-        seen_sentences: list[set[str]] = []
-        seen_first_sentences: set[str] = set()
+        seen_paragraphs: set[str] = set()
 
         for para in paragraphs:
             para_stripped = para.strip()
             if not para_stripped:
                 continue
 
-            # 首句去重：相同首句直接视为重复
-            first_sentence = extract_first_sentence(para_stripped)
-            if first_sentence and first_sentence in seen_first_sentences:
-                logger.debug("检测到首句重复段落，已移除: %s...", first_sentence[:20])
+            normalized = self._normalize_paragraph(para_stripped)
+            if normalized in seen_paragraphs:
+                logger.debug("检测到整段重复，已移除: %s...", para_stripped[:20])
                 continue
-
-            current_sentences = extract_sentences(para_stripped)
-            is_duplicate = False
-
-            for prev_sentences in seen_sentences:
-                similarity = self._jaccard_similarity(current_sentences, prev_sentences)
-                if similarity >= threshold:
-                    logger.debug("检测到相似段落（相似度 %.2f），已移除", similarity)
-                    is_duplicate = True
-                    break
-
-            if not is_duplicate:
-                result.append(para_stripped)
-                seen_sentences.append(current_sentences)
-                if first_sentence:
-                    seen_first_sentences.add(first_sentence)
+            result.append(para_stripped)
+            seen_paragraphs.add(normalized)
 
         return result
+
+    def _normalize_paragraph(self, text: str) -> str:
+        """Normalize whitespace only; preserve punctuation and plot details."""
+        return re.sub(r"\s+", " ", text.strip())
 
     def _extract_sentences_for_dedup(self, text: str) -> set[str]:
         """Extract sentence set for deduplication checking."""

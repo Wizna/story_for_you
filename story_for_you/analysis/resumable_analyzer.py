@@ -58,9 +58,13 @@ class ResumableStoryAnalyzer(AnalyzerMixin):
         chapters: list[str],
         file_hash: str,
         progress_callback: Callable[[int, int], None] | None = None,
+        chapter_labels: list[int | None] | None = None,
     ) -> StoryContext:
         """Run analysis with resume support."""
         total_chapters = len(chapters)
+        labels = chapter_labels or []
+        if labels and len(labels) != total_chapters:
+            raise ValueError("chapter_labels must have the same length as chapters")
         progress = self.progress_store.get_progress(file_hash)
 
         if progress and progress.total_chapters == total_chapters:
@@ -75,7 +79,7 @@ class ResumableStoryAnalyzer(AnalyzerMixin):
         story_state = self.state_store.story_snapshot()
 
         for i in range(start_from, total_chapters):
-            chapter_no = i + 1
+            chapter_no = (labels[i] if labels else None) or i + 1
             chapter_text = chapters[i]
 
             story_state, summary = self._process_chapter(

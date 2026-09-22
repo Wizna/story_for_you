@@ -32,14 +32,23 @@ class StoryAnalyzer(AnalyzerMixin):
         self.event_extractor = EventExtractor(llm, prompt_budget=prompt_budget)
         self.state_synthesizer = StateSynthesizer(llm)
 
-    def analyze(self, chapters: Iterable[str]) -> StoryContext:
+    def analyze(
+        self,
+        chapters: Iterable[str],
+        chapter_labels: Iterable[int | None] | None = None,
+    ) -> StoryContext:
         """Run the analyzer across a list of chapter-sized texts."""
         chapters = list(chapters)
+        labels = list(chapter_labels) if chapter_labels is not None else []
+        if labels and len(labels) != len(chapters):
+            raise ValueError("chapter_labels must have the same length as chapters")
         self.chapter_window.clear()
         self.event_ledger.clear()
         self.state_store.clear()
         story_state = None
-        for chapter_no, chapter_text in enumerate(chapters, start=1):
+        for index, chapter_text in enumerate(chapters):
+            chapter_no = labels[index] if labels else index + 1
+            chapter_no = chapter_no or index + 1
             story_state, _summary = self._process_chapter(
                 chapter_no, chapter_text, story_state
             )

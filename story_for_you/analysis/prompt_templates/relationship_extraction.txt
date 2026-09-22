@@ -14,7 +14,10 @@
   "targets": ["目标人物名，必须来自候选人物的 name 或 aliases"],
   "relation_type": "关系类型，如亲人/恋慕/盟友/敌对/照料/误解/疏离/未知",
   "sentiment": "positive | neutral | negative",
-  "description": "30字内说明变化依据"
+  "description": "30字内说明变化依据",
+  "confidence": 0.0,
+  "evidence": "支持该关系的原文短证据",
+  "chapter": 0
 }
 
 ## 规则

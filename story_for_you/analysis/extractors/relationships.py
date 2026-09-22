@@ -102,7 +102,15 @@ class RelationshipMapper:
             sentiment=sentiment,
             description=self._required_str(payload.get("description"), "description", allow_empty=True),
             source=canonical_source,
+            confidence=self._confidence(payload.get("confidence", 0.0)),
+            evidence=self._required_str(payload.get("evidence", ""), "evidence", allow_empty=True),
+            chapter=payload.get("chapter") if isinstance(payload.get("chapter"), int) else None,
         )
+
+    def _confidence(self, value: Any) -> float:
+        if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0.0 <= value <= 1.0:
+            raise LLMResponseError("Relationship confidence must be between 0 and 1.")
+        return float(value)
 
     def _required_str(self, value: Any, field_name: str, *, allow_empty: bool = False) -> str:
         if not isinstance(value, str):

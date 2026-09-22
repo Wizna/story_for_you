@@ -11,7 +11,12 @@ from story_for_you.core.ending.constants import (
 )
 from story_for_you.core.ending.hint_interpreter import HintDirectives, HintInterpreter
 from story_for_you.core.ending.style_enforcer import StyleEnforcer
-from story_for_you.core.ending.validator import EndingValidationResult, EndingValidator
+from story_for_you.core.ending.validator import (
+    ContinuationValidationResult,
+    ContinuationValidator,
+    EndingValidationResult,
+    EndingValidator,
+)
 
 __all__ = [
     "BANNED_EXPRESSIONS_PROMPT",
@@ -20,4 +25,6 @@ __all__ = [
     "StyleEnforcer",
     "EndingValidationResult",
     "EndingValidator",
+    "ContinuationValidationResult",
+    "ContinuationValidator",
 ]

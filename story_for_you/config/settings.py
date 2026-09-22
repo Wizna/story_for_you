@@ -158,9 +158,19 @@ class EndingPhaseTemperatures:
 
 @dataclass
 class EndingSettings:
-    """Settings for ending writer."""
+    """Settings for the generic continuation writer.
+
+    ``max_chapters`` is retained as a configuration compatibility key; it is
+    the upper bound for continuation units and does not imply that a run must
+    end in that many chapters.
+    """
 
     temperatures: EndingPhaseTemperatures = field(default_factory=EndingPhaseTemperatures)
+    max_chapters: int = 40
+
+    def __post_init__(self) -> None:
+        if self.max_chapters <= 0:
+            raise ValueError(f"max_chapters must be positive, got {self.max_chapters}")
 
 
 @dataclass

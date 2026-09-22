@@ -1,4 +1,4 @@
-"""LLM-backed validation for generated endings."""
+"""LLM-backed validation for generated continuations."""
 
 from __future__ import annotations
 
@@ -14,18 +14,23 @@ from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
 from story_for_you.utils.prompting import build_cacheable_prompt
 
-__all__ = ["EndingValidationResult", "EndingValidator"]
+__all__ = [
+    "ContinuationValidationResult",
+    "ContinuationValidator",
+    "EndingValidationResult",
+    "EndingValidator",
+]
 
 
 @dataclass
-class EndingValidationResult:
+class ContinuationValidationResult:
     passed: bool
     issues: list[str] = field(default_factory=list)
     repair_instructions: list[str] = field(default_factory=list)
 
 
-class EndingValidator:
-    """Asks the model to review user intent, continuity, and contradictions."""
+class ContinuationValidator:
+    """Ask the model to review intent, continuity, and contradictions."""
 
     def __init__(self, llm: LLMProvider):
         self.llm = llm
@@ -37,7 +42,7 @@ class EndingValidator:
         directives: HintDirectives,
         *,
         context_block: str,
-    ) -> EndingValidationResult:
+    ) -> ContinuationValidationResult:
         prompt = build_cacheable_prompt(
             context_block or "(无上下文)",
             self.template,
@@ -50,22 +55,22 @@ class EndingValidator:
             options=telemetry_options(
                 {"no_think": True},
                 phase="continue",
-                step=": validate ending",
+                step=": validate continuation",
             ),
         )
         payload = load_json_response(response.content)
         if not isinstance(payload, dict):
-            raise LLMResponseError("Ending validation returned invalid JSON object.")
+            raise LLMResponseError("Continuation validation returned invalid JSON object.")
         return self._from_payload(payload)
 
-    def _from_payload(self, payload: dict[str, Any]) -> EndingValidationResult:
+    def _from_payload(self, payload: dict[str, Any]) -> ContinuationValidationResult:
         for field_name in ("passed", "issues", "repair_instructions"):
             if field_name not in payload:
-                raise LLMResponseError(f"Ending validation missing required field: {field_name}")
+                raise LLMResponseError(f"Continuation validation missing required field: {field_name}")
         passed = payload.get("passed")
         if not isinstance(passed, bool):
-            raise LLMResponseError("Ending validation JSON must include boolean 'passed'.")
-        return EndingValidationResult(
+            raise LLMResponseError("Continuation validation JSON must include boolean 'passed'.")
+        return ContinuationValidationResult(
             passed=passed,
             issues=self._str_list(payload.get("issues")),
             repair_instructions=self._str_list(payload.get("repair_instructions")),
@@ -73,12 +78,17 @@ class EndingValidator:
 
     def _str_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):
-            raise LLMResponseError("Ending validation list fields must be JSON arrays.")
+            raise LLMResponseError("Continuation validation list fields must be JSON arrays.")
         items: list[str] = []
         for item in value:
             if not isinstance(item, str):
-                raise LLMResponseError("Ending validation list items must be strings.")
+                raise LLMResponseError("Continuation validation list items must be strings.")
             text = item.strip()
             if text:
                 items.append(text)
         return items
+
+
+# Compatibility aliases for older callers and serialized integrations.
+EndingValidationResult = ContinuationValidationResult
+EndingValidator = ContinuationValidator

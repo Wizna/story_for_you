@@ -913,7 +913,9 @@ class RemoveResult:
 
 ---
 
-#### 4.6.4 结局续写 (`ending_writer.py`)
+#### 4.6.4 自适应续写 (`ending_writer.py`)
+
+当前实现先生成结构化 `ContinuationPlan`，由模型根据全局状态、原文证据和读者要求判断叙事阶段、范围、单元粒度（回/场景/结构段）和单元数。单元可以是一回、一个场景或一个结构段，不预设为结局；随后逐单元执行初稿与润色，最后对合并文本做跨单元承接和一致性审查。`CharacterState` 除身份和性格外，还保存 `status`、`location`、`goal` 与 `knowledge`，用于约束人物在不同单元的行动和知情范围。
 
 ```python
 class EndingWriter:
@@ -994,15 +996,15 @@ story remove novel.txt --characters "王五" --mode hard -o output.txt
 | `-c, --characters` | 要删除的人物 | 必填   |
 | `--mode`           | hard/soft    | hard   |
 
-#### 结局续写
+#### 自适应续写
 
 ```bash
-story continue novel.txt --hint "希望是HE" -o output.txt
+story continue novel.txt --hint "续写后四十回，保留原作余韵" -o output.txt
 ```
 
 | 参数       | 说明         | 默认值 |
 | ---------- | ------------ | ------ |
-| `--hint` | 结局期望提示 | 空     |
+| `--hint` | 续写范围、叙事要求或结局期望提示 | 空     |
 
 #### 风格分析（独立命令）
 
@@ -1323,7 +1325,7 @@ uv run story --help
 | `compress` | 缓存命中时 1 次 | 没有缓存时先完整分析；压缩本身只做一次改写 |
 | `filter` | 缓存命中时约等于断点数 | 检索命中的原文直接拼接，只对 gap 生成桥接 |
 | `remove` | 缓存命中时约等于受影响段落数 | 无关段落原样保留，受影响段落才评估/改写 |
-| `continue` | 通常 5 次，存在伏笔时 6 次 | hint 解析、大纲、初稿、润色、验证；有未解决伏笔时增加 resolution review；最终修复只在验证失败时触发 |
+| `continue` | `3 + 2×max_units` 的上限估算，存在伏笔时再加 1 次 | hint 解析、续写计划、每个单元初稿/润色、承接审查、验证；最终修复只在验证失败时触发 |
 
 ```python
 class FakeLLM(LLMProvider):

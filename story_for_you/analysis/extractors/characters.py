@@ -25,6 +25,11 @@ _MAX_LLM_CHARACTERS = 8
 _REPAIR_SNIPPET_BUDGET = 4000
 _STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
 _ROLE_PRIORITY: dict[str, int] = {"main": 3, "support": 2, "minor": 1}
+_GENERIC_CHARACTER_TITLES = {
+    "师父", "师傅", "老师", "师兄", "师姐", "师弟", "师妹", "大哥", "二哥",
+    "三哥", "大嫂", "二嫂", "爹", "娘", "父亲", "母亲", "老爷", "夫人",
+    "公子", "小姐", "掌门", "长老", "殿下", "陛下", "将军", "先生",
+}
 
 
 class CharacterExtractor:
@@ -134,6 +139,16 @@ class CharacterExtractor:
         if realm_payload is not None and not isinstance(realm_payload, str):
             raise LLMResponseError("Character realm must be a string or null.")
         realm = realm_payload.strip() or None if isinstance(realm_payload, str) else None
+        status = data.get("status", "unknown")
+        if status not in {"alive", "dead", "unknown"}:
+            raise LLMResponseError("Character status must be alive, dead, or unknown.")
+        location = data.get("location")
+        goal = data.get("goal")
+        if location is not None and not isinstance(location, str):
+            raise LLMResponseError("Character location must be a string or null.")
+        if goal is not None and not isinstance(goal, str):
+            raise LLMResponseError("Character goal must be a string or null.")
+        knowledge = self._normalize_str_list(data.get("knowledge", []))
         return CharacterState(
             name=name,
             aliases=aliases,
@@ -142,6 +157,10 @@ class CharacterExtractor:
             personality=personality,
             relationships=[],
             unresolved=unresolved,
+            status=status,
+            location=location.strip() or None if isinstance(location, str) else None,
+            goal=goal.strip() or None if isinstance(goal, str) else None,
+            knowledge=knowledge,
         )
 
     def _normalize_role(self, value: Any) -> str:
@@ -153,10 +172,24 @@ class CharacterExtractor:
         raise LLMResponseError(f"Invalid character role: {value!r}")
 
     def _find_character(self, roster: list[CharacterState], candidate: CharacterState) -> CharacterState | None:
-        candidate_keys = self._alias_keys(candidate)
+        # Canonical names are safe identity keys.  Alias-only matches are
+        # accepted only when that alias belongs to one character in this
+        # chapter; common titles such as “师父” must remain separate.
+        candidate_name = normalize_character_label(candidate.name)
         for existing in roster:
-            if candidate_keys.intersection(self._alias_keys(existing)):
+            if candidate_name == normalize_character_label(existing.name):
                 return existing
+
+        owners: dict[str, list[CharacterState]] = {}
+        for existing in roster:
+            for key in self._alias_keys(existing):
+                owners.setdefault(key, []).append(existing)
+        for key in self._alias_keys(candidate):
+            if key in _GENERIC_CHARACTER_TITLES:
+                continue
+            matches = owners.get(key, [])
+            if len(matches) == 1:
+                return matches[0]
 
         return None
 
@@ -170,6 +203,11 @@ class CharacterExtractor:
         )
         target.unresolved = self._merge_list(target.unresolved, incoming.unresolved)
         target.realm = target.realm or incoming.realm
+        if incoming.status != "unknown":
+            target.status = incoming.status
+        target.location = incoming.location or target.location
+        target.goal = incoming.goal or target.goal
+        target.knowledge = self._merge_list(target.knowledge, incoming.knowledge)
         if _ROLE_PRIORITY[incoming.role] > _ROLE_PRIORITY[target.role]:
             target.role = incoming.role
 

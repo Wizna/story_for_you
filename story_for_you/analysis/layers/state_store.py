@@ -17,6 +17,11 @@ if TYPE_CHECKING:
     from story_for_you.config.settings import RenderingLimits
 
 _ROLE_PRIORITY: dict[str, int] = {"main": 3, "support": 2, "minor": 1}
+_GENERIC_CHARACTER_TITLES = {
+    "师父", "师傅", "老师", "师兄", "师姐", "师弟", "师妹", "大哥", "二哥",
+    "三哥", "大嫂", "二嫂", "爹", "娘", "父亲", "母亲", "老爷", "夫人",
+    "公子", "小姐", "掌门", "长老", "殿下", "陛下", "将军", "先生",
+}
 
 
 class StateStore:
@@ -27,6 +32,10 @@ class StateStore:
         self._story_state: StoryState | None = None
         self._event_log: list[PlotEvent] = []
         self._alias_index: dict[str, str] = {}
+        # A generic title such as “师父” may belong to several characters.
+        # Ambiguous aliases must never silently choose whichever character was
+        # registered last.
+        self._ambiguous_aliases: set[str] = set()
 
     def update(
         self,
@@ -76,6 +85,7 @@ class StateStore:
         self._story_state = None
         self._event_log.clear()
         self._alias_index.clear()
+        self._ambiguous_aliases.clear()
 
     # Internal helpers -------------------------------------------------
     def _merge_character(self, character: CharacterState) -> None:
@@ -91,11 +101,24 @@ class StateStore:
             existing.aliases = sorted(set(existing.aliases + [character.name]))
         if character.personality:
             existing.personality = list(dict.fromkeys(existing.personality + character.personality))
-        if character.unresolved:
-            existing.unresolved = list(dict.fromkeys(existing.unresolved + character.unresolved))
+        # The extractor describes the character's current open threads for the
+        # current chapter.  Replace that observation so resolved threads do not
+        # remain immortal in every later continuation prompt.
+        existing.unresolved = list(dict.fromkeys(character.unresolved))
         if _ROLE_PRIORITY.get(character.role, 0) > _ROLE_PRIORITY.get(existing.role, 0):
             existing.role = character.role
-        existing.realm = existing.realm or character.realm
+        # Character extraction is chapter-local.  A supplied affiliation is a
+        # newer observation and may reflect a defection, disguise, or promotion.
+        if character.realm:
+            existing.realm = character.realm
+        if character.status != "unknown":
+            existing.status = character.status
+        if character.location:
+            existing.location = character.location
+        if character.goal:
+            existing.goal = character.goal
+        if character.knowledge:
+            existing.knowledge = list(dict.fromkeys(existing.knowledge + character.knowledge))
         self._register_aliases(existing.name, [existing.name, *existing.aliases, character.name])
 
     def _merge_relationship(self, relationship: Relationship) -> None:
@@ -112,6 +135,12 @@ class StateStore:
                 existing.sentiment = relationship.sentiment
                 if relationship.description:
                     existing.description = relationship.description
+                if relationship.confidence:
+                    existing.confidence = relationship.confidence
+                if relationship.evidence:
+                    existing.evidence = relationship.evidence
+                if relationship.chapter is not None:
+                    existing.chapter = relationship.chapter
                 return
         owner.relationships.append(
             Relationship(
@@ -120,6 +149,9 @@ class StateStore:
                 sentiment=relationship.sentiment,
                 description=relationship.description,
                 source=source,
+                confidence=relationship.confidence,
+                evidence=relationship.evidence,
+                chapter=relationship.chapter,
             )
         )
 
@@ -133,7 +165,10 @@ class StateStore:
         if not label or not label.strip():
             return None
         cleaned = label.strip()
-        return self._alias_index.get(self._normalize_token(cleaned), cleaned)
+        key = self._normalize_token(cleaned)
+        if key in self._ambiguous_aliases:
+            return None
+        return self._alias_index.get(key, cleaned)
 
     def _render_world_state(self, limits: RenderingLimits) -> list[str]:
         if not self._story_state:
@@ -206,7 +241,17 @@ class StateStore:
         return instance
 
     def _resolve_owner(self, character: CharacterState) -> str | None:
+        canonical_key = self._normalize_token(character.name)
+        direct_owner = self._alias_index.get(canonical_key)
+        if direct_owner and canonical_key not in _GENERIC_CHARACTER_TITLES:
+            return direct_owner
         for key in self._alias_keys(character):
+            if key == canonical_key:
+                continue
+            if key in self._ambiguous_aliases:
+                continue
+            if key in {_normalize for _normalize in (_GENERIC_CHARACTER_TITLES)}:
+                continue
             owner = self._alias_index.get(key)
             if owner:
                 return owner
@@ -218,7 +263,12 @@ class StateStore:
             for token in self._tokenize_label(label):
                 key = self._normalize_token(token)
                 if key:
-                    self._alias_index[key] = canonical_name
+                    previous = self._alias_index.get(key)
+                    if previous and previous != canonical_name:
+                        self._ambiguous_aliases.add(key)
+                        self._alias_index.pop(key, None)
+                    elif key not in self._ambiguous_aliases:
+                        self._alias_index[key] = canonical_name
 
     def _alias_keys(self, character: CharacterState) -> set[str]:
         keys: set[str] = set()

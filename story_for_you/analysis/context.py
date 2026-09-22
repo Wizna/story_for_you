@@ -261,6 +261,9 @@ class Relationship:
     sentiment: Literal["positive", "neutral", "negative"] = "neutral"
     description: str = ""
     source: str | None = None
+    confidence: float = 0.0
+    evidence: str = ""
+    chapter: int | None = None
 
     def __post_init__(self) -> None:
         """Ensure targets remain deterministic and deduplicated."""
@@ -275,12 +278,18 @@ class Relationship:
         sentiment = _required_str(payload, "sentiment", "Relationship")
         if sentiment not in _VALID_RELATION_SENTIMENTS:
             raise LLMResponseError(f"Invalid Relationship.sentiment: {sentiment!r}")
+        confidence = payload.get("confidence", 0.0)
+        if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0.0 <= confidence <= 1.0:
+            raise LLMResponseError("Relationship.confidence must be between 0 and 1.")
         return cls(
             targets=_required_str_list(payload, "targets", "Relationship"),
             relation_type=_required_str(payload, "relation_type", "Relationship"),
             sentiment=sentiment,
             description=_required_str(payload, "description", "Relationship", allow_empty=True),
             source=_required_str(payload, "source", "Relationship"),
+            confidence=float(confidence),
+            evidence=_optional_str(payload, "evidence", "Relationship") or "",
+            chapter=payload.get("chapter") if isinstance(payload.get("chapter"), int) else None,
         )
 
 
@@ -293,6 +302,12 @@ class CharacterState:
     personality: list[str] = field(default_factory=list)
     relationships: list[Relationship] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
+    # Dynamic facts are deliberately separate from personality and aliases.
+    # They describe the latest story state used by ending planning.
+    status: Literal["alive", "dead", "unknown"] = "unknown"
+    location: str | None = None
+    goal: str | None = None
+    knowledge: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any], name_hint: str = "") -> "CharacterState":
@@ -309,6 +324,9 @@ class CharacterState:
         relationship_payload = payload.get("relationships")
         if not isinstance(relationship_payload, list):
             raise LLMResponseError("CharacterState.relationships must be a list.")
+        status = payload.get("status", "unknown")
+        if not isinstance(status, str) or status not in {"alive", "dead", "unknown"}:
+            raise LLMResponseError("CharacterState.status must be alive, dead, or unknown.")
         return cls(
             name=_required_str(payload, "name", "CharacterState") or name_hint,
             aliases=_required_str_list(payload, "aliases", "CharacterState"),
@@ -317,6 +335,10 @@ class CharacterState:
             personality=_required_str_list(payload, "personality", "CharacterState"),
             relationships=[Relationship.from_dict(r) for r in relationship_payload],
             unresolved=_required_str_list(payload, "unresolved", "CharacterState"),
+            status=status,
+            location=_optional_str(payload, "location", "CharacterState"),
+            goal=_optional_str(payload, "goal", "CharacterState"),
+            knowledge=_required_str_list(payload, "knowledge", "CharacterState") if "knowledge" in payload else [],
         )
 
 
@@ -461,6 +483,14 @@ class StoryContext:
                 relations.append(detail)
             relations_part = " | relations: " + "; ".join(relations) if relations else ""
             suffix = f" | unresolved: {unresolved}" if unresolved else ""
+            status = character.status
+            location = character.location or "unknown"
+            goal = character.goal or "unknown"
+            knowledge = ", ".join(character.knowledge[:3]) if character.knowledge else ""
+            state_part = f" | state: {status}, location={location}, goal={goal}"
+            if knowledge:
+                state_part += f", knows={knowledge}"
+            suffix = state_part + suffix
             suffix += relations_part
             lines.append(f"- {character.name}{aliases_part} ({character.role}): {traits}{suffix}")
         return "\n".join(lines)
