@@ -129,9 +129,11 @@ uv run story remove novel.txt -c "王五" --mode soft  # 软删除：弱化存�
 | 阶段 | 说明 |
 | --- | --- |
 | 续写范围与结构规划 | 判断叙事阶段、时间/回目范围、单元数量和本轮收束程度 |
-| 单元初稿与润色 | 每个单元独立生成，承接前单元结果并保持人物知情范围 |
+| 单元场景规划 | 明确目标、阻力、行动、转折、代价与人物知情边界，保留后续单元职责 |
+| 单元初稿与润色 | 段落、对白和修辞服从原作，不设统一段长与特征词配额 |
+| 单元审查与记忆更新 | 审查通过后记录实际状态变化与原文证据，供后续单元承接 |
 | 跨单元承接检查 | 检查关系、人物状态、不可逆事实、视角和信息差是否前后一致 |
-| 最终审查 | 根据读者要求修复范围、推进程度和事实矛盾 |
+| 最终审查 | 定位替换问题片段，保留其他正文，修改后再次审查 |
 
 ```bash
 uv run story continue novel.txt                              # 自动判断续写范围与单元数
@@ -139,6 +141,24 @@ uv run story continue novel.txt --hint "续写后四十回"         # 明确指�
 uv run story continue novel.txt --hint "续写后四十回" --max-units 40  # 允许回目级计划覆盖 40 回
 uv run story continue novel.txt --hint "补足家族衰败和人物归宿，保留悲剧余韵"
 uv run story continue novel.txt --max-units 6                  # 单次运行的安全上限（--max-chapters 是兼容别名）
+```
+
+人物死亡只依据明确人物状态或事件中的死亡主体。人物与世界伏笔按稳定 ID 更新，只有明确解决证据才能关闭。
+重点人物的完整知情状态、相关历史事件与原文位置会补入上下文，不可逆事实不会按最近 20 条截断。
+分析缓存格式已更新，旧分析会自动失效。模型输出被截断或调用预算不足时会报错，不保存半截结果。
+
+### `eval` - 续写盲评
+
+支持截断前正文隔离、无缓存生成、匿名 A/B 打包，以及人工评分汇总。准备与评分操作不调用 LLM，
+`eval generate` 会调用已配置的模型。完整示例与指标解释见 [续写质量与评测](docs/continuation_quality.md)。
+
+```bash
+uv run story eval prepare cases.json --output-dir outputs/eval-inputs
+uv run story eval generate outputs/eval-inputs/cases.json --config baseline.yaml --output-dir outputs/eval-baseline
+uv run story eval generate outputs/eval-inputs/cases.json --config candidate.yaml --output-dir outputs/eval-candidate
+uv run story eval blind outputs/eval-inputs/cases.json outputs/eval-baseline/results.json outputs/eval-candidate/results.json --output-dir outputs/eval-comparison
+# 人工填写 blind/ratings.json 后汇总
+uv run story eval report outputs/eval-comparison/blind/ratings.json outputs/eval-comparison/private_key.json -o outputs/eval-report.json
 ```
 
 ### `cache` - 缓存管理
@@ -241,7 +261,7 @@ DeepSeek 官方模型会按内置价目估算费用；其他 OpenAI-compatible �
 | 命令 | 已有分析缓存时 | 需要现场分析时 | 省请求 / 省 token 策略 |
 | --- | --- | --- | --- |
 | `analyze` | 不适用 | 最多 `chapter_chunks * 5 + 1` | 单角色跳过关系抽取；无新事件复用上一帧状态；同章正文作为 cache prefix |
-| `compress` | 1 次改写请求 | 先跑 `analyze`，再 1 次改写 | 复用缓存的 `StoryContext + SegmentIndex`，避免重复分析 |
+| `compress` | 按输入与输出预算分批改写 | 先跑 `analyze`，再分批改写 | 复用缓存的 `StoryContext + SegmentIndex`，按原文顺序处理选中片段 |
 | `filter` | 每个断点 1 次桥接请求 | 先跑 `analyze`，再按断点桥接 | 原文段落直接拼接，仅断点调用 LLM |
 | `remove` | 每个受影响段落最多 1 次处理请求 | 先跑 `analyze`，再处理受影响段落 | 未受影响段落原样保留 |
 | `continue` | `3 + 2×max_units` 的上限估算，存在伏笔时 +1 | 先跑 `analyze`，再续写 | 实际单元数由模型选择；固定 `StoryContext` 作为 cache prefix；ongoing/partial 计划不会强行补完所有伏笔 |

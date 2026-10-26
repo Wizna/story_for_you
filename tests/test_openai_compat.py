@@ -134,6 +134,20 @@ class TestGenerate:
         )
         p.generate(cache_prompt("Say hi"))
 
+    @pytest.mark.parametrize(
+        ("base_url", "expected_path"),
+        [
+            ("https://api.openai.com/v1", "/v1/chat/completions"),
+            ("https://api.groq.com/openai/v1", "/openai/v1/chat/completions"),
+        ],
+    )
+    def test_versioned_base_url_does_not_repeat_v1(self, base_url, expected_path):
+        def handler(request: httpx.Request) -> httpx.Response:
+            assert request.url.path == expected_path
+            return httpx.Response(200, json=_ok_response())
+
+        _provider(_make_transport(handler), base_url=base_url).generate(cache_prompt("Say hi"))
+
     def test_system_prompt_included(self):
         def handler(request: httpx.Request) -> httpx.Response:
             body = json.loads(request.content)

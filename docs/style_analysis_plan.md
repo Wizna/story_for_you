@@ -1,5 +1,9 @@
 # 完整风格分析功能实现计划（扩展版）
 
+> 下文保留早期设计。2026-10 的实际续写流程为：全局计划 → 每单元场景规划 → 初稿 → 润色 →
+> 承接审查与状态记忆 → 跨单元审查与定位修复。段长、对白和修辞服从原作，无统一字数或词汇配额。
+> 当前实现及评测步骤见 [续写质量与评测](continuation_quality.md)。
+
 ## 问题描述
 
 1. 当前 `story continue` 生成的结局像故事大纲，缺乏原作者文学风格
@@ -225,7 +229,7 @@ def format_style_samples(style: WritingStyle | None, max_samples: int = 2) -> st
 示例修改（compressor.py）：
 
 ```python
-def compress(self, text: str, context: StoryContext) -> str:
+def compress(self, context: StoryContext) -> str:
     context_block = format_context_sections(context.for_prompt())
     style_guide = format_style_guide(context.writing_style)
     style_samples = format_style_samples(context.writing_style)

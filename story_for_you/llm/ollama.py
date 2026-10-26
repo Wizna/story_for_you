@@ -70,12 +70,15 @@ class OllamaProvider(LLMProvider):
         prompt_tokens = data.get("prompt_eval_count") or 0
         completion_tokens = data.get("eval_count") or 0
         tokens_used = prompt_tokens + completion_tokens
-        return LLMResponse(
+        result = LLMResponse(
             content=content,
             tokens_used=tokens_used,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
+            finish_reason=data.get("done_reason"),
         )
+        result.ensure_complete()
+        return result
 
     def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> Iterator[str]:
         """Stream a response via Ollama's API."""
@@ -97,6 +100,7 @@ class OllamaProvider(LLMProvider):
                     except json.JSONDecodeError:
                         continue
                     chunk = data.get("response")
+                    LLMResponse("", 0, finish_reason=data.get("done_reason")).ensure_complete()
                     if chunk:
                         if buf is not None:
                             buf.append(chunk)
@@ -135,6 +139,8 @@ class OllamaProvider(LLMProvider):
         merged_options = dict(self.options)
         if call_options:
             merged_options.update({key: value for key, value in call_options.items() if value is not None})
+        if "max_tokens" in merged_options:
+            merged_options["num_predict"] = merged_options.pop("max_tokens")
         prompt_text = prompt.render()
 
         # Pop no_think before sending to Ollama; append directive to prompt for Qwen models.

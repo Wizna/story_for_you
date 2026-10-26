@@ -1,13 +1,9 @@
 from __future__ import annotations
 
-from dataclasses import asdict
-from typing import Any, Callable
+from typing import Callable
 
 from story_for_you.analysis.analyzer_mixin import AnalyzerMixin
-from story_for_you.analysis.context import (
-    ChapterSummary,
-    StoryContext,
-)
+from story_for_you.analysis.context import StoryContext
 from story_for_you.analysis.extractors import (
     ChapterSummarizer,
     CharacterExtractor,
@@ -56,7 +52,7 @@ class ResumableStoryAnalyzer(AnalyzerMixin):
     def analyze(
         self,
         chapters: list[str],
-        file_hash: str,
+        analysis_key: str,
         progress_callback: Callable[[int, int], None] | None = None,
         chapter_labels: list[int | None] | None = None,
     ) -> StoryContext:
@@ -65,16 +61,16 @@ class ResumableStoryAnalyzer(AnalyzerMixin):
         labels = chapter_labels or []
         if labels and len(labels) != total_chapters:
             raise ValueError("chapter_labels must have the same length as chapters")
-        progress = self.progress_store.get_progress(file_hash)
+        progress = self.progress_store.get_progress(analysis_key)
 
-        if progress and progress.total_chapters == total_chapters:
-            start_from = progress.completed_chapters
+        if progress and progress.total_units == total_chapters:
+            start_from = progress.completed_units
             self._restore_state(progress)
         else:
             start_from = 0
             self._reset_state()
             if progress:
-                self.progress_store.clear_progress(file_hash)
+                self.progress_store.clear_progress(analysis_key)
 
         story_state = self.state_store.story_snapshot()
 
@@ -82,25 +78,24 @@ class ResumableStoryAnalyzer(AnalyzerMixin):
             chapter_no = (labels[i] if labels else None) or i + 1
             chapter_text = chapters[i]
 
-            story_state, summary = self._process_chapter(
+            story_state, _ = self._process_chapter(
                 chapter_no, chapter_text, story_state
             )
 
-            self._save_progress(file_hash, total_chapters, chapter_no, summary)
+            self._save_progress(analysis_key, total_chapters, i + 1)
 
             if progress_callback:
-                progress_callback(chapter_no, total_chapters)
+                progress_callback(i + 1, total_chapters)
 
-        self.progress_store.clear_progress(file_hash)
-
-        return self._assemble_context(chapters)
+        context = self._assemble_context(chapters)
+        self.progress_store.clear_progress(analysis_key)
+        return context
 
     def _reset_state(self) -> None:
         """Reset all analysis state."""
         self.chapter_window.clear()
         self.event_ledger.clear()
         self.state_store.clear()
-        self._chapter_results: list[dict[str, Any]] = []
 
     def _restore_state(self, progress: AnalysisProgress) -> None:
         """Restore state from saved progress."""
@@ -110,22 +105,18 @@ class ResumableStoryAnalyzer(AnalyzerMixin):
         )
         self.event_ledger = EventLedger.from_dict(memory.get("event_ledger", {}))
         self.state_store = StateStore.from_dict(memory.get("state_store", {}))
-        self._chapter_results = list(progress.chapter_results)
 
     def _save_progress(
         self,
-        file_hash: str,
-        total_chapters: int,
-        completed_chapters: int,
-        latest_summary: ChapterSummary,
+        analysis_key: str,
+        total_units: int,
+        completed_units: int,
     ) -> None:
         """Save current progress to disk."""
-        self._chapter_results.append(asdict(latest_summary))
         progress = AnalysisProgress(
-            file_hash=file_hash,
-            total_chapters=total_chapters,
-            completed_chapters=completed_chapters,
-            chapter_results=self._chapter_results,
+            analysis_key=analysis_key,
+            total_units=total_units,
+            completed_units=completed_units,
             memory_state={
                 "chapter_window": self.chapter_window.to_dict(),
                 "event_ledger": self.event_ledger.to_dict(),

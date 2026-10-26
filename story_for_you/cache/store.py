@@ -10,7 +10,7 @@ import json
 from story_for_you.analysis.context import StoryContext
 from story_for_you.utils.file_io import compute_file_hash
 
-_ANALYSIS_CACHE_FORMAT_VERSION = 3
+_ANALYSIS_CACHE_FORMAT_VERSION = 5
 
 
 @dataclass
@@ -92,12 +92,15 @@ class ContextStore:
         relevant["analysis_cache_format_version"] = _ANALYSIS_CACHE_FORMAT_VERSION
         return relevant
 
-    def _get_cache_dir(self, file_path: Path, settings: dict[str, Any] | Any) -> Path:
+    def fingerprint(self, file_path: Path, settings: dict[str, Any] | Any) -> str:
+        """Identify analysis artifacts for source content and relevant settings."""
         normalized = self._normalize_settings(settings)
         file_hash = self._get_file_hash(file_path)
         config_hash = self._get_config_hash(normalized)
-        fingerprint = self._build_fingerprint(file_hash=file_hash, config_hash=config_hash)
-        return self.cache_dir / fingerprint
+        return self._build_fingerprint(file_hash=file_hash, config_hash=config_hash)
+
+    def _get_cache_dir(self, file_path: Path, settings: dict[str, Any] | Any) -> Path:
+        return self.cache_dir / self.fingerprint(file_path, settings)
 
     def _build_fingerprint(self, *, file_hash: str, config_hash: str) -> str:
         raw = f"{file_hash}:{config_hash}"

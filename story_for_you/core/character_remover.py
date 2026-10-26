@@ -8,6 +8,7 @@ from story_for_you.config.settings import RenderingLimits
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment, deduplicate_overlapping_segments
+from story_for_you.indexer.tagger import unambiguous_alias_owners
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.prompting import cache_prompt
@@ -41,6 +42,14 @@ class CharacterRemover:
         """Return a removal result for the supplied characters."""
         if mode not in {"hard", "soft"}:
             raise LLMResponseError(f"Invalid character removal mode: {mode!r}")
+        missing = [
+            name for name in characters
+            if not self.retriever.retrieve_by_characters(include=[name], mode="strict")
+        ]
+        if missing:
+            raise LLMResponseError(
+                "No story segments matched the requested characters: " + ", ".join(missing)
+            )
         kept_segments = self.retriever.retrieve_excluding(exclude=characters, mode="hard")
         affected_segments = self.retriever.retrieve_by_characters(include=characters, mode="strict")
         processed: list[Segment] = []
@@ -72,6 +81,13 @@ class CharacterRemover:
             rewritten += 1
         merged = deduplicate_overlapping_segments(kept_segments + processed)
         content = "\n\n".join(seg.content.strip() for seg in merged)
+        if mode == "hard":
+            remaining = [label for label in forbidden_labels if label.casefold() in content.casefold()]
+            if remaining:
+                raise LLMResponseError(
+                    "Hard character removal output still mentions target character(s): "
+                    + ", ".join(remaining)
+                )
         ratio = len(content) / max(len(text), 1)
         return RemoveResult(
             content=content,
@@ -84,13 +100,22 @@ class CharacterRemover:
     def _forbidden_labels(self, characters: list[str], context: StoryContext) -> list[str]:
         """Return target names and known aliases for hard-mode output checks."""
         labels: set[str] = {name.strip() for name in characters if name.strip()}
-        lowered_targets = {name.casefold() for name in labels}
-        for character in context.characters.values():
-            known = {character.name, *character.aliases}
-            if character.name.casefold() in lowered_targets or any(
-                alias.casefold() in lowered_targets for alias in character.aliases
-            ):
-                labels.update(item.strip() for item in known if item and item.strip())
+        canonical_names = {name.casefold(): name for name in context.characters}
+        alias_owners = unambiguous_alias_owners(context)
+        owners: set[str] = set()
+        for label in labels:
+            key = label.casefold()
+            owner = canonical_names.get(key) or alias_owners.get(key)
+            if owner:
+                owners.add(owner)
+        for name in owners:
+            labels.add(name)
+            labels.update(
+                alias.strip()
+                for alias in context.characters[name].aliases
+                if alias.strip()
+                and alias_owners.get(alias.casefold()) == name
+            )
         return sorted(labels, key=len, reverse=True)
 
     def _rewrite_or_delete(

@@ -65,6 +65,7 @@ class EventExtractor:
         allowed_participants = set(alias_map)
         events, error = self._parse_response(response.content, chapter_no, alias_map, allowed_participants)
         if events is not None:
+            self._validate_evidence(events, chapter_text)
             return events
 
         if error:
@@ -78,6 +79,7 @@ class EventExtractor:
                 allowed_participants,
             )
             if events is not None:
+                self._validate_evidence(events, chapter_text)
                 return events
             error = repair_error or error
 
@@ -144,6 +146,15 @@ class EventExtractor:
             relation_changes=self._str_dict(impact_payload.get("relation_changes"), "relation_changes"),
             world_flags=self._str_list(impact_payload.get("world_flags"), "world_flags"),
         )
+        deceased = [
+            alias_map.get(name, name)
+            for name in self._str_list(payload.get("deceased_characters", []), "deceased_characters")
+        ]
+        if set(deceased) - set(participants):
+            raise LLMResponseError("Deceased characters must be identified event participants.")
+        evidence = payload.get("evidence", "")
+        if not isinstance(evidence, str):
+            raise LLMResponseError("Event evidence must be a string.")
         return PlotEvent(
             event_id=event_id,
             chapter=chapter_value,
@@ -152,7 +163,15 @@ class EventExtractor:
             summary=summary,
             impact=impact,
             is_irreversible=is_irreversible,
+            deceased_characters=deceased,
+            evidence=evidence,
         )
+
+    def _validate_evidence(self, events: list[PlotEvent], text: str) -> None:
+        source = "".join(text.split())
+        for event in events:
+            if event.evidence and "".join(event.evidence.split()) not in source:
+                raise LLMResponseError("Event evidence must quote the supplied chapter.")
 
     def _parse_response(
         self,

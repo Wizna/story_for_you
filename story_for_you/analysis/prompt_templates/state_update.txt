@@ -14,7 +14,9 @@
     "world_tension": "low | medium | high",
     "major_conflicts": ["正在进行的矛盾/任务，含人物誓言/仇恨（明确谁 vs 谁）"],
     "time_constraints": ["deadline/限时诅咒/婚期等"],
-    "unresolved_events": ["尚未收尾的承诺/伏笔/债务，每条 ≤20 字"]
+    "unresolved_events": ["本章明确观察到仍待收尾的承诺/伏笔/债务"],
+    "thread_updates": [{"operation": "add | update | resolve", "thread_id": "沿用上一帧 threads 中的 ID；add 可为空",
+                        "summary": "伏笔当前描述", "evidence": "本章事件或其原文证据中明确支持这次变化的引文"}]
   }
 
 ## 规则
@@ -23,5 +25,6 @@
 3. `major_conflicts` 3~5 条；`time_constraints` 0~3 条。
 4. `unresolved_events` 只保留仍待收尾的承诺、选择、谜团、债务或明确伏笔；不要写入永久世界设定、
    角色既有身份、已完成事实或仅用于背景说明的事件。仅当事件明确解决才移除，进入 resolution 时清理
-   已解决事项；列表最多 5 项。
+   已解决事项。只列本章观察到的事项，没提及不代表解决；update/resolve 必须沿用已有 ID 并有明确证据。
+   历史伏笔由程序按 ID 保留，禁止凭空解决。thread_updates 无变化时返回 []。
 5. 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

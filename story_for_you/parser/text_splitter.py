@@ -20,6 +20,12 @@ _TRAILER_PROMOTION = re.compile(
 )
 
 
+def strip_trailing_promotion(text: str) -> str:
+    """Remove a clearly delimited download-site promotion at EOF."""
+    match = _TRAILER_PROMOTION.search(text)
+    return text[:match.start()] if match else text
+
+
 @dataclass
 class TextChunk:
     content: str
@@ -142,13 +148,8 @@ class TextSplitter:
         ]
 
     def _content_end(self, text: str) -> int:
-        """Exclude a clearly delimited download-site promotion at EOF.
-
-        The marker requires both separator lines and a promotion/URL signal, so
-        ordinary story endings and author notes remain untouched.
-        """
-        match = _TRAILER_PROMOTION.search(text)
-        return match.start() if match else len(text)
+        """Exclude a clearly delimited download-site promotion at EOF."""
+        return len(strip_trailing_promotion(text))
 
     def _heading_kind(self, label: str) -> str | None:
         """Classify a heading as a narrative chapter or a volume label."""

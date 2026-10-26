@@ -40,7 +40,9 @@ class _RepairLLM(LLMProvider):
 
     def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         self.prompts.append(prompt)
-        return LLMResponse(content="修复后的正文", tokens_used=0)
+        return LLMResponse(content=json.dumps({"edits": [{
+            "old_text": "有矛盾的正文", "new_text": "修复后的正文", "reason": "统一人物归宿",
+        }]}), tokens_used=0)
 
     def generate_stream(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None):
         yield from []
@@ -49,17 +51,30 @@ class _RepairLLM(LLMProvider):
 class _PlannedEndingLLM(LLMProvider):
     def __init__(self):
         self.calls = 0
+        self.stage_calls = 0
 
     def generate(self, prompt: CacheablePrompt, system: str = "", options: dict | None = None) -> LLMResponse:
         self.calls += 1
-        if self.calls == 1:
+        if "本单元场景因果规划" in prompt.task:
+            return LLMResponse(json.dumps({"scenes": [{
+                "viewpoint": "甲", "setting": "当夜", "goal": "探明异常", "obstacle": "线索不全",
+                "action": "查验物件", "turn": "发现旧痕", "cost": "暴露行踪", "end_state": "决定追查",
+                "knowledge_boundary": "只知道物件有异，不知道幕后人物",
+            }]}), 0)
+        if "单元承接审查与记忆更新" in prompt.task:
+            return LLMResponse(json.dumps({
+                "passed": True, "issues": [], "repair_instructions": [],
+                "summary": "本单元推进了行动，形成当前场景结果。", "characters": [], "events": [], "story_state": None,
+            }), 0)
+        self.stage_calls += 1
+        if self.stage_calls == 1:
             payload = {
                 "normalized_text": "无特别要求", "closure": "closed", "ending_direction": None,
                 "emotional_tone": None, "focus_characters": [], "required_outcomes": [],
                 "forbidden_outcomes": [], "required_resolutions": [], "style_constraints": [],
             }
             return LLMResponse(json.dumps(payload, ensure_ascii=False), 0)
-        if self.calls == 2:
+        if self.stage_calls == 2:
             payload = {
                 "chapter_count": 2, "rationale": "当前仍有两次因果推进",
                 "core_theme": "选择与代价", "ending_direction": "OE",
@@ -73,9 +88,9 @@ class _PlannedEndingLLM(LLMProvider):
                 ],
             }
             return LLMResponse(json.dumps(payload, ensure_ascii=False), 0)
-        if self.calls in (3, 5):
+        if self.stage_calls in (3, 5):
             return LLMResponse("初稿推进了一个完整场景。", 0)
-        if self.calls in (4, 6):
+        if self.stage_calls in (4, 6):
             return LLMResponse("润色后的场景结果。", 0)
         return LLMResponse(json.dumps({"passed": True, "issues": [], "repair_instructions": []}), 0)
 
@@ -176,6 +191,19 @@ def test_continuation_context_keeps_source_tail_and_hard_facts():
     assert "Recent Source Scene" in block
 
 
+def test_continuation_context_excludes_download_site_trailer():
+    writer = EndingWriter(_FakeLLM(), SegmentIndex([], {}, {}, {}))
+    text = (
+        "第一章 正文\n故事完结。\n"
+        "==========\n更多精校小说尽在：https://example.test\n==========\n"
+    )
+
+    block = writer._build_continuation_context(text, StoryContext())
+
+    assert "故事完结" in block
+    assert "example.test" not in block
+
+
 def test_dead_support_character_is_not_mandatory_cast():
     event = PlotEvent(
         event_id="E1",
@@ -185,6 +213,7 @@ def test_dead_support_character_is_not_mandatory_cast():
         summary="甲已死亡",
         impact=EventImpact(),
         is_irreversible=True,
+        deceased_characters=["甲"],
     )
     context = StoryContext(
         characters={"甲": CharacterState(name="甲", role="support")},
@@ -195,6 +224,21 @@ def test_dead_support_character_is_not_mandatory_cast():
     assert "甲" not in writer._format_main_characters(context)
 
 
+def test_death_event_does_not_kill_witness_or_survivor():
+    event = PlotEvent(
+        "E1", 1, "setback", ["甲", "乙"], "乙战死，甲为乙收尸。",
+        EventImpact(), True, deceased_characters=["乙"],
+    )
+    context = StoryContext(
+        characters={"甲": CharacterState(name="甲", role="main", status="alive")},
+        events=[event],
+    )
+    writer = EndingWriter(_FakeLLM(), SegmentIndex([], {}, {}, {}))
+    assert not writer._is_dead_character("甲", context)
+    assert writer._is_dead_character("乙", context)
+    assert "甲" in writer._format_main_characters(context)
+
+
 def test_continue_story_uses_model_selected_multi_chapter_plan():
     llm = _PlannedEndingLLM()
     writer = EndingWriter(llm, SegmentIndex([], {}, {}, {}))
@@ -203,7 +247,7 @@ def test_continue_story_uses_model_selected_multi_chapter_plan():
 
     assert "第1章 风暴将至" in result
     assert "第2章 天明之前" in result
-    assert llm.calls == 7
+    assert llm.calls == 11
 
 
 def test_plan_accepts_generic_continuation_schema():

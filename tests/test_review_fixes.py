@@ -139,12 +139,12 @@ def test_state_store_accepts_new_affiliation_observation():
     assert store.characters_snapshot()["林凡"].realm == "魔宗"
 
 
-def test_state_store_replaces_current_unresolved_observation():
+def test_state_store_preserves_unmentioned_unresolved_thread():
     store = StateStore()
     store.update([CharacterState(name="林凡", unresolved=["寻找妹妹"])], [], [])
     store.update([CharacterState(name="林凡", unresolved=[])], [], [])
 
-    assert store.characters_snapshot()["林凡"].unresolved == []
+    assert store.characters_snapshot()["林凡"].unresolved == ["寻找妹妹"]
 
 
 def test_state_store_keeps_relationships_for_normalized_canonical_name():
@@ -285,6 +285,86 @@ def test_segment_index_supports_alias_filtering_and_removal():
 
     assert SegmentRetriever(index).retrieve_by_characters(["大老"], mode="strict")
     assert not SegmentRetriever(index).retrieve_excluding(["大老"], mode="hard")
+
+
+def test_shared_alias_does_not_tag_two_distinct_characters():
+    context = StoryContext(characters={
+        "李长老": CharacterState(name="李长老", aliases=["师父"]),
+        "王长老": CharacterState(name="王长老", aliases=["师父"]),
+    })
+    index = SegmentIndexService().build(context, [
+        Segment(1, "师父独自进门。", characters=["李长老", "王长老"]),
+        Segment(2, "李长老独自进门。"),
+    ])
+
+    assert index.segments[0].characters == []
+    assert index.segments[1].characters == ["李长老"]
+    assert "师父" not in index.char_index
+    assert [segment.segment_id for segment in SegmentRetriever(index).retrieve_by_characters(["李长老"], "strict")] == [2]
+
+
+def test_alias_matching_another_character_name_belongs_to_canonical_character():
+    context = StoryContext(characters={
+        "李长老": CharacterState(name="李长老", aliases=["王长老"]),
+        "王长老": CharacterState(name="王长老"),
+    })
+    index = SegmentIndexService().build(context, [
+        Segment(1, "李长老进门。"),
+        Segment(2, "王长老进门。"),
+    ])
+
+    assert [segment.characters for segment in index.segments] == [["李长老"], ["王长老"]]
+    assert [segment.segment_id for segment in SegmentRetriever(index).retrieve_by_characters(["王长老"], "strict")] == [2]
+
+
+def test_explicit_segment_tags_are_retained_without_character_context():
+    index = SegmentIndexService().build(
+        StoryContext(), [Segment(1, "人物尚未分析。", characters=["张三"])]
+    )
+
+    assert index.char_index == {"张三": [1]}
+
+
+def test_removal_rejects_unmatched_character_instead_of_saving_original():
+    index = SegmentIndex([Segment(1, "张三出场。")], {}, {}, {})
+    remover = CharacterRemover(_ResponseLLM("unused"), SegmentRetriever(index))
+
+    with pytest.raises(LLMResponseError, match="No story segments matched"):
+        remover.remove("张三出场。", ["张三"], StoryContext())
+
+
+def test_removal_rejects_each_unmatched_character():
+    index = SegmentIndex([Segment(1, "张三出场。", characters=["张三"])], {}, {}, {})
+    remover = CharacterRemover(_ResponseLLM("unused"), SegmentRetriever(index))
+
+    with pytest.raises(LLMResponseError, match="李四"):
+        remover.remove("张三出场。", ["张三", "李四"], StoryContext())
+
+
+def test_hard_removal_allows_shared_alias_for_another_character():
+    context = StoryContext(characters={
+        "李长老": CharacterState(name="李长老", aliases=["师父"]),
+        "王长老": CharacterState(name="王长老", aliases=["师父"]),
+    })
+    index = SegmentIndexService().build(context, [
+        Segment(1, "李长老进门。"),
+        Segment(2, "王长老被称作师父。"),
+    ])
+    remover = CharacterRemover(_ResponseLLM('{"action": "delete"}'), SegmentRetriever(index))
+
+    assert remover.remove("李长老进门。\n王长老被称作师父。", ["李长老"], context).content == "王长老被称作师父。"
+
+
+def test_hard_removal_rejects_target_left_in_untagged_segment():
+    index = SegmentIndex(
+        [Segment(1, "张三进门。", characters=["张三"]), Segment(2, "张三坐下。")],
+        {"张三": [1]}, {}, {},
+    )
+    response = json.dumps({"action": "delete"})
+    remover = CharacterRemover(_ResponseLLM(response), SegmentRetriever(index))
+
+    with pytest.raises(LLMResponseError, match="output still mentions"):
+        remover.remove("张三进门。\n张三坐下。", ["张三"], StoryContext())
 
 
 def test_filter_rejects_unknown_character_instead_of_writing_empty_file():

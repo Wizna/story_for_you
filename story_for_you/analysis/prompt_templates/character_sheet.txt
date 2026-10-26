@@ -5,6 +5,7 @@
 
 ## 输入
 - **章节正文**：`{{chapter_text}}`
+- **已知人物与伏笔 ID**：`{{known_characters}}`（历史记录只用于识别，不能当作本章新证据）
 
 ## 输出要求
 1. 返回 UTF-8 JSON 数组（无注释、无额外字段），每个元素代表一个人物：
@@ -18,9 +19,15 @@
     "status": "alive | dead | unknown",
     "location": "本章结束时所在位置，可为空",
     "goal": "当前明确目标，可为空",
-    "knowledge": ["该人物已经知道的关键事实，必须区别于读者知道的事实"]
+    "knowledge": ["该人物已经知道的关键事实，必须区别于读者知道的事实"],
+    "thread_updates": [
+      {"operation": "add | update | resolve", "thread_id": "沿用已知 ID；add 可为空，由程序分配",
+       "summary": "伏笔的当前描述", "evidence": "逐字引用本章支持这次变化的原文"}
+    ]
   }
 2. `role` 判定：叙事重点或频繁 POV → `main`；辅助主角/反派 → `support`；偶尔出现 → `minor`。
 3. 同一人物仅保留一次，其他明确属于该人物的称呼写入 `aliases`；“师父、长老、夫人”等通用称谓不能单独证明身份。不确定的信息返回空字符串或空数组。
 4. 数组最多 8 人，按剧情重要性排序；无人物则返回 `[]`。
+   unresolved 仅列本章明确观察到的未决事项，没提到不是已解决。只有本章明确解决才能输出 resolve；
+   update/resolve 必须引用已有 thread_id。保留未知信息，勿用空数组推翻历史事实。thread_updates 无变化返回 []。
 5. 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

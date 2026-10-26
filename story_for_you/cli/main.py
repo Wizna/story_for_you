@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from dataclasses import asdict, dataclass
@@ -20,6 +21,7 @@ from story_for_you.core.character_filter import CharacterFilter
 from story_for_you.core.character_remover import CharacterRemover
 from story_for_you.core.compressor import StoryCompressor
 from story_for_you.core.ending_writer import EndingWriter
+from story_for_you.evaluation.cli import app as evaluation_app
 from story_for_you.indexer import SegmentIndexService
 from story_for_you.indexer.retriever import SegmentRetriever
 from story_for_you.indexer.segment import Segment, SegmentIndex, deduplicate_overlapping_segments
@@ -33,11 +35,12 @@ from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.factory import build_llm
 from story_for_you.llm.telemetry import TelemetryLLMProvider
 from story_for_you.parser.text_splitter import TextChunk, TextSplitter
-from story_for_you.utils.file_io import compute_file_hash, read_text_file, write_text_file
+from story_for_you.utils.file_io import read_text_file, write_text_file
 
 app = typer.Typer(help="Story For You command line interface.")
 cache_app = typer.Typer(help="Cache management commands.")
 app.add_typer(cache_app, name="cache")
+app.add_typer(evaluation_app, name="eval")
 
 
 def _load_settings(config: Optional[Path]) -> Settings:
@@ -95,17 +98,15 @@ def _has_unresolved_threads(context: StoryContext) -> bool:
 
 
 def _announce_continue_plan(context: StoryContext, max_chapters: int) -> int:
-    has_resolution_review = _has_unresolved_threads(context)
     # The planner chooses the actual count at runtime; this is a conservative
     # upper-bound estimate for telemetry rather than a promise.
-    total = 3 + (2 * max_chapters) + (1 if has_resolution_review else 0)
+    total = 4 + (4 * max_chapters)
     phases = [
         "interpret user hint",
         f"plan 1-{max_chapters} continuation units (the model chooses the scope)",
-        "draft and polish each planned unit",
+        "plan scenes, draft, polish, then review and remember each unit",
     ]
-    if has_resolution_review:
-        phases.append("review unresolved threads")
+    phases.append("review remaining unresolved threads, including those introduced during generation")
     phases.extend(
         [
             "validate continuation for continuity and knowledge-boundary errors",
@@ -217,6 +218,13 @@ def _numeric_chapter_label(value: str | None) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _analysis_progress_key(input_file: Path, settings: Settings, chunks: list[TextChunk]) -> str:
+    fingerprint = _readonly_context_store(settings).fingerprint(input_file, settings)
+    boundaries = [(chunk.start_pos, chunk.end_pos, chunk.chapter) for chunk in chunks]
+    payload = fingerprint + json.dumps(boundaries, ensure_ascii=False)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
 def _load_artifacts(
@@ -342,24 +350,23 @@ def analyze(
     llm = _build_cli_llm(settings)
 
     if resume and settings.cache.enabled:
-        file_hash = compute_file_hash(input_file, length=24)
-        progress_store = ProgressStore(_cache_dir(settings))
-
-        existing_progress = progress_store.get_progress(file_hash)
-        if existing_progress:
-            typer.echo(
-                f"Found existing progress: {existing_progress.completed_chapters}/{existing_progress.total_chapters} chapters completed"
-            )
-            typer.echo(f"Resuming from chapter {existing_progress.completed_chapters + 1}...")
-
         chunks = _split_analysis_text(text, settings)
+        analysis_key = _analysis_progress_key(input_file, settings, chunks)
+        progress_store = ProgressStore(_cache_dir(settings))
+        existing_progress = progress_store.get_progress(analysis_key)
+        total_chapters = len(chunks)
+        if existing_progress and existing_progress.total_units == total_chapters:
+            typer.echo(
+                f"Found existing progress: {existing_progress.completed_units}/{total_chapters} units completed"
+            )
+            typer.echo(f"Resuming from unit {existing_progress.completed_units + 1}...")
+
         chapters = [chunk.content for chunk in chunks]
         chapter_labels = [_numeric_chapter_label(chunk.chapter) for chunk in chunks]
-        total_chapters = len(chapters)
         typer.echo(f"Preparing {total_chapters} chapter-sized chunk(s) for analysis...")
         remaining_chapters = total_chapters
-        if existing_progress and existing_progress.total_chapters == total_chapters:
-            remaining_chapters = max(total_chapters - existing_progress.completed_chapters, 0)
+        if existing_progress and existing_progress.total_units == total_chapters:
+            remaining_chapters -= existing_progress.completed_units
         _set_llm_plan(llm, "analyze", _analysis_request_estimate(remaining_chapters))
         _announce_analysis_plan(remaining_chapters)
 
@@ -371,12 +378,15 @@ def analyze(
         )
 
         with typer.progressbar(length=total_chapters, label="Analyzing chapters") as progress:
+            if existing_progress and existing_progress.total_units == total_chapters:
+                progress.update(existing_progress.completed_units)
+
             def update_progress(current: int, total: int) -> None:
                 progress.update(1)
 
             context = analyzer.analyze(
                 chapters,
-                file_hash,
+                analysis_key,
                 progress_callback=update_progress,
                 chapter_labels=chapter_labels,
             )
@@ -456,13 +466,15 @@ def compress(
 ) -> None:
     """Compress story beats according to the configured level."""
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
-    _set_llm_plan(cc.llm, "compress", 1)
-    _announce_llm_plan("compress", 1, ["rewrite selected story segments"])
+    _set_llm_plan(cc.llm, "compress", None)
+    _announce_llm_plan("compress", None, ["rewrite selected story segments in bounded batches"])
     compressor = StoryCompressor(
         cc.llm, cc.segment_index, level=level, levels=cc.settings.compress.levels.__dict__,
         rendering_limits=cc.settings.rendering,
+        context_window=cc.settings.llm.context_window,
+        max_output_tokens=cc.settings.llm.max_tokens,
     )
-    compressed = compressor.compress(cc.text, cc.context)
+    compressed = compressor.compress(cc.context)
     target = output or input_file.with_name(f"{input_file.stem}_compressed.txt")
     write_text_file(target, compressed)
     typer.echo(f"Compressed story saved to {target}")
@@ -550,6 +562,8 @@ def continue_story(
         cc.llm, cc.segment_index,
         temperatures=cc.settings.ending.temperatures,
         rendering_limits=cc.settings.rendering,
+        context_window=cc.settings.llm.context_window,
+        max_output_tokens=cc.settings.llm.max_tokens,
     )
     continuation = writer.continue_story(
         cc.text, cc.context, hint, max_chapters=effective_max_chapters

@@ -1,0 +1,48 @@
+# 单元承接审查与记忆更新
+
+## 已知故事和本单元计划
+{{context_block}}
+
+## 已知伏笔 ID
+{{known_threads}}
+
+## 第 {{unit_number}} 单元实际成稿
+{{unit_text}}
+
+审查实际正文是否承接前一场景，遵守本单元视角、角色知情范围、物品归属、伤势、生死、时间地点与因果。
+只执行本单元的推进要求，不要求提前完成后续单元或全部读者结局要求。
+未来计划不是已发生事实；不可因为计划写了某结果就忽略正文矛盾。
+passed=false 时给出具体 issues 和 repair_instructions，不更新记忆。
+passed=true 时只提取本单元实际发生且有原文证据的状态变化；没提及的旧事实保留，不得凭空推进计划。
+每个 characters/event 的 evidence 必须逐字摘自本单元；角色 knowledge 只记录该角色已获知的事实。
+relationships 只列本单元改变的关系；物品变化需写入 events 的 impact/summary。
+thread_updates 仅在证据支持新增、推进、解决时输出；update/resolve 使用已知 ID，add 的 ID 可为空。
+严格返回 JSON 对象：
+{
+  "passed": true,
+  "issues": [],
+  "repair_instructions": [],
+  "summary": "本单元已发生的行动、代价、末尾场景和信息差摘要",
+  "characters": [{
+    "name": "人物主名", "aliases": [], "role": "main", "realm": null,
+    "personality": [], "unresolved": [], "status": "unknown",
+    "location": null, "goal": null, "knowledge": [],
+    "thread_updates": [], "evidence": "本单元原文"
+  }],
+  "events": [{
+    "event_id": "临时ID", "chapter": 0, "type": "progress",
+    "participants": ["人物主名"], "summary": "有后续约束力的变化，包括关系与物品归属",
+    "impact": {"power_shifts": {}, "relation_changes": {}, "world_flags": []},
+    "is_irreversible": false, "deceased_characters": [], "evidence": "本单元原文"
+  }],
+  "relationships": [{
+    "source": "人物主名", "targets": ["人物主名"], "relation_type": "关系类型",
+    "sentiment": "positive | neutral | negative", "description": "变化后的关系",
+    "evidence": "本单元原文", "confidence": 1.0, "chapter": 0
+  }],
+  "story_state": null,
+  "world_evidence": "世界状态有变化时逐字摘录本单元证据，否则为空"
+}
+无角色、事件或关系变化时返回对应空数组。story_state 仅在本单元改变世界状态时返回完整 StoryState
+（current_arc、world_tension、major_conflicts、time_constraints、unresolved_events、thread_updates），否则为 null。
+世界伏笔的已知 ID 见上下文；没提到的旧线索不算解决，resolve 必须有本单元证据。

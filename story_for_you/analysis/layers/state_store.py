@@ -11,6 +11,7 @@ from story_for_you.analysis.context import (
     StoryState,
 )
 from story_for_you.analysis.names import normalize_character_label
+from story_for_you.analysis.threads import StoryThread, thread_id
 from story_for_you.core.exceptions import LLMResponseError
 
 if TYPE_CHECKING:
@@ -49,10 +50,28 @@ class StateStore:
             self._merge_relationship(relationship)
         for event in events:
             self._event_log.append(event)
+            for name in event.deceased_characters:
+                owner = self._resolve_label(name)
+                if owner in self._characters:
+                    self._characters[owner].status = "dead"
 
     def set_story_state(self, story_state: StoryState) -> None:
         """Persist the latest synthesized story state."""
-        self._story_state = story_state
+        prior = self._story_state
+        existing = CharacterState(
+            name="世界", unresolved=list(prior.unresolved_events) if prior else [],
+            threads=deepcopy(prior.threads) if prior else [],
+        )
+        incoming = CharacterState(
+            name="世界", unresolved=story_state.unresolved_events,
+            threads=story_state.threads, thread_updates=story_state.thread_updates,
+        )
+        self._merge_threads(existing, incoming)
+        updated = deepcopy(story_state)
+        updated.threads = existing.threads
+        updated.unresolved_events = existing.unresolved
+        updated.thread_updates = []
+        self._story_state = updated
 
     def characters_snapshot(self) -> dict[str, CharacterState]:
         """Return a shallow copy of known characters."""
@@ -92,7 +111,11 @@ class StateStore:
         owner_name = self._resolve_owner(character)
         existing = self._characters.get(owner_name or character.name)
         if not existing:
-            self._characters[character.name] = deepcopy(character)
+            existing = deepcopy(character)
+            existing.threads = []
+            existing.unresolved = []
+            self._merge_threads(existing, character)
+            self._characters[character.name] = existing
             self._register_aliases(character.name, [character.name, *character.aliases])
             return
         if character.aliases:
@@ -101,10 +124,7 @@ class StateStore:
             existing.aliases = sorted(set(existing.aliases + [character.name]))
         if character.personality:
             existing.personality = list(dict.fromkeys(existing.personality + character.personality))
-        # The extractor describes the character's current open threads for the
-        # current chapter.  Replace that observation so resolved threads do not
-        # remain immortal in every later continuation prompt.
-        existing.unresolved = list(dict.fromkeys(character.unresolved))
+        self._merge_threads(existing, character)
         if _ROLE_PRIORITY.get(character.role, 0) > _ROLE_PRIORITY.get(existing.role, 0):
             existing.role = character.role
         # Character extraction is chapter-local.  A supplied affiliation is a
@@ -120,6 +140,36 @@ class StateStore:
         if character.knowledge:
             existing.knowledge = list(dict.fromkeys(existing.knowledge + character.knowledge))
         self._register_aliases(existing.name, [existing.name, *existing.aliases, character.name])
+
+    def _merge_threads(self, existing: CharacterState, incoming: CharacterState) -> None:
+        records = {item.thread_id: deepcopy(item) for item in existing.threads}
+        for summary in existing.unresolved:
+            if any(item.summary == summary for item in records.values()):
+                continue
+            key = thread_id(existing.name, summary)
+            records.setdefault(key, StoryThread(key, summary))
+        for record in incoming.threads:
+            records[record.thread_id] = deepcopy(record)
+        previous_summaries = {item.summary for item in records.values()}
+        for change in incoming.thread_updates:
+            key = change.thread_id or thread_id(existing.name, change.summary)
+            if change.operation != "add" and key not in records:
+                raise LLMResponseError(f"Unknown thread ID for {existing.name}: {key}")
+            if change.operation == "add" and key in records:
+                # Repeated observations cannot reopen an already resolved thread.
+                continue
+            records[key] = StoryThread(
+                key, change.summary,
+                "resolved" if change.operation == "resolve" else "open", change.evidence,
+            )
+        known_summaries = previous_summaries | {item.summary for item in records.values()}
+        for summary in incoming.unresolved:
+            if summary not in known_summaries:
+                key = thread_id(existing.name, summary)
+                records.setdefault(key, StoryThread(key, summary))
+        existing.threads = list(records.values())
+        existing.unresolved = [item.summary for item in records.values() if item.status == "open"]
+        existing.thread_updates = []
 
     def _merge_relationship(self, relationship: Relationship) -> None:
         source = self._resolve_label(relationship.source)
@@ -231,11 +281,12 @@ class StateStore:
             if not isinstance(name, str):
                 raise LLMResponseError("StateStore character keys must be strings.")
             character = CharacterState.from_dict(char_data, name_hint=name)
+            instance._merge_threads(character, CharacterState(name=character.name))
             instance._characters[name] = character
             instance._register_aliases(character.name, [character.name, *character.aliases])
         story_state_data = payload.get("story_state")
         if story_state_data is not None:
-            instance._story_state = StoryState.from_dict(story_state_data)
+            instance.set_story_state(StoryState.from_dict(story_state_data))
         for event_data in events_payload:
             instance._event_log.append(PlotEvent.from_dict(event_data))
         return instance

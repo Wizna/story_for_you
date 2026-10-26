@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from story_for_you.cli.main import _split_analysis_text, _split_text
+from story_for_you.cli.main import _analysis_progress_key, _split_analysis_text, _split_text
 from story_for_you.config.settings import Settings
 
 
@@ -58,3 +58,20 @@ def test_analysis_split_prefers_real_chapter_boundaries_when_available():
 
     assert [chunk.chapter for chunk in chunks] == ["1", "2", "3"]
     assert [chunk.content for chunk in chunks] == ["一\n甲。", "二\n乙。", "三\n丙。"]
+
+
+def test_analysis_progress_key_changes_with_settings_and_chunk_boundaries(tmp_path):
+    source = tmp_path / "story.txt"
+    source.write_text("第一章\n甲。\n第二章\n乙。", encoding="utf-8")
+    settings = Settings()
+    chunks = _split_analysis_text(source.read_text(encoding="utf-8"), settings)
+    original = _analysis_progress_key(source, settings, chunks)
+
+    settings.analysis.window_size += 1
+    assert _analysis_progress_key(source, settings, chunks) != original
+    settings.analysis.window_size -= 1
+    settings.llm.model = "another-model"
+    assert _analysis_progress_key(source, settings, chunks) != original
+    settings.llm.model = Settings().llm.model
+    chunks[0].end_pos += 1
+    assert _analysis_progress_key(source, settings, chunks) != original

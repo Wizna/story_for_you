@@ -771,8 +771,8 @@ class StoryCompressor:
         self.segment_index = segment_index
         self.level = level  # light | medium | heavy
 
-    def compress(self, text: str, context: StoryContext) -> str:
-        """压缩小说文本
+    def compress(self, context: StoryContext) -> str:
+        """按原文顺序分批压缩选中片段
 
         利用 context 信息：
         - 保护主要人物相关情节
@@ -916,6 +916,17 @@ class RemoveResult:
 #### 4.6.4 自适应续写 (`ending_writer.py`)
 
 当前实现先生成结构化 `ContinuationPlan`，由模型根据全局状态、原文证据和读者要求判断叙事阶段、范围、单元粒度（回/场景/结构段）和单元数。单元可以是一回、一个场景或一个结构段，不预设为结局；随后逐单元执行初稿与润色，最后对合并文本做跨单元承接和一致性审查。`CharacterState` 除身份和性格外，还保存 `status`、`location`、`goal` 与 `knowledge`，用于约束人物在不同单元的行动和知情范围。
+
+每个单元现在先执行场景因果规划，再生成初稿、润色、审查与记忆提取。`core/ending/memory.py`
+使用独立的 `StateStore` 保存已通过审查的续写状态、历史摘要和引文，不修改原作分析；
+后续单元同时接收完整跨章计划、实际状态和近期原文。死亡主体由 `PlotEvent.deceased_characters`
+明确表示；人物与世界伏笔由 `StoryThread`/`ThreadUpdate` 维护稳定 ID 和解决证据。
+证据召回优先当前人物及其相关历史，全部不可逆事件保留；预算不足时明确失败。
+
+`core/ending/revision.py` 只应用模型返回的唯一引用替换，拒绝失配、歧义、重叠和空全文，
+不在末尾统一追加桥段。修改后再审查，最后检查计划章节标题的完整性与顺序。
+`BudgetedLLMProvider` 为每次续写调用保留输出预算；OpenAI-compatible/Ollama 适配器会识别长度截断。
+评测入口位于 `evaluation/`；使用步骤和未验证边界见 [续写质量与评测](continuation_quality.md)。
 
 ```python
 class EndingWriter:
@@ -1322,10 +1333,10 @@ uv run story --help
 | 命令 | 请求预算 | 说明 |
 | ---- | -------- | ---- |
 | `analyze` | 最多 `chapter_chunks * 5 + 1` | 每章人物、关系、摘要、事件、状态；单角色跳过关系，无事件跳过状态；最后 1 次风格提取 |
-| `compress` | 缓存命中时 1 次 | 没有缓存时先完整分析；压缩本身只做一次改写 |
+| `compress` | 缓存命中时按预算分批 | 没有缓存时先完整分析；选中片段按原文顺序分批改写 |
 | `filter` | 缓存命中时约等于断点数 | 检索命中的原文直接拼接，只对 gap 生成桥接 |
 | `remove` | 缓存命中时约等于受影响段落数 | 无关段落原样保留，受影响段落才评估/改写 |
-| `continue` | `3 + 2×max_units` 的上限估算，存在伏笔时再加 1 次 | hint 解析、续写计划、每个单元初稿/润色、承接审查、验证；最终修复只在验证失败时触发 |
+| `continue` | `4 + 4×max_units` 的无修复上限估算 | hint 解析、续写计划、每单元场景规划/初稿/润色/审查与记忆、伏笔审查和终稿验证；伏笔已全部解决时跳过该审查，局部修复与重审按需增加 |
 
 ```python
 class FakeLLM(LLMProvider):

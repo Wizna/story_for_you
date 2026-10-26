@@ -5,6 +5,7 @@ from dataclasses import asdict
 from typing import Any
 
 from story_for_you.analysis.context import PlotEvent, StoryState
+from story_for_you.analysis.threads import ThreadUpdate
 from story_for_you.analysis.prompting import fill_template, load_template
 from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
@@ -70,12 +71,21 @@ class StateSynthesizer:
             raise LLMResponseError(f"Invalid story arc: {current_arc!r}")
         if world_tension not in _VALID_TENSIONS:
             raise LLMResponseError(f"Invalid world tension: {world_tension!r}")
+        updates = data.get("thread_updates", [])
+        if not isinstance(updates, list):
+            raise LLMResponseError("World thread_updates must be a list.")
+        changes = [ThreadUpdate.from_dict(item) for item in updates]
+        evidence = "".join("\n".join(event.summary + "\n" + event.evidence for event in events).split())
+        for change in changes:
+            if "".join(change.evidence.split()) not in evidence:
+                raise LLMResponseError("World thread changes must quote current event evidence.")
         return StoryState(
             current_arc=current_arc,
             world_tension=world_tension,
             major_conflicts=self._required_str_list(data.get("major_conflicts"), "major_conflicts")[:5],
             time_constraints=self._required_str_list(data.get("time_constraints"), "time_constraints")[:3],
-            unresolved_events=self._required_str_list(data.get("unresolved_events"), "unresolved_events")[:5],
+            unresolved_events=self._required_str_list(data.get("unresolved_events"), "unresolved_events"),
+            thread_updates=changes,
         )
 
     def _required_str_list(self, value: Any, field_name: str) -> list[str]:

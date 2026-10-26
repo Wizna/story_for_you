@@ -116,7 +116,9 @@ class AnalyzerMixin:
 
         Returns the updated story state and the chapter summary.
         """
-        characters = self.character_extractor.extract(chapter_text)
+        characters = self.character_extractor.extract(
+            chapter_text, known_characters=self.state_store.characters_snapshot().values()
+        )
         # Register new names before later extractors build their roster.  This
         # keeps aliases such as "祖父" and "二老" mapped to the canonical
         # characters discovered in earlier chapters.
@@ -140,6 +142,7 @@ class AnalyzerMixin:
         self.state_store.update([], relationships, events)
         if story_state:
             self.state_store.set_story_state(story_state)
+            story_state = self.state_store.story_snapshot()
 
         return story_state, summary
 

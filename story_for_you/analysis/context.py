@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, TYPE_CHECKING
 
 from story_for_you.exceptions import LLMResponseError
+from story_for_you.analysis.threads import StoryThread, ThreadUpdate
 
 if TYPE_CHECKING:
     from story_for_you.config.settings import RenderingLimits
@@ -230,6 +231,8 @@ class PlotEvent:
     summary: str
     impact: EventImpact
     is_irreversible: bool = False
+    deceased_characters: list[str] = field(default_factory=list)
+    evidence: str = ""
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PlotEvent":
@@ -251,6 +254,11 @@ class PlotEvent:
             summary=_required_str(payload, "summary", "PlotEvent"),
             impact=EventImpact.from_dict(payload.get("impact")),
             is_irreversible=_required_bool(payload, "is_irreversible", "PlotEvent"),
+            deceased_characters=(
+                _required_str_list(payload, "deceased_characters", "PlotEvent")
+                if "deceased_characters" in payload else []
+            ),
+            evidence=_optional_str(payload, "evidence", "PlotEvent") or "",
         )
 
 
@@ -308,6 +316,8 @@ class CharacterState:
     location: str | None = None
     goal: str | None = None
     knowledge: list[str] = field(default_factory=list)
+    threads: list[StoryThread] = field(default_factory=list)
+    thread_updates: list[ThreadUpdate] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any], name_hint: str = "") -> "CharacterState":
@@ -327,6 +337,9 @@ class CharacterState:
         status = payload.get("status", "unknown")
         if not isinstance(status, str) or status not in {"alive", "dead", "unknown"}:
             raise LLMResponseError("CharacterState.status must be alive, dead, or unknown.")
+        for key in ("threads", "thread_updates"):
+            if not isinstance(payload.get(key, []), list):
+                raise LLMResponseError(f"CharacterState.{key} must be a list.")
         return cls(
             name=_required_str(payload, "name", "CharacterState") or name_hint,
             aliases=_required_str_list(payload, "aliases", "CharacterState"),
@@ -339,6 +352,8 @@ class CharacterState:
             location=_optional_str(payload, "location", "CharacterState"),
             goal=_optional_str(payload, "goal", "CharacterState"),
             knowledge=_required_str_list(payload, "knowledge", "CharacterState") if "knowledge" in payload else [],
+            threads=[StoryThread.from_dict(item) for item in payload.get("threads", [])],
+            thread_updates=[ThreadUpdate.from_dict(item) for item in payload.get("thread_updates", [])],
         )
 
 
@@ -349,6 +364,8 @@ class StoryState:
     major_conflicts: list[str]
     time_constraints: list[str]
     unresolved_events: list[str]
+    threads: list[StoryThread] = field(default_factory=list)
+    thread_updates: list[ThreadUpdate] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "StoryState":
@@ -364,12 +381,17 @@ class StoryState:
         world_tension = _required_str(payload, "world_tension", "StoryState")
         if world_tension not in _VALID_WORLD_TENSIONS:
             raise LLMResponseError(f"Invalid StoryState.world_tension: {world_tension!r}")
+        for key in ("threads", "thread_updates"):
+            if not isinstance(payload.get(key, []), list):
+                raise LLMResponseError(f"StoryState.{key} must be a list.")
         return cls(
             current_arc=current_arc,
             world_tension=world_tension,
             major_conflicts=_required_str_list(payload, "major_conflicts", "StoryState"),
             time_constraints=_required_str_list(payload, "time_constraints", "StoryState"),
             unresolved_events=_required_str_list(payload, "unresolved_events", "StoryState"),
+            threads=[StoryThread.from_dict(item) for item in payload.get("threads", [])],
+            thread_updates=[ThreadUpdate.from_dict(item) for item in payload.get("thread_updates", [])],
         )
 
 
@@ -382,14 +404,16 @@ class StoryContext:
     story_state: StoryState | None = None
     writing_style: WritingStyle | None = None
 
-    def for_prompt(self, limits: RenderingLimits | None = None) -> dict[str, Any]:
+    def for_prompt(
+        self, limits: RenderingLimits | None = None, *, focus_characters: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Serialize the context into prompt-ready textual sections."""
         if limits is None:
             from story_for_you.config.settings import RenderingLimits
             limits = RenderingLimits()
         sections = {
             "world": self._render_world_section(limits),
-            "characters": self._render_character_section(limits),
+            "characters": self._render_character_section(limits, focus_characters),
             "plot": self._render_plot_section(limits),
             "chapters": self._render_chapter_section(limits),
             "style": self._render_style_section(limits),
@@ -460,22 +484,27 @@ class StoryContext:
             lines.append("World-level unresolved: " + "; ".join(self.story_state.unresolved_events[-limits.max_unresolved_events:]))
         return "\n".join(lines)
 
-    def _render_character_section(self, limits: RenderingLimits) -> str:
+    def _render_character_section(
+        self, limits: RenderingLimits, focus_characters: list[str] | None = None,
+    ) -> str:
         if not self.characters:
             return ""
         role_order = {"main": 0, "support": 1, "minor": 2}
+        focus = set(focus_characters or [])
         ordered = sorted(
             self.characters.values(),
-            key=lambda char: (role_order.get(char.role, 3), char.name.lower()),
+            key=lambda char: (char.name not in focus, role_order.get(char.role, 3), char.name.lower()),
         )
         lines: list[str] = []
-        for character in ordered[:limits.max_characters]:
+        for character in ordered[:max(limits.max_characters, len(focus))]:
             traits = ", ".join(character.personality[:limits.max_personality_traits]) if character.personality else "traits unknown"
-            unresolved = ", ".join(character.unresolved[:limits.max_unresolved_per_char]) if character.unresolved else ""
+            active_threads = character.unresolved if character.name in focus else character.unresolved[:limits.max_unresolved_per_char]
+            unresolved = ", ".join(active_threads)
             # Include aliases so LLM knows the name mappings
             aliases_part = f" (别名: {', '.join(character.aliases[:limits.max_aliases])})" if character.aliases else ""
             relations = []
-            for relation in character.relationships[:limits.max_relationships_per_char]:
+            related = character.relationships if character.name in focus else character.relationships[:limits.max_relationships_per_char]
+            for relation in related:
                 targets = ", ".join(relation.targets) or "unknown"
                 detail = f"{targets}: {relation.relation_type}/{relation.sentiment}"
                 if relation.description:
@@ -486,7 +515,7 @@ class StoryContext:
             status = character.status
             location = character.location or "unknown"
             goal = character.goal or "unknown"
-            knowledge = ", ".join(character.knowledge[:3]) if character.knowledge else ""
+            knowledge = ", ".join(character.knowledge if character.name in focus else character.knowledge[:3])
             state_part = f" | state: {status}, location={location}, goal={goal}"
             if knowledge:
                 state_part += f", knows={knowledge}"

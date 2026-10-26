@@ -96,14 +96,17 @@ class OpenAICompatibleProvider(LLMProvider):
             )
             cache_miss_prompt_tokens = usage.get("prompt_cache_miss_tokens") or 0
 
-        return LLMResponse(
+        result = LLMResponse(
             content=content,
             tokens_used=tokens_used,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             cache_hit_prompt_tokens=cache_hit_prompt_tokens,
             cache_miss_prompt_tokens=cache_miss_prompt_tokens,
+            finish_reason=data["choices"][0].get("finish_reason"),
         )
+        result.ensure_complete()
+        return result
 
     def generate_stream(
         self, prompt: CacheablePrompt, system: str = "", options: dict | None = None
@@ -129,6 +132,8 @@ class OpenAICompatibleProvider(LLMProvider):
                     except json.JSONDecodeError:
                         continue
                     delta = data.get("choices", [{}])[0].get("delta", {})
+                    for choice in data.get("choices", []):
+                        LLMResponse("", 0, finish_reason=choice.get("finish_reason")).ensure_complete()
                     chunk = delta.get("content")
                     if chunk:
                         yield chunk
@@ -206,9 +211,9 @@ class OpenAICompatibleProvider(LLMProvider):
         return "deepseek.com" in self.base_url.lower()
 
     def _chat_completions_path(self) -> str:
-        if self._is_deepseek_endpoint():
-            return "/chat/completions"
-        return "/v1/chat/completions"
+        if self._is_deepseek_endpoint() or httpx.URL(self.base_url).path.rstrip("/").endswith("/v1"):
+            return "chat/completions"
+        return "v1/chat/completions"
 
     @staticmethod
     def _map_status_error(exc: httpx.HTTPStatusError) -> Exception:

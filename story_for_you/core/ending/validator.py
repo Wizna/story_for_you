@@ -70,11 +70,16 @@ class ContinuationValidator:
         passed = payload.get("passed")
         if not isinstance(passed, bool):
             raise LLMResponseError("Continuation validation JSON must include boolean 'passed'.")
-        return ContinuationValidationResult(
+        result = ContinuationValidationResult(
             passed=passed,
             issues=self._str_list(payload.get("issues")),
             repair_instructions=self._str_list(payload.get("repair_instructions")),
         )
+        if result.passed and (result.issues or result.repair_instructions):
+            raise LLMResponseError("Passed validation cannot contain unresolved issues or repairs.")
+        if not result.passed and not result.issues:
+            raise LLMResponseError("Failed validation must identify a concrete issue.")
+        return result
 
     def _str_list(self, value: Any) -> list[str]:
         if not isinstance(value, list):

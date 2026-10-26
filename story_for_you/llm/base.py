@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from typing import Iterator, Self
 
 from story_for_you.utils.prompting import CacheablePrompt
+from story_for_you.exceptions import LLMResponseError
 
 
 @dataclass
@@ -13,6 +14,13 @@ class LLMResponse:
     completion_tokens: int = 0
     cache_hit_prompt_tokens: int = 0
     cache_miss_prompt_tokens: int = 0
+    finish_reason: str | None = None
+
+    def ensure_complete(self) -> None:
+        if self.finish_reason in {"length", "max_tokens", "max_output_tokens"}:
+            raise LLMResponseError("Model output was truncated by the output limit; no partial result was accepted.")
+        if self.finish_reason in {"content_filter", "tool_calls", "function_call"}:
+            raise LLMResponseError(f"Model did not finish a text response: {self.finish_reason}")
 
 
 class LLMProvider(ABC):

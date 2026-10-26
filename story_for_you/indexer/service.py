@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from story_for_you.analysis.context import StoryContext
 from story_for_you.indexer.segment import Gap, Segment, SegmentIndex
-from story_for_you.indexer.tagger import CharacterTagger
+from story_for_you.indexer.tagger import CharacterTagger, unambiguous_alias_owners
 
 
 class SegmentIndexService:
@@ -15,6 +15,7 @@ class SegmentIndexService:
         """Build a fresh SegmentIndex for the provided context."""
         tagger = CharacterTagger(context)
         tagged_segments = tagger.tag(segments)
+        alias_owners = unambiguous_alias_owners(context)
         char_index: dict[str, list[int]] = {}
         chapter_index: dict[int, list[int]] = {}
         for segment in tagged_segments:
@@ -23,7 +24,7 @@ class SegmentIndexService:
                 character = context.characters.get(name)
                 if character:
                     for alias in character.aliases:
-                        if alias:
+                        if alias and alias_owners.get(alias.casefold()) == name:
                             char_index.setdefault(alias, []).append(segment.segment_id)
             if segment.chapter is not None:
                 try:

@@ -3,9 +3,12 @@ from __future__ import annotations
 from typing import Any, Iterable
 
 import logging
+import json
+from dataclasses import asdict
 
 from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.names import normalize_character_label
+from story_for_you.analysis.threads import ThreadUpdate
 from story_for_you.analysis.prompting import (
     CacheablePrompt,
     clamp_text_middle,
@@ -42,11 +45,16 @@ class CharacterExtractor:
         self.repair_template = load_template("character_sheet_repair")
         self.prompt_budget = prompt_budget
 
-    def extract(self, text: str) -> list[CharacterState]:
+    def extract(self, text: str, known_characters: Iterable[CharacterState] = ()) -> list[CharacterState]:
         """Return structured character states for the text."""
-        prompt = self._build_prompt(text)
+        prompt = self._build_prompt(text, known_characters)
         characters = self._prompt_characters(prompt)
         merged = self.merge_aliases(characters)
+        source = "".join(text.split())
+        for character in merged:
+            for change in character.thread_updates:
+                if "".join(change.evidence.split()) not in source:
+                    raise LLMResponseError("Thread update evidence must quote the supplied chapter.")
         return self.personality_analyzer.analyze(merged)
 
     def merge_aliases(self, characters: Iterable[CharacterState]) -> list[CharacterState]:
@@ -60,13 +68,18 @@ class CharacterExtractor:
             self._merge_into(target, character)
         return roster
 
-    def _build_prompt(self, text: str) -> CacheablePrompt:
+    def _build_prompt(self, text: str, known_characters: Iterable[CharacterState] = ()) -> CacheablePrompt:
         chapter_text = text.strip()
+        roster = [
+            {"name": char.name, "aliases": char.aliases, "threads": [asdict(item) for item in char.threads]}
+            for char in known_characters
+        ]
         prompt, truncated = render_cacheable_prompt_with_budget(
             self.template,
             budget=self.prompt_budget,
             prefix_key="chapter_text",
             prefix_value=chapter_text,
+            known_characters=json.dumps(roster, ensure_ascii=False),
         )
         if truncated:
             logger.debug("Character prompt truncated to %s chars", len(prompt.render()))
@@ -149,6 +162,9 @@ class CharacterExtractor:
         if goal is not None and not isinstance(goal, str):
             raise LLMResponseError("Character goal must be a string or null.")
         knowledge = self._normalize_str_list(data.get("knowledge", []))
+        updates = data.get("thread_updates", [])
+        if not isinstance(updates, list):
+            raise LLMResponseError("Character thread_updates must be a list.")
         return CharacterState(
             name=name,
             aliases=aliases,
@@ -161,6 +177,7 @@ class CharacterExtractor:
             location=location.strip() or None if isinstance(location, str) else None,
             goal=goal.strip() or None if isinstance(goal, str) else None,
             knowledge=knowledge,
+            thread_updates=[ThreadUpdate.from_dict(item) for item in updates],
         )
 
     def _normalize_role(self, value: Any) -> str:
@@ -202,6 +219,7 @@ class CharacterExtractor:
             self._merge_list(target.personality, incoming.personality)
         )
         target.unresolved = self._merge_list(target.unresolved, incoming.unresolved)
+        target.thread_updates.extend(incoming.thread_updates)
         target.realm = target.realm or incoming.realm
         if incoming.status != "unknown":
             target.status = incoming.status

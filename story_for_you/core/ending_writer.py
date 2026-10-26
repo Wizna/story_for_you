@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+import json
 
 from story_for_you.analysis.context import StoryContext, WritingStyle
 from story_for_you.config.settings import EndingPhaseTemperatures, RenderingLimits
@@ -11,6 +12,8 @@ from story_for_you.core.ending import (
     HintInterpreter,
     StyleEnforcer,
 )
+from story_for_you.core.ending.memory import ContinuationMemory
+from story_for_you.core.ending.revision import TextEdit, apply_edits
 from story_for_you.core.exceptions import GenerationError, LLMResponseError
 from story_for_you.core.prompting import (
     format_context_sections,
@@ -20,27 +23,21 @@ from story_for_you.core.prompting import (
     load_template,
 )
 from story_for_you.indexer.segment import Segment, SegmentIndex
+from story_for_you.indexer.tagger import unambiguous_alias_owners
 from story_for_you.llm.base import LLMProvider
+from story_for_you.llm.budget import BudgetedLLMProvider
 from story_for_you.llm.telemetry import telemetry_options
+from story_for_you.parser.text_splitter import strip_trailing_promotion
 from story_for_you.utils.json_utils import load_json_response
 from story_for_you.utils.prompting import SNIPPET_EXCERPT_LEN, build_cacheable_prompt
 
 logger = logging.getLogger(__name__)
 
-_MAX_FOCUS_CHARACTERS = 4
-_FOCUS_CHARACTERS_FALLBACK = 2
-_MAX_SEGMENT_SNIPPETS = 4
-_MAX_CAST_IN_ANCHORS = 4
 _MAX_CONFLICT_ANCHORS = 2
-_MIN_DRAFT_PARAGRAPHS = 3
-_MIN_PARAGRAPH_CHARS = 120
-_MAX_BEAT_PARAGRAPHS = 4
-_VALID_RESOLUTION_STATUSES = {"ok", "needs_bridges", "blocked"}
+_VALID_RESOLUTION_STATUSES = {"ok", "needs_changes", "blocked"}
 _MAX_FINAL_REPAIR_ATTEMPTS = 1
-_MAX_HARD_FACTS = 20
 _SOURCE_TAIL_CHARS = 6000
 _MAX_RECENT_SCENES = 4
-_DEATH_MARKERS = ("死亡", "身亡", "战死", "尸体", "死去", "毙命", "殒命", "去世", "葬")
 
 
 @dataclass
@@ -122,12 +119,14 @@ class EndingWriter:
         segment_index: SegmentIndex,
         temperatures: EndingPhaseTemperatures | None = None,
         rendering_limits: RenderingLimits | None = None,
+        context_window: int = 1_000_000,
+        max_output_tokens: int = 32768,
     ):
-        self.llm = llm
+        self.llm = BudgetedLLMProvider(llm, context_window, max_output_tokens)
         self.segment_index = segment_index
         self._limits = rendering_limits or RenderingLimits()
-        self._hint_interpreter = HintInterpreter(llm, rendering_limits=self._limits)
-        self._ending_validator = EndingValidator(llm)
+        self._hint_interpreter = HintInterpreter(self.llm, rendering_limits=self._limits)
+        self._ending_validator = EndingValidator(self.llm)
         temps = temperatures or EndingPhaseTemperatures()
         self._phase_llm_options = {
             "outline": {"temperature": temps.outline, "no_think": True},
@@ -146,6 +145,7 @@ class EndingWriter:
         self.resolution_template = load_template("ending_resolution")
         self.final_repair_template = load_template("ending_final_repair")
         self.plan_template = load_template("ending_plan")
+        self.scene_template = load_template("ending_scene_plan")
 
     def continue_story(
         self,
@@ -159,10 +159,11 @@ class EndingWriter:
         if max_chapters < 1:
             raise ValueError("max_chapters must be positive")
         style = context.writing_style
-        context_block = self._build_continuation_context(text, context)
-        style_anchors = self._build_style_anchors(context)
         directives = self._hint_interpreter.interpret(hint, context)
         hint_payload = directives.for_prompt()
+        context_block = self._build_continuation_context(
+            text, context, focus_characters=directives.focus_characters,
+        )
 
         plan = self._phase_plan(context_block, hint_payload, max_chapters)
         if directives.continuation_intent:
@@ -170,30 +171,48 @@ class EndingWriter:
         if directives.closure != "unspecified":
             plan.closure_level = directives.closure
 
+        memory = ContinuationMemory(context)
         generated: list[str] = []
         for chapter in plan.chapters:
-            chapter_context = context_block
+            current_context = memory.snapshot()
+            chapter_context = self._build_continuation_context(
+                text, current_context, focus_characters=chapter.focus_characters,
+            ) + "\n\n" + memory.render()
+            chapter_context += "\n\n## 跨单元计划（未来安排，不是已发生事实）\n" + self._format_continuation_plan(plan)
             if generated:
                 prior = "\n\n".join(generated)[-8000:]
                 chapter_context += "\n\n## 已生成的前文（只用于承接，不要重复）\n" + prior
             outline = self._outline_from_chapter(plan, chapter)
             instruction = self._chapter_instruction(plan, chapter, directives.closure)
+            instruction += "\n" + self._phase_scene_plan(chapter_context, instruction, hint_payload)
+            style_anchors = self._build_style_anchors(current_context, chapter.focus_characters)
             draft = self._phase_draft(
-                context, outline, style, chapter_context, hint_payload, style_anchors, instruction
+                current_context, outline, style, chapter_context, hint_payload, style_anchors, instruction
             )
             polished = self._phase_polish(
                 draft, style, outline, chapter_context, hint_payload, style_anchors, instruction
             )
+            update = memory.review(self.llm, polished, chapter_context + "\n" + instruction, chapter.number)
+            if not update.validation.passed:
+                polished = self._phase_final_repair(
+                    polished, chapter_context + "\n" + instruction, hint_payload, style,
+                    update.validation.issues, update.validation.repair_instructions,
+                    "只修复当前单元；遵守本单元计划，不提前完成后续单元的收束。",
+                )
+                update = memory.review(self.llm, polished, chapter_context + "\n" + instruction, chapter.number)
+                if not update.validation.passed:
+                    raise GenerationError("Unit validation failed: " + "; ".join(update.validation.issues))
+            memory.commit(update, chapter.number)
             generated.append(f"第{chapter.number}{plan.unit_type} {chapter.title}\n\n{polished}")
 
         final = "\n\n".join(generated).strip()
-        final = self._phase_resolution_review(
-            final, context, context_block, style, hint_payload, plan.closure_level
-        )
         validation_context = (
             context_block
             + "\n\n## Continuation Plan\n"
             + self._format_continuation_plan(plan)
+        )
+        final = self._phase_resolution_review(
+            final, memory.snapshot(), validation_context, style, hint_payload, plan.closure_level
         )
 
         enforcer = StyleEnforcer(style)
@@ -206,7 +225,16 @@ class EndingWriter:
             hint_payload,
             enforcer,
         )
+        self._validate_unit_headings(final, [f"第{chapter.number}{plan.unit_type} {chapter.title}" for chapter in plan.chapters])
         return final
+
+    def _validate_unit_headings(self, text: str, headings: list[str]) -> None:
+        lines = text.splitlines()
+        if any(lines.count(heading) != 1 for heading in headings):
+            raise GenerationError("Continuation revision removed or duplicated a planned unit heading.")
+        positions = [lines.index(heading) for heading in headings]
+        if positions != sorted(positions):
+            raise GenerationError("Continuation revision changed the planned unit order.")
 
     def _phase_plan(self, context_block: str, hint: str, max_chapters: int) -> ContinuationPlan:
         prompt = build_cacheable_prompt(
@@ -310,20 +338,27 @@ class EndingWriter:
         )
 
     def _format_continuation_plan(self, plan: ContinuationPlan) -> str:
-        lines = [
-            f"续写单元数: {plan.chapter_count}（粒度：{plan.unit_type}）",
-            f"续写意图: {plan.continuation_intent}",
-            f"叙事跨度: {plan.narrative_horizon}",
-            f"收束程度: {plan.closure_level}",
-            f"判断理由: {plan.rationale}",
-        ]
-        for chapter in plan.chapters:
-            lines.append(
-                f"- 单元{chapter.number}《{chapter.title}》: {chapter.purpose}; "
-                f"已处理={'; '.join(chapter.resolutions) or '无'}; "
-                f"结果={chapter.end_state or '自然形成'}; "
-                f"承接={'; '.join(chapter.carry_forward) or '无'}"
-            )
+        return json.dumps(asdict(plan), ensure_ascii=False, indent=2)
+
+    def _phase_scene_plan(self, context_block: str, instruction: str, hint: str) -> str:
+        prompt = build_cacheable_prompt(
+            context_block, self.scene_template, prefix_placeholder="context_block",
+            chapter_instruction=instruction, hint=hint,
+        )
+        response = self.llm.generate(prompt, options=telemetry_options(
+            self._phase_options("outline"), phase="continue", step=": plan unit scenes",
+        ))
+        payload = load_json_response(response.content)
+        scenes = payload.get("scenes") if isinstance(payload, dict) else None
+        if not isinstance(scenes, list) or not scenes:
+            raise LLMResponseError("Scene plan requires a non-empty scenes list.")
+        lines = ["本单元场景计划（只执行当前单元，不提前兑现后续结果）："]
+        fields = ("viewpoint", "setting", "goal", "obstacle", "action", "turn", "cost", "end_state", "knowledge_boundary")
+        for number, scene in enumerate(scenes, start=1):
+            if not isinstance(scene, dict):
+                raise LLMResponseError("Scene plan item must be an object.")
+            details = [f"{key}={self._required_str(scene.get(key), key)}" for key in fields]
+            lines.append(f"- 场景{number}: " + "; ".join(details))
         return "\n".join(lines)
 
     def _format_ending_plan(self, plan: ContinuationPlan) -> str:
@@ -540,21 +575,21 @@ class EndingWriter:
         payload = load_json_response(response.content)
         if not isinstance(payload, dict):
             raise LLMResponseError("Resolution phase returned invalid JSON object.")
-        for field_name in ("status", "missing_threads", "bridges", "notes"):
+        for field_name in ("status", "missing_threads", "notes"):
             if field_name not in payload:
                 raise LLMResponseError(f"Resolution phase missing required field: {field_name}")
         status = self._required_str(payload.get("status"), "status").lower()
         if status not in _VALID_RESOLUTION_STATUSES:
             raise LLMResponseError(f"Invalid resolution status: {status!r}")
         missing_threads = self._required_str_list(payload.get("missing_threads"), "missing_threads")
-        bridges_payload = payload.get("bridges")
-        if not isinstance(bridges_payload, list):
-            raise LLMResponseError("Resolution bridges must be a list.")
-        bridges = self._required_str_list(bridges_payload, "bridges")
+        edits_payload = payload.get("edits", [])
+        if not isinstance(edits_payload, list):
+            raise LLMResponseError("Resolution edits must be a list.")
+        edits = [TextEdit.from_dict(item) for item in edits_payload]
         notes = self._required_str(payload.get("notes"), "notes", allow_empty=True)
         if status == "ok":
-            if missing_threads or bridges:
-                raise LLMResponseError("Resolution status ok requires empty missing_threads and bridges.")
+            if missing_threads or edits or payload.get("bridges"):
+                raise LLMResponseError("Resolution status ok requires empty missing_threads and edits.")
             return polished
         if status == "blocked" and closure_level not in {"full", "closed"}:
             # An ongoing or partial continuation is allowed to leave threads
@@ -565,13 +600,7 @@ class EndingWriter:
         if status == "blocked":
             details = "; ".join(missing_threads) or notes
             raise GenerationError("Resolution phase blocked: " + (details or "unresolved threads remain"))
-        if not bridges:
-            raise GenerationError("Resolution phase requested changes but returned no bridge text.")
-        enforcer = StyleEnforcer(style)
-        bridges = enforcer.filter_duplicate_bridges(polished, bridges)
-        if not bridges:
-            raise GenerationError("Resolution bridge text duplicated existing content.")
-        return self._append_bridges(polished, bridges, notes or None)
+        return apply_edits(polished, edits)
 
     # Helper methods ---------------------------------------------------------
 
@@ -606,15 +635,7 @@ class EndingWriter:
         character = context.characters.get(name)
         if character and character.status == "dead":
             return True
-        for event in context.events:
-            if not event.is_irreversible or name not in event.participants:
-                continue
-            evidence = " ".join(
-                [event.summary, *event.impact.world_flags, *event.impact.power_shifts.values()]
-            )
-            if any(marker in evidence for marker in _DEATH_MARKERS):
-                return True
-        return False
+        return any(name in event.deceased_characters for event in context.events)
 
     def _format_conflicts(self, context: StoryContext) -> str:
         if not context.story_state or not context.story_state.major_conflicts:
@@ -643,14 +664,10 @@ class EndingWriter:
             if isinstance(beat, str) and beat and beat.strip()
         ]
         if not beats:
-            return f"至少写满{_MIN_DRAFT_PARAGRAPHS}段，每段{_MIN_PARAGRAPH_CHARS}字以上，段落按因果衔接展开。"
+            return "依本单元行动与因果展开；段落、对白比例和篇幅遵循原作当前场景，不设统一字数。"
 
-        lines: list[str] = []
-        for idx, beat in enumerate(beats[:_MAX_BEAT_PARAGRAPHS], start=1):
-            lines.append(f"- 段落{idx}: {beat}")
-        if len(beats) > _MAX_BEAT_PARAGRAPHS:
-            lines.append(f"- 其余段落: 融合剩余{len(beats) - _MAX_BEAT_PARAGRAPHS}个情节点，避免遗漏。")
-        lines.append(f"- 每段≥{_MIN_PARAGRAPH_CHARS}字，首句承接上一段尾句，整体保持因果衔接。")
+        lines = [f"- 叙事节点{idx}: {beat}" for idx, beat in enumerate(beats, start=1)]
+        lines.append("- 节点不是段落配额；按原作节奏安排段落、对白、停顿与转场，不要求每段等长或逐句接尾。")
         return "\n".join(lines)
 
     def _revision_checklist(self, style: WritingStyle | None) -> str:
@@ -684,24 +701,58 @@ class EndingWriter:
 
         return "\n".join(snippets) if snippets else "(无可参考片段)"
 
-    def _build_continuation_context(self, text: str, context: StoryContext) -> str:
+    def _build_continuation_context(
+        self, text: str, context: StoryContext, *, focus_characters: list[str] | None = None,
+    ) -> str:
         """Build one evidence block reused by outline, draft, polish and review."""
-        sections = context.for_prompt(limits=self._limits)
+        alias_owners = unambiguous_alias_owners(context)
+        requested = focus_characters or [
+            name for segment in self.segment_index.segments[-_MAX_RECENT_SCENES:]
+            for name in segment.characters
+        ]
+        focus = list(dict.fromkeys(
+            alias_owners.get(name.casefold(), name) for name in requested
+        ))
+        sections = context.for_prompt(limits=self._limits, focus_characters=focus)
         base = format_context_sections(sections)
         hard_facts = [
             event for event in context.events if event.is_irreversible
-        ][-_MAX_HARD_FACTS:]
+        ]
         fact_lines = [
-            f"- [CH{event.chapter:03d}] {event.type}: {event.summary} "
+            f"- [{event.event_id}] {event.type}: {event.summary} "
             f"({', '.join(event.participants) or 'unknown'})"
+            + (f" | 原文证据: {event.evidence}" if event.evidence else "")
             for event in hard_facts
         ]
-        source_tail = (text or "").strip()[-_SOURCE_TAIL_CHARS:]
+        source_tail = strip_trailing_promotion(text or "").strip()[-_SOURCE_TAIL_CHARS:]
+        relevant_events = [
+            event for event in context.events
+            if not event.is_irreversible and set(event.participants).intersection(focus)
+        ]
+        history = "\n".join(
+            f"- [{event.event_id}] {event.summary}" + (f" | 原文证据: {event.evidence}" if event.evidence else "")
+            for event in relevant_events
+        )
+        excerpts = []
+        for name in focus:
+            segment = self._latest_segment_for_character(name)
+            if segment:
+                variants = [name] + [alias for alias, owner in alias_owners.items() if owner == name]
+                position = max(segment.content.casefold().rfind(variant.casefold()) for variant in variants)
+                if position >= 0:
+                    excerpt = segment.content[max(0, position - 500):position + 700]
+                    excerpts.append(f"- {name} [Segment {segment.segment_id}]: {excerpt}")
         evidence = [
+            "原作片段是历史证据；已有续写时从最新生成单元承接，不要跳回原作末尾。未来计划不是已发生事实。",
             base,
             "## Hard Facts\n" + ("\n".join(fact_lines) if fact_lines else "(无已记录不可逆事实)"),
             "## Recent Source Scene\n" + (source_tail or "(无原文尾部)"),
             "## Indexed Scene Tails\n" + self._recent_segment_digest(context),
+            "## Active Cast History\n" + (history or "(无相关历史事件)"),
+            "## Active Cast Source Evidence\n" + ("\n".join(excerpts) or "(无相关原文片段)"),
+            "## Open World Threads\n" + (
+                "\n".join(context.story_state.unresolved_events) if context.story_state else "(无世界未决线索)"
+            ),
         ]
         return "\n\n".join(item for item in evidence if item)
 
@@ -709,9 +760,8 @@ class EndingWriter:
         segment_ids = self.segment_index.char_index.get(name)
         if not segment_ids:
             return None
-        target_id = max(segment_ids)
-        for segment in self.segment_index.segments:
-            if segment.segment_id == target_id:
+        for segment in reversed(self.segment_index.segments):
+            if segment.segment_id in segment_ids:
                 return segment
         return None
 
@@ -743,20 +793,20 @@ class EndingWriter:
                 threads.append(f"世界: {item}")
         return threads
 
-    def _build_style_anchors(self, context: StoryContext) -> str:
+    def _build_style_anchors(self, context: StoryContext, focus_characters: list[str] | None = None) -> str:
         anchors: list[str] = []
         style = context.writing_style
         if style and style.characteristic_words:
             keywords = "、".join(style.characteristic_words[:self._limits.max_characteristic_words])
-            anchors.append(f"词汇锚点：{keywords}（至少使用其中2个）")
+            anchors.append(f"原作词汇参考：{keywords}（仅在语境合适时使用，无使用数量要求）")
 
-        cast = [
+        cast = focus_characters if focus_characters is not None else [
             char.name
             for char in context.characters.values()
             if char.role in ("main", "support")
         ]
         if cast:
-            anchors.append("关键人物：" + "、".join(cast[:_MAX_CAST_IN_ANCHORS]))
+            anchors.append("本单元人物参考：" + "、".join(cast))
 
         state = context.story_state
         if state:
@@ -777,14 +827,6 @@ class EndingWriter:
             else:
                 lines.append(f"- {item}")
         return "\n".join(lines)
-
-    def _append_bridges(self, polished: str, bridges: list[str], notes: str | None = None) -> str:
-        baseline = polished.rstrip()
-        bridge_text = "\n\n".join(bridges)
-        combined_parts = [baseline, bridge_text.strip()]
-        if notes:
-            logger.debug("Resolution notes (not included in output): %s", notes.strip())
-        return "\n\n".join(part for part in combined_parts if part)
 
     def _phase_options(self, phase: str) -> dict | None:
         return self._phase_llm_options.get(phase)
@@ -880,7 +922,10 @@ class EndingWriter:
         content = response.content.strip()
         if not content:
             raise LLMResponseError("Final repair phase returned empty content.")
-        return content
+        payload = load_json_response(content)
+        if not isinstance(payload, dict) or not isinstance(payload.get("edits"), list):
+            raise LLMResponseError("Final repair must return a JSON edits list.")
+        return apply_edits(final_text, [TextEdit.from_dict(item) for item in payload["edits"]])
 
     def _closure_instruction(self, directives) -> str:
         closure = getattr(directives, "closure", "unspecified")
