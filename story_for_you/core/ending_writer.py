@@ -8,7 +8,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from story_for_you.analysis.context import StoryContext, WritingStyle
+from story_for_you.analysis.context import StoryContext, WritingStyle, _bounded_history
 from story_for_you.config.settings import EndingPhaseTemperatures, RenderingLimits
 from story_for_you.core.ending import (
     BANNED_EXPRESSIONS_PROMPT,
@@ -55,9 +55,45 @@ _NARRATIVE_SIGNAL_KINDS = {
     "foreshadowing", "metaphor", "double_meaning", "identity", "threat", "promise", "misdirection",
 }
 _NARRATIVE_CONFIDENCE = {"high", "medium", "low"}
+_MAX_SOURCE_ANCHORS = 12
+_MAX_NARRATIVE_SIGNALS = 12
+_MAX_PLOT_RECOMMENDATIONS = 3
 _SUBTEXT_CUE_TERMS = (
     "毒", "死", "钳", "迦楼罗", "金翅", "龙王", "真龙", "龙袍", "咬龙鸟",
+    "玉玺", "奏章", "诏", "火枪", "黑衣人", "三眼", "药", "密信", "图", "像",
     "有没有道理", "有何道理", "不是", "好像", "像是", "竟", "突然", "凄厉", "喃喃",
+)
+_SUBTEXT_CUE_PATTERNS = (
+    r"(?:取出|拿出|递给|扔到|收起|藏入|烧掉|毁掉|捡起).{0,24}",
+    r"(?:只怕|莫非|迟早|早晚|将要|待到|若是|不会|必然).{0,32}",
+    r"[!?！？]{1,2}",
+)
+_SUBTEXT_HIGH_SIGNAL_TERMS = (
+    "毒", "药", "死", "迦楼罗", "金翅", "钳龙", "龙王", "真龙", "龙袍",
+    "玉玺", "奏章", "诏", "火枪", "黑衣人", "三眼", "密信",
+)
+_ANCHOR_CANDIDATE_TERMS = {
+    "奏章": "message",
+    "诏书": "message",
+    "密信": "message",
+    "书信": "message",
+    "玉玺": "object",
+    "药瓶": "object",
+    "药方": "object",
+    "火枪": "object",
+    "佩剑": "object",
+    "龙袍": "object",
+    "迦楼罗": "symbol",
+    "金翅": "symbol",
+    "钳龙": "symbol",
+    "画像": "symbol",
+    "壁画": "symbol",
+    "黑衣人": "clue",
+    "三眼": "clue",
+}
+_ANCHOR_ACTION_TERMS = (
+    "取出", "拿出", "递给", "交给", "扔到", "收起", "藏入", "藏在", "烧掉", "毁掉",
+    "打开", "拆开", "捡起", "握住", "看见", "提到", "画着", "刻着", "呈上",
 )
 
 
@@ -284,10 +320,22 @@ class EndingWriter:
             text, context, focus_characters=directives.focus_characters, retrieval_hint=hint_payload,
         )
 
+        cue_history = self._build_candidate_cue_history(
+            context, self._extract_subtext_cues(
+                strip_trailing_promotion(text or "").strip()[-_SOURCE_TAIL_CHARS:]
+            ),
+        )
+        if cue_history:
+            context_block += "\n\n" + cue_history
         subtext_signals = self._phase_subtext(context_block, hint_payload, text)
         if subtext_signals:
             self.trace.append({"stage": "subtext", "signals": [asdict(item) for item in subtext_signals]})
             context_block += "\n\n## 末章伏笔与隐喻预分析（解释假设，不是事实）\n" + self._format_narrative_signals(subtext_signals)
+            long_range = self._build_long_range_foreshadowing(
+                context, subtext_signals, [], directives.focus_characters,
+            )
+            if long_range:
+                context_block += "\n\n" + long_range
         plan = self._phase_plan(
             context_block, hint_payload, max_chapters, source_text=text,
             prior_signals=subtext_signals,
@@ -314,6 +362,7 @@ class EndingWriter:
                 text, current_context, focus_characters=chapter.focus_characters,
                 retrieval_hint=json.dumps(asdict(chapter), ensure_ascii=False) + "\n" + "\n".join(generated)[-1600:],
                 source_anchors=plan.source_anchors,
+                narrative_signals=plan.narrative_signals,
             ) + "\n\n" + self._format_plan_readings(plan) + "\n\n" + memory.render(
                 query=json.dumps(asdict(chapter), ensure_ascii=False), max_chars=self._limits.evidence_chars,
             )
@@ -363,7 +412,7 @@ class EndingWriter:
 
         final = "\n\n".join(generated).strip()
         validation_context = self._build_validation_context(
-            text, context, plan, directives.focus_characters, unit_states,
+            text, context, plan, directives.focus_characters, unit_states, final_text=final,
         )
         final = self._phase_resolution_review(
             final, memory.snapshot(), validation_context, style, hint_payload, plan.closure_level,
@@ -412,6 +461,7 @@ class EndingWriter:
                 source_text, memory.snapshot(), focus_characters=chapter.focus_characters,
                 retrieval_hint=json.dumps(asdict(chapter), ensure_ascii=False),
                 source_anchors=plan.source_anchors,
+                narrative_signals=plan.narrative_signals,
             ) + "\n" + memory.render(query=body[-1000:], max_chars=self._limits.evidence_chars)
             block += "\n前一单元正文：\n" + "\n\n".join(prior)[-8000:]
             block += "\n" + self._chapter_instruction(plan, chapter, "unspecified")
@@ -431,17 +481,20 @@ class EndingWriter:
 
     def _build_validation_context(
         self, text: str, source: StoryContext, plan: ContinuationPlan,
-        directive_cast: list[str], unit_states: list[dict],
+        directive_cast: list[str], unit_states: list[dict], *, final_text: str = "",
     ) -> str:
-        cast = list(dict.fromkeys([
-            *directive_cast,
-            *[name for chapter in plan.chapters for name in chapter.focus_characters],
-        ]))
+        cast = self._plan_cast(
+            source,
+            plan,
+            directive_cast,
+            final_text,
+        )
         return (
             "## 原作结束时的证据（续写开始之前）\n"
             + self._build_continuation_context(
                 text, source, focus_characters=cast, retrieval_hint=self._format_continuation_plan(plan),
                 source_anchors=plan.source_anchors,
+                narrative_signals=plan.narrative_signals,
             )
             + "\n\n## Continuation Plan（计划不是事实）\n"
             + self._format_continuation_plan(plan)
@@ -462,7 +515,7 @@ class EndingWriter:
     ) -> list[NarrativeSignal]:
         source_scene = strip_trailing_promotion(source_text or "").strip()[-_SOURCE_TAIL_CHARS:]
         cue_block = self._extract_subtext_cues(source_scene)
-        if cue_block.startswith("(") or cue_block.count("\n") < 1:
+        if cue_block.startswith("("):
             return []
         prompt = build_cacheable_prompt(
             context_block or "(无上下文)",
@@ -505,13 +558,49 @@ class EndingWriter:
             hint=hint,
             max_chapters=str(max_chapters),
         )
-        response = self.llm.generate(
-            prompt=prompt,
-            options=telemetry_options(
-                self._phase_options("outline"), phase="continue", step=": continuation plan"
-            ),
-        )
-        payload = load_json_response(response.content)
+        for attempt in range(2):
+            response = self.llm.generate(
+                prompt=prompt,
+                options=telemetry_options(
+                    self._phase_options("outline"),
+                    phase="continue",
+                    step=": continuation plan",
+                    attempt=attempt + 1,
+                    max_attempts=2,
+                ),
+            )
+            try:
+                return self._parse_plan_response(
+                    response.content,
+                    context_block,
+                    max_chapters,
+                    source_text=source_text,
+                    prior_signals=prior_signals,
+                )
+            except LLMResponseError as exc:
+                if attempt:
+                    raise
+                prompt = cache_prompt(
+                    prompt.task
+                    + "\n\n上次续写规划未通过格式或证据校验："
+                    + str(exc)
+                    + "\n请返回完整 JSON；逐字引用末章证据，补齐每个锚点的 anchor_actions，"
+                    + "并让推荐情节覆盖所有中高置信度信号。不要把解释写成事实。\n上次输出：\n"
+                    + (response.content or "(空)"),
+                    prefix=prompt.prefix,
+                )
+        raise AssertionError("Unreachable continuation plan retry state")
+
+    def _parse_plan_response(
+        self,
+        content: str | None,
+        context_block: str,
+        max_chapters: int,
+        *,
+        source_text: str = "",
+        prior_signals: list[NarrativeSignal] | None = None,
+    ) -> ContinuationPlan:
+        payload = load_json_response(content)
         if not isinstance(payload, dict):
             raise LLMResponseError("Ending plan returned invalid JSON object.")
         for field_name in ("rationale", "chapters"):
@@ -535,12 +624,13 @@ class EndingWriter:
         chapters_payload = payload.get("chapters")
         if not isinstance(chapters_payload, list) or len(chapters_payload) != count:
             raise LLMResponseError("Continuation plan chapters must match unit_count.")
+        source_scene = strip_trailing_promotion(source_text or "").strip()[-_SOURCE_TAIL_CHARS:]
         source_anchors = self._parse_source_anchors(
-            payload.get("source_anchors", []), source_text or context_block,
+            payload.get("source_anchors", []), source_scene or context_block,
         )
         anchor_ids = {anchor.anchor_id for anchor in source_anchors}
         parsed_signals = self._parse_narrative_signals(
-            payload.get("narrative_signals", []), source_text or context_block,
+            payload.get("narrative_signals", []), source_scene or context_block,
         )
         signal_by_id = {signal.signal_id: signal for signal in (prior_signals or [])}
         signal_by_id.update({signal.signal_id: signal for signal in parsed_signals})
@@ -553,6 +643,27 @@ class EndingWriter:
             raise LLMResponseError(
                 "Continuation plan must include plot_recommendations when narrative_signals are present."
             )
+        if (narrative_signals or source_anchors) and plot_recommendations:
+            recommended = [item for item in plot_recommendations if item.recommended]
+            if len(recommended) != 1:
+                raise LLMResponseError(
+                    "Continuation plan must mark exactly one plot recommendation as recommended."
+                )
+            covered = {
+                evidence_id
+                for item in plot_recommendations
+                for evidence_id in item.based_on
+            }
+            uncovered = [
+                signal.signal_id
+                for signal in narrative_signals
+                if signal.confidence in {"high", "medium"} and signal.signal_id not in covered
+            ]
+            if uncovered:
+                raise LLMResponseError(
+                    "Continuation plan must ground a plot recommendation in each high/medium signal: "
+                    + ", ".join(uncovered)
+                )
         chapters: list[EndingChapterPlan] = []
         assigned_anchor_ids: set[str] = set()
         for index, item in enumerate(chapters_payload, start=1):
@@ -606,6 +717,10 @@ class EndingWriter:
     def _parse_source_anchors(self, value, source_text: str) -> list[SourceAnchor]:
         if not isinstance(value, list):
             raise LLMResponseError("Continuation plan source_anchors must be a list.")
+        if len(value) > _MAX_SOURCE_ANCHORS:
+            raise LLMResponseError(
+                f"Continuation plan source_anchors may contain at most {_MAX_SOURCE_ANCHORS} items."
+            )
         anchors: list[SourceAnchor] = []
         seen: set[str] = set()
         for index, item in enumerate(value):
@@ -658,6 +773,10 @@ class EndingWriter:
     def _parse_narrative_signals(self, value, source_text: str) -> list[NarrativeSignal]:
         if not isinstance(value, list):
             raise LLMResponseError("Continuation plan narrative_signals must be a list.")
+        if len(value) > _MAX_NARRATIVE_SIGNALS:
+            raise LLMResponseError(
+                f"Continuation plan narrative_signals may contain at most {_MAX_NARRATIVE_SIGNALS} items."
+            )
         signals: list[NarrativeSignal] = []
         seen: set[str] = set()
         for index, item in enumerate(value):
@@ -690,6 +809,14 @@ class EndingWriter:
                 raise LLMResponseError(
                     f"narrative_signals[{index}].evidence must quote the supplied source scene: {evidence}"
                 )
+            candidate_consequences = self._required_str_list(
+                item.get("candidate_consequences"),
+                f"narrative_signals[{index}].candidate_consequences",
+            )
+            if not candidate_consequences:
+                raise LLMResponseError(
+                    f"narrative_signals[{index}].candidate_consequences must not be empty."
+                )
             signals.append(
                 NarrativeSignal(
                     signal_id=signal_id,
@@ -702,10 +829,7 @@ class EndingWriter:
                         item.get("candidate_referents", []),
                         f"narrative_signals[{index}].candidate_referents",
                     ),
-                    candidate_consequences=self._required_str_list(
-                        item.get("candidate_consequences"),
-                        f"narrative_signals[{index}].candidate_consequences",
-                    ),
+                    candidate_consequences=candidate_consequences,
                 )
             )
         return signals
@@ -715,6 +839,10 @@ class EndingWriter:
     ) -> list[PlotRecommendation]:
         if not isinstance(value, list):
             raise LLMResponseError("Continuation plan plot_recommendations must be a list.")
+        if len(value) > _MAX_PLOT_RECOMMENDATIONS:
+            raise LLMResponseError(
+                f"Continuation plan plot_recommendations may contain at most {_MAX_PLOT_RECOMMENDATIONS} items."
+            )
         recommendations: list[PlotRecommendation] = []
         seen: set[str] = set()
         recommended_count = 0
@@ -1155,7 +1283,7 @@ class EndingWriter:
     ) -> str:
         """阶段4: 检查承接与伏笔，按模型判断的收束程度决定是否补桥。"""
         threads = self._collect_unresolved_threads(context)
-        if not threads:
+        if not threads and not source_anchors and not narrative_signals and not plot_recommendations:
             return polished
 
         unresolved = "\n".join(f"- {item}" for item in threads)
@@ -1316,6 +1444,7 @@ class EndingWriter:
     def _build_continuation_context(
         self, text: str, context: StoryContext, *, focus_characters: list[str] | None = None,
         retrieval_hint: str = "", source_anchors: list[SourceAnchor] | None = None,
+        narrative_signals: list[NarrativeSignal] | None = None,
     ) -> str:
         """Build one evidence block reused by outline, draft, polish and review."""
         alias_owners = unambiguous_alias_owners(context)
@@ -1366,6 +1495,8 @@ class EndingWriter:
             "## Recent Source Scene\n" + (source_tail or "(无原文尾部)"),
             "## Candidate Subtext Cues（程序只召回原文片段，不代表任何解释成立）\n"
             + self._extract_subtext_cues(source_tail),
+            "## Candidate Anchor Inventory（程序按末章词面和动作召回，需模型判断是否真是高显著锚点）\n"
+            + self._extract_anchor_inventory(source_tail),
             "## Source Anchors（原文高显著锚点；不是普通背景物件）\n"
             + self._format_source_anchors(source_anchors or []),
             "## Indexed Scene Tails\n" + self._recent_segment_digest(context),
@@ -1377,33 +1508,243 @@ class EndingWriter:
                     for p in passages
                 ) or "(无额外相关片段)"
             ),
+            self._build_long_range_foreshadowing(
+                context, narrative_signals or [], source_anchors or [], focus,
+            ),
             "## Open World Threads\n" + (
                 "\n".join(context.story_state.unresolved_events) if context.story_state else "(无世界未决线索)"
             ),
         ]
         return "\n\n".join(item for item in evidence if item)
 
+    def _build_long_range_foreshadowing(
+        self,
+        context: StoryContext,
+        signals: list[NarrativeSignal],
+        anchors: list[SourceAnchor],
+        focus: list[str],
+    ) -> str:
+        """Recall earlier appearances of末章 motifs from the full source index."""
+        thread_records = []
+        for thread in (context.story_state.threads if context.story_state else []):
+            if thread.status in {"open", "dormant"} or thread.history or thread.evidence:
+                thread_records.append(thread)
+        for name in focus:
+            character = context.characters.get(name)
+            if character:
+                thread_records.extend(
+                    thread for thread in character.threads
+                    if thread.status in {"open", "dormant"} or thread.history or thread.evidence
+                )
+        has_relationship_history = any(
+            bool(context.characters.get(name) and context.characters[name].relationship_history)
+            for name in focus
+        )
+        if not signals and not anchors and not thread_records and not has_relationship_history:
+            return ""
+        query_parts = list(focus)
+        for signal in signals:
+            query_parts.extend([
+                signal.label, signal.evidence, *signal.candidate_referents,
+                *signal.candidate_consequences,
+            ])
+        for anchor in anchors:
+            query_parts.extend([
+                anchor.label, anchor.evidence, anchor.significance,
+                *anchor.candidate_consequences,
+            ])
+        max_thread_records = self._limits.max_total_unresolved_threads * 2
+        selected_threads = thread_records[-max_thread_records:] if max_thread_records else []
+        for thread in selected_threads:
+            query_parts.extend([thread.summary, thread.evidence, thread.kind, *thread.candidate_outcomes])
+            thread_history = (
+                _bounded_history(thread.history, self._limits.max_thread_history)
+                if self._limits.max_thread_history > 0 else []
+            )
+            for observation in thread_history:
+                query_parts.extend([observation.summary, observation.evidence])
+        for name in focus:
+            character = context.characters.get(name)
+            if not character:
+                continue
+            relationship_history = (
+                _bounded_history(
+                    sorted(
+                        [
+                            *character.relationship_history,
+                            *character.incoming_relationship_history,
+                        ],
+                        key=lambda item: item.source_unit or item.chapter or -1,
+                    ),
+                    self._limits.max_relationship_history,
+                )
+                if self._limits.max_relationship_history > 0 else []
+            )
+            for relationship in relationship_history:
+                query_parts.extend([
+                    relationship.source or "",
+                    *relationship.targets, relationship.relation_type,
+                    relationship.description, relationship.evidence,
+                ])
+        passages = self._retriever.retrieve_passages(
+            "\n".join(item for item in query_parts if item),
+            max_passages=self._limits.max_foreshadowing_passages,
+            max_chars=self._limits.foreshadowing_chars,
+        )
+        if not passages:
+            return "## Long-range Foreshadowing Evidence\n(全书索引中没有召回到可核对的早期对应片段)"
+        lines = [
+            "## Long-range Foreshadowing Evidence",
+            "以下是从全书索引召回的历史原文片段，用于核对末章线索是否有早期铺垫；它们不是当前人物已知事实，也不是确定解释。",
+        ]
+        lines.extend(
+            f"- [Segment {passage.segment.segment_id}, chapter={passage.segment.chapter or '?'}, offset={passage.offset}] {passage.text}"
+            for passage in passages
+        )
+        return "\n".join(lines)
+
+    def _build_candidate_cue_history(self, context: StoryContext, cue_block: str) -> str:
+        """Recall early matches even when subtext analysis returns no signal."""
+        if (
+            not cue_block
+            or cue_block.startswith("(")
+            or self._limits.max_foreshadowing_passages <= 0
+            or self._limits.foreshadowing_chars <= 0
+        ):
+            return ""
+        recent_segment_ids = {
+            segment.segment_id for segment in self.segment_index.segments[-_MAX_RECENT_SCENES:]
+        }
+        passages = self._retriever.retrieve_passages(
+            cue_block,
+            max_passages=max(1, self._limits.max_foreshadowing_passages // 2),
+            max_chars=max(1, self._limits.foreshadowing_chars // 2),
+            exclude_segment_ids=recent_segment_ids,
+        )
+        if not passages:
+            return ""
+        lines = [
+            "## Candidate Cue Historical Matches",
+            "以下片段只是末章候选词项在全书中的早期词面匹配；它们是历史证据，不代表某种解释或当前人物知情事实。",
+        ]
+        lines.extend(
+            f"- [Segment {passage.segment.segment_id}, chapter={passage.segment.chapter or '?'}, offset={passage.offset}] {passage.text}"
+            for passage in passages
+        )
+        return "\n".join(lines)
+
+    def _plan_cast(
+        self,
+        context: StoryContext,
+        plan: ContinuationPlan,
+        directive_cast: list[str],
+        final_text: str,
+    ) -> list[str]:
+        """Build final-review cast from plan, generated text, and canonical names."""
+        aliases = unambiguous_alias_owners(context)
+        candidates = list(dict.fromkeys([
+            *directive_cast,
+            *[name for chapter in plan.chapters for name in chapter.focus_characters],
+            *[chapter.viewpoint for chapter in plan.chapters],
+        ]))
+        haystack = final_text.casefold()
+        mentioned = []
+        for name, character in context.characters.items():
+            labels = [name, *character.aliases]
+            if any(label and label.casefold() in haystack for label in labels):
+                mentioned.append(name)
+        candidates.extend(mentioned)
+        resolved = []
+        for name in candidates:
+            resolved.append(aliases.get(name.casefold(), name))
+        return list(dict.fromkeys(resolved))[: max(self._limits.max_characters, 24)]
+
     def _extract_subtext_cues(self, source_text: str) -> str:
         """Recall suspicious source paragraphs before asking the model to interpret them."""
         paragraphs = [item.strip() for item in source_text.splitlines() if item.strip()]
-        selected: list[str] = []
-        for paragraph in paragraphs:
-            if not any(term in paragraph for term in _SUBTEXT_CUE_TERMS):
+        candidates: list[tuple[int, str, int]] = []
+        for index, paragraph in enumerate(paragraphs):
+            if not (
+                any(term in paragraph for term in _SUBTEXT_CUE_TERMS)
+                or any(re.search(pattern, paragraph) for pattern in _SUBTEXT_CUE_PATTERNS)
+            ):
                 continue
-            if paragraph in selected:
-                continue
-            selected.append(paragraph)
-        if not selected:
+            score = sum(
+                min(paragraph.count(term), 2) * (6 if term in {"毒", "药", "死"} else 4)
+                for term in _SUBTEXT_HIGH_SIGNAL_TERMS
+            )
+            if re.search(_SUBTEXT_CUE_PATTERNS[0], paragraph):
+                score += 3
+            if re.search(_SUBTEXT_CUE_PATTERNS[1], paragraph):
+                score += 2
+            if re.search(_SUBTEXT_CUE_PATTERNS[2], paragraph):
+                score += 1
+            candidates.append((index, paragraph, score))
+        if not candidates:
             return "(未召回到明显的反常对白或意象片段)"
-        # Keep the cue list bounded; each item remains a contiguous source quote.
-        lines: list[str] = []
+        # Rank semantically strong cues first so punctuation-heavy dialogue
+        # cannot crowd out a late poison/object/symbol clue. Restore source
+        # order after selection, and always retain the latest candidate so the
+        # actual ending is available even when the tail is conversational.
+        unique: dict[str, tuple[int, str, int]] = {}
+        for candidate in candidates:
+            unique.setdefault(candidate[1], candidate)
+        ranked = sorted(unique.values(), key=lambda item: (item[2], item[0]), reverse=True)
+        selected: list[tuple[int, str, int]] = []
         remaining = 9000
-        for index, paragraph in enumerate(selected, start=1):
-            if len(paragraph) + 4 > remaining:
-                break
-            lines.append(f"- cue-{index}: {paragraph}")
-            remaining -= len(paragraph) + 4
+        for candidate in ranked:
+            cost = len(candidate[1]) + 4
+            if cost <= remaining:
+                selected.append(candidate)
+                remaining -= cost
+        latest = max(unique.values(), key=lambda item: item[0])
+        if latest not in selected:
+            latest_cost = len(latest[1]) + 4
+            while selected and latest_cost > remaining:
+                victim = min(selected, key=lambda item: (item[2], item[0]))
+                selected.remove(victim)
+                remaining += len(victim[1]) + 4
+            if latest_cost <= remaining:
+                selected.append(latest)
+                remaining -= latest_cost
+        selected.sort(key=lambda item: item[0])
+        lines = [f"- cue-{index}: {paragraph}" for index, (_source_index, paragraph, _score) in enumerate(selected, start=1)]
         return "\n".join(lines) or "(候选片段超过召回预算)"
+
+    def _extract_anchor_inventory(self, source_text: str) -> str:
+        """List action-linked objects/messages for the planner to verify.
+
+        This is intentionally a candidate inventory rather than an asserted
+        fact.  A lexical pass catches concrete items such as a memorial or
+        seal even when the subtext model focuses on a more obvious metaphor;
+        the planner still decides whether the item changes later action.
+        """
+        paragraphs = [item.strip() for item in source_text.splitlines() if item.strip()]
+        candidates: list[tuple[int, str, str, str]] = []
+        seen: set[tuple[str, str]] = set()
+        for index, paragraph in enumerate(paragraphs):
+            action_score = sum(1 for term in _ANCHOR_ACTION_TERMS if term in paragraph)
+            for term, kind in _ANCHOR_CANDIDATE_TERMS.items():
+                if term not in paragraph:
+                    continue
+                key = (term, paragraph)
+                if key in seen:
+                    continue
+                seen.add(key)
+                score = action_score * 3 + min(paragraph.count(term), 2) * 2
+                if score <= 0:
+                    score = 1
+                candidates.append((index, paragraph, term, kind + f":{score}"))
+        if not candidates:
+            return "(未召回到与具体动作相连的高显著物件、文书或象征候选)"
+        candidates.sort(key=lambda item: (int(item[3].split(":")[-1]), item[0]), reverse=True)
+        selected = candidates[:12]
+        selected.sort(key=lambda item: item[0])
+        lines = []
+        for number, (_index, paragraph, term, kind_score) in enumerate(selected, start=1):
+            kind, score = kind_score.split(":", 1)
+            lines.append(f"- candidate-anchor-{number}: kind={kind}, label={term}, score={score}, evidence={paragraph}")
+        return "\n".join(lines)
 
     def _format_source_anchors(self, anchors: list[SourceAnchor]) -> str:
         if not anchors:

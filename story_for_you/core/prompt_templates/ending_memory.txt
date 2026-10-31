@@ -15,7 +15,7 @@
 ## 本单元原文高显著锚点处理要求
 {{source_anchors}}
 
-审查实际正文是否承接前一场景，遵守本单元视角、角色知情范围、物品归属、伤势、生死、时间地点与因果。逐条核对上面的高显著锚点：advance 是否由行动、信息或后果推进，hold 是否留下可追踪的悬置，background 是否仍保留其意义；锚点完全消失或只剩无后果的复述时，passed=false。解释假设和候选情节只是推理材料，不是已发生事实；低置信度的身份、死亡和象征关系必须有本单元证据后才能写入记忆。
+审查实际正文是否承接前一场景，遵守本单元视角、角色知情范围、物品归属、伤势、生死、时间地点与因果。上面的“当前精确状态”包含本单元开始前的生死和关系快照；死亡是不可逆事实，不能因为正文没有再次提及或模型猜测而复活。逐条核对上面的高显著锚点：advance 是否由行动、信息或后果推进，hold 是否留下可追踪的悬置，background 是否仍保留其意义；锚点完全消失或只剩无后果的复述时，passed=false。解释假设和候选情节只是推理材料，不是已发生事实；低置信度的身份、死亡和象征关系必须有本单元证据后才能写入记忆。
 只执行本单元的推进要求，不要求提前完成后续单元或全部读者结局要求。
 未来计划不是已发生事实；不可因为计划写了某结果就忽略正文矛盾。
 passed=false 时给出具体 issues 和 repair_instructions，不更新记忆。
@@ -24,7 +24,9 @@ passed=true 时只提取本单元实际发生且有原文证据的状态变化�
 relationships 只列本单元改变的关系；物品变化需写入 events 的 impact/summary。
 thread_updates 仅在证据支持新增、推进、解决时输出；update/resolve 必须逐字复制上方已知 ID，不能自行生成、哈希或改写 ID；无法确认对应旧线索时使用 operation=add 且 thread_id=""，由程序生成新 ID。
 人物与世界的每条 thread_updates 均使用以下完整格式，字段名必须是 operation，不能用 action：
-{"operation": "add | update | resolve", "thread_id": "已知ID，add 可为空", "summary": "当前描述", "evidence": "本单元的连续原句"}
+{"operation": "add | update | advance | resolve | supersede", "thread_id": "已知ID，add 可为空", "summary": "当前描述", "evidence": "本单元的连续原句",
+ "kind": "promise | mystery | threat | relationship | symbol | object | identity | death | unclassified",
+ "confidence": "high | medium | low", "candidate_outcomes": ["证据支持的候选后果"]}
 所有 evidence 优先复制能支持变化的简短连续原文，保留原标点和引号，不得概述、拼接不相邻句子或把双引号改成单引号。
 截取长对话的一部分时不能自行补上后引号；也可选取不含引号的连续短句。不得为语句完整而增加原文没有的任何字或标点。
 严格返回 JSON 对象：
@@ -35,7 +37,7 @@ thread_updates 仅在证据支持新增、推进、解决时输出；update/reso
   "summary": "本单元已发生的行动、代价、末尾场景和信息差摘要",
   "characters": [{
     "name": "人物主名", "aliases": [], "role": "main", "realm": null,
-    "personality": [], "unresolved": [], "status": "unknown",
+    "personality": [], "unresolved": [], "status": "unknown", "status_evidence": "明确死亡原句，否则为空",
     "location": null, "goal": null, "knowledge": [],
     "state_changes": [{"field": "goal | location | realm | knowledge", "operation": "set | clear | add | remove | replace",
                        "previous": "撤销/替换时逐字引用当前值，否则 null", "value": "新值，clear/remove 时 null",

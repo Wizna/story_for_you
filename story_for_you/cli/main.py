@@ -207,6 +207,7 @@ def _reanalyze(text: str, settings: Settings, llm):
         llm=llm,
         window_size=settings.analysis.window_size,
         prompt_budget=settings.llm.context_window,
+        max_known_characters=settings.analysis.max_known_characters,
     )
     progress_label = "Analyzing chapters"
     with typer.progressbar(chapters, length=total_chapters, label=progress_label) as progress_iter:
@@ -381,6 +382,7 @@ def analyze(
             progress_store=progress_store,
             window_size=settings.analysis.window_size,
             prompt_budget=settings.llm.context_window,
+            max_known_characters=settings.analysis.max_known_characters,
         )
 
         with typer.progressbar(length=total_chapters, label="Analyzing chapters") as progress:

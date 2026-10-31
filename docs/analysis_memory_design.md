@@ -128,6 +128,11 @@ class StoryContext:
   3. `StateSynthesizer`：根据事件 impact 更新 `world_tension`、`major_conflicts`、`unresolved_events`。
 - **输出**：提供 `get_prompt_sections()`，以“人物状态”“未解决剧情”等形式拼装。
 
+长篇续写还保留人物关系的当前快照与按 `chapter/source_unit` 标注的历史转折，
+同时保留 `StoryThread.history` 的逐次证据。连续章节重复同一关系只更新最新证据，
+真实的关系变化才新增历史记录。`status=dead` 必须有逐字死亡证据（或事件的明确死亡主体），
+并且后续含糊的人物抽取不能复活该状态。历史证据在续写提示中会明确标成原文观察，不能直接作为当前人物知情事实。
+
 ## 5. 分析流程（`StoryAnalyzer.analyze`）
 
 1. **分块**：通过 `parser/text_splitter.py` 生成章节或场景文本。

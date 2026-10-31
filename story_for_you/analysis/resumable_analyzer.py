@@ -25,11 +25,13 @@ class ResumableStoryAnalyzer(AnalyzerMixin):
         progress_store: ProgressStore,
         window_size: int = 12,
         prompt_budget: int | None = None,
+        max_known_characters: int = 96,
     ):
         self.llm = llm
         self.progress_store = progress_store
         self.window_size = window_size
         self.prompt_budget = prompt_budget
+        self.max_known_characters = max_known_characters
         self._init_components()
 
     def _init_components(self) -> None:
@@ -38,14 +40,22 @@ class ResumableStoryAnalyzer(AnalyzerMixin):
         self.event_ledger = EventLedger()
         self.state_store = StateStore()
         self.character_extractor = CharacterExtractor(
-            self.llm, prompt_budget=self.prompt_budget
+            self.llm,
+            prompt_budget=self.prompt_budget,
+            max_known_characters=self.max_known_characters,
         )
-        self.relationship_mapper = RelationshipMapper(self.llm)
+        self.relationship_mapper = RelationshipMapper(
+            self.llm,
+            max_roster_characters=self.max_known_characters,
+            require_evidence=True,
+        )
         self.chapter_summarizer = ChapterSummarizer(
             self.llm, prompt_budget=self.prompt_budget
         )
         self.event_extractor = EventExtractor(
-            self.llm, prompt_budget=self.prompt_budget
+            self.llm,
+            prompt_budget=self.prompt_budget,
+            max_roster_characters=self.max_known_characters,
         )
         self.state_synthesizer = StateSynthesizer(self.llm)
 

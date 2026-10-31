@@ -2,7 +2,7 @@ from dataclasses import asdict
 
 import pytest
 
-from story_for_you.analysis.context import CharacterState, StoryState
+from story_for_you.analysis.context import CharacterState, PlotEvent, StoryState, EventImpact
 from story_for_you.analysis.layers.state_store import StateStore
 from story_for_you.analysis.threads import ThreadUpdate
 from story_for_you.exceptions import LLMResponseError
@@ -124,3 +124,78 @@ def test_explicit_resolution_and_new_legacy_observation_can_coexist():
         thread_updates=[ThreadUpdate("resolve", key, "兄妹重逢", "妹妹推门而入。")],
     )], [], [])
     assert store.characters_snapshot()["甲"].unresolved == ["归还宝剑"]
+
+
+def test_thread_history_keeps_chapter_evidence_and_does_not_reopen_resolution():
+    store = StateStore()
+    store.update(
+        [CharacterState(name="甲", thread_updates=[
+            ThreadUpdate("add", "", "密信下落不明", "他把密信藏在袖中。", kind="mystery"),
+        ])],
+        [],
+        [],
+        chapter=4,
+        source_unit=9,
+    )
+    thread = store.characters_snapshot()["甲"].threads[0]
+    key = thread.thread_id
+    assert thread.history[0].chapter == 4
+    assert thread.history[0].source_unit == 9
+
+    store.update(
+        [CharacterState(name="甲", thread_updates=[
+            ThreadUpdate("resolve", key, "密信已经送达", "他亲手把信交给城主。"),
+        ])],
+        [],
+        [],
+        chapter=5,
+        source_unit=10,
+    )
+    store.update(
+        [CharacterState(name="甲", thread_updates=[
+            ThreadUpdate("update", key, "城主是否回信仍未知", "城主只说稍后答复。"),
+        ])],
+        [],
+        [],
+        chapter=6,
+        source_unit=11,
+    )
+    thread = store.characters_snapshot()["甲"].threads[0]
+    assert thread.status == "resolved"
+    assert [item.chapter for item in thread.history] == [4, 5, 6]
+
+
+def test_initial_thread_record_evidence_enters_history_for_long_range_recall():
+    from story_for_you.analysis.threads import StoryThread
+
+    store = StateStore()
+    store.update(
+        [CharacterState(
+            name="甲",
+            threads=[StoryThread("T-old", "旧匣下落", evidence="他把旧匣藏入佛龛。")],
+        )],
+        [],
+        [],
+        chapter=2,
+        source_unit=8,
+    )
+
+    thread = store.characters_snapshot()["甲"].threads[0]
+    assert len(thread.history) == 1
+    assert thread.history[0].evidence == "他把旧匣藏入佛龛。"
+    assert thread.history[0].source_unit == 8
+
+
+def test_non_irreversible_death_mention_does_not_mark_character_dead():
+    store = StateStore()
+    store.update([CharacterState(name="甲", status="alive")], [], [])
+    store.update(
+        [],
+        [],
+        [PlotEvent(
+            "rumour", 3, "reveal", ["甲"], "传言甲已死", EventImpact(),
+            is_irreversible=False, deceased_characters=["甲"], evidence="有人说甲已经死了。",
+        )],
+    )
+
+    assert store.characters_snapshot()["甲"].status == "alive"

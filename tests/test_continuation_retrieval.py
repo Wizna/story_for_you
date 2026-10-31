@@ -27,3 +27,19 @@ def test_retrieval_budget_keeps_relevant_events_in_chronological_order():
     assert selected == sorted(selected, key=lambda event: event.chapter)
     assert sum(len(event.summary) for event in selected) <= 40
     assert not passages
+
+
+def test_retrieve_passages_keeps_source_diversity():
+    index = SegmentIndex(
+        segments=[
+            Segment(1, "早年有人提过迦楼罗与龙的旧画。" * 3, chapter=2),
+            Segment(2, "中段只写了市集喧闹。" * 3, chapter=8),
+            Segment(3, "末章又出现迦楼罗钳龙的图像。" * 3, chapter=20),
+        ],
+        char_index={}, chapter_index={}, gap_map={},
+    )
+    passages = EvidenceRetriever(index).retrieve_passages(
+        "迦楼罗 钳龙 图像", max_passages=4, max_chars=5000, max_per_chapter=1,
+    )
+
+    assert [item.segment.segment_id for item in passages] == [1, 3]

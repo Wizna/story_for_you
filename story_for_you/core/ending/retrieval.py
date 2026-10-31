@@ -66,13 +66,62 @@ class EvidenceRetriever:
                 continue
             chosen.append(i)
             remaining -= size
-        selected = []
-        for score, i in rank_texts(query, [passage.text for passage in self.passages]):
-            passage = self.passages[i]
-            if score <= 0 or len(selected) >= max_passages:
-                break
-            if len(passage.text) <= remaining:
-                selected.append(passage)
-                remaining -= len(passage.text)
+        selected = self.retrieve_passages(
+            query,
+            max_passages=max_passages,
+            max_chars=remaining,
+        )
         # Story chronology remains explicit even though selection uses relevance.
         return [events[i] for i in sorted(chosen)], selected
+
+    def retrieve_passages(
+        self,
+        query: str,
+        *,
+        max_passages: int = 8,
+        max_chars: int = 12000,
+        max_per_chapter: int = 2,
+        exclude_segment_ids: set[int] | None = None,
+    ) -> list[Passage]:
+        """Retrieve diverse source passages for long-range continuity checks.
+
+        Overlapping index windows can otherwise spend the whole evidence budget
+        repeating one scene.  We cap each segment and source chapter, then
+        restore source order so the model can see whether a motif recurs or
+        changes over time.  This remains lexical retrieval; interpretation stays
+        with the LLM and is explicitly labelled as historical evidence.
+        """
+        if max_passages <= 0 or max_chars <= 0 or not self.passages:
+            return []
+        excluded = exclude_segment_ids or set()
+        ranked = rank_texts(query, [passage.text for passage in self.passages])
+        chosen: list[tuple[float, int, Passage]] = []
+        used_segments: set[int] = set()
+        chapter_counts: Counter[int | None] = Counter()
+        remaining = max_chars
+        for score, index in ranked:
+            if score <= 0 or len(chosen) >= max_passages:
+                break
+            passage = self.passages[index]
+            segment_id = passage.segment.segment_id
+            chapter = passage.segment.chapter
+            # Imported indexes may not carry chapter labels.  Treat each
+            # unlabelled segment as its own diversity bucket; otherwise all
+            # early evidence would share ``chapter=None`` and the cap would
+            # discard nearly the entire novel.
+            chapter_key = chapter if chapter is not None else segment_id
+            if segment_id in excluded or segment_id in used_segments:
+                continue
+            if chapter_counts[chapter_key] >= max_per_chapter:
+                continue
+            if len(passage.text) > remaining:
+                continue
+            normalized = "".join(passage.text.split())
+            if any(normalized == "".join(item.text.split()) for _, _, item in chosen):
+                continue
+            chosen.append((score, index, passage))
+            used_segments.add(segment_id)
+            chapter_counts[chapter_key] += 1
+            remaining -= len(passage.text)
+        chosen.sort(key=lambda item: item[2].segment.segment_id)
+        return [item[2] for item in chosen]

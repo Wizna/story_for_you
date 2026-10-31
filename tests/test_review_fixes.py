@@ -10,7 +10,7 @@ from story_for_you.analysis.extractors.style import StyleExtractor
 from story_for_you.analysis.layers.state_store import StateStore
 from story_for_you.cache.store import ContextStore
 from story_for_you.cli.main import _chunks_to_segments, app
-from story_for_you.config.settings import Settings
+from story_for_you.config.settings import RenderingLimits, Settings
 from story_for_you.core.character_filter import CharacterFilter
 from story_for_you.core.character_remover import CharacterRemover
 from story_for_you.core.exceptions import LLMResponseError
@@ -19,6 +19,7 @@ from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.indexer.service import SegmentIndexService
 from story_for_you.llm.base import LLMProvider, LLMResponse
 from story_for_you.parser.text_splitter import TextChunk
+from story_for_you.analysis.threads import ThreadUpdate
 from story_for_you.utils.prompting import CacheablePrompt
 
 
@@ -174,6 +175,183 @@ def test_state_store_keeps_relationships_for_normalized_canonical_name():
     relationship = store.characters_snapshot()["翠翠的母亲"].relationships[0]
     assert relationship.source == "翠翠的母亲"
     assert relationship.targets == ["翠翠"]
+
+
+def test_state_store_keeps_relationship_history_for_long_novel_context():
+    store = StateStore()
+    store.update(
+        [CharacterState(name="甲", role="main"), CharacterState(name="乙", role="support")],
+        [Relationship(
+            source="甲", targets=["乙"], relation_type="盟友", sentiment="positive",
+            description="并肩", evidence="甲替乙挡下一刀。", chapter=3,
+        )],
+        [],
+        chapter=3,
+        source_unit=7,
+    )
+    store.update(
+        [],
+        [Relationship(
+            source="甲", targets=["乙"], relation_type="敌对", sentiment="negative",
+            description="互相猜疑", evidence="甲把刀横在乙面前。", chapter=18,
+        )],
+        [],
+        chapter=18,
+        source_unit=42,
+    )
+
+    character = store.characters_snapshot()["甲"]
+    assert character.relationships[0].relation_type == "敌对"
+    assert [item.relation_type for item in character.relationship_history] == ["盟友", "敌对"]
+    assert character.relationship_history[-1].source_unit == 42
+    assert character.incoming_relationship_history == []
+    assert store.characters_snapshot()["乙"].incoming_relationship_history[-1].source == "甲"
+    assert store.characters_snapshot()["乙"].incoming_relationship_history[-1].targets == ["甲"]
+
+
+def test_state_store_prompt_exposes_incoming_relationship_history():
+    store = StateStore()
+    store.update(
+        [CharacterState(name="甲"), CharacterState(name="乙")],
+        [Relationship(
+            source="甲", targets=["乙"], relation_type="监视", sentiment="negative",
+            description="甲暗中盯着乙", evidence="甲始终跟在乙身后。",
+        )],
+        [],
+        chapter=4,
+        source_unit=4,
+    )
+
+    rendered = store.get_prompt_sections()["characters"]
+    assert "来自甲" in rendered
+    assert "监视/negative" in rendered
+
+
+def test_state_store_relationship_history_deduplicates_repeated_state_and_keeps_provenance():
+    store = StateStore()
+    store.update(
+        [
+            CharacterState(name="甲", role="main"),
+            CharacterState(name="乙", role="support"),
+        ],
+        [Relationship(
+            source="甲", targets=["乙"], relation_type="盟友", sentiment="positive",
+            description="并肩", evidence="甲替乙挡下一刀。",
+        )],
+        [],
+        chapter=1,
+        source_unit=1,
+    )
+    for unit in range(2, 40):
+        store.update(
+            [],
+            [Relationship(
+                source="甲", targets=["乙"], relation_type="盟友", sentiment="positive",
+                description="并肩", evidence=f"甲与乙并肩同行{unit}。",
+            )],
+            [],
+            chapter=unit,
+            source_unit=unit,
+        )
+    store.update(
+        [],
+        [Relationship(
+            source="甲", targets=["乙"], relation_type="敌对", sentiment="negative",
+            description="互疑", evidence="甲把刀横在乙面前。",
+        )],
+        [],
+        chapter=40,
+        source_unit=40,
+    )
+
+    history = store.characters_snapshot()["甲"].relationship_history
+    assert [item.relation_type for item in history] == ["盟友", "敌对"]
+    assert history[0].chapter == 39
+    assert history[0].source_unit == 39
+    assert store.characters_snapshot()["甲"].relationships[0].chapter == 40
+    assert store.characters_snapshot()["甲"].relationships[0].source_unit == 40
+
+
+def test_state_store_does_not_resurrect_dead_character():
+    store = StateStore()
+    store.update([CharacterState(name="甲", status="dead", status_evidence="甲倒在血泊中。")], [], [], chapter=1)
+    store.update([CharacterState(name="甲", status="alive")], [], [], chapter=2)
+
+    character = store.characters_snapshot()["甲"]
+    assert character.status == "dead"
+    assert character.status_evidence == "甲倒在血泊中。"
+
+
+def test_context_labels_relationship_and_thread_history_as_historical_evidence():
+    store = StateStore()
+    store.update(
+        [CharacterState(
+            name="甲", role="main",
+            thread_updates=[ThreadUpdate("add", "", "密信下落", "甲把密信藏入袖中。")],
+        )],
+        [Relationship(
+            source="甲", targets=["乙"], relation_type="盟友", sentiment="positive",
+            description="并肩", evidence="甲替乙挡下一刀。",
+        )],
+        [],
+        chapter=3,
+        source_unit=7,
+    )
+    rendered = store.characters_snapshot()["甲"]
+    context = StoryContext(characters={"甲": rendered}).for_prompt(
+        focus_characters=["甲"]
+    )["characters"]
+    assert "historical_relationship_history (source observations)" in context
+    assert "甲替乙挡下一刀" in context
+    assert "historical_thread_evidence (source observations, not current knowledge)" in context
+
+
+def test_zero_history_limits_disable_history_instead_of_expanding_it():
+    store = StateStore()
+    store.update(
+        [CharacterState(
+            name="甲", role="main",
+            thread_updates=[ThreadUpdate("add", "", "密信下落", "甲把密信藏入袖中。")],
+        )],
+        [Relationship(
+            source="甲", targets=["乙"], relation_type="盟友", sentiment="positive",
+            description="并肩", evidence="甲替乙挡下一刀。",
+        )],
+        [],
+        chapter=3,
+        source_unit=7,
+    )
+    context = StoryContext(characters=store.characters_snapshot()).for_prompt(
+        RenderingLimits(max_relationship_history=0, max_thread_history=0),
+        focus_characters=["甲"],
+    )["characters"]
+
+    assert "historical_relationship_history" not in context
+    assert "historical_thread_evidence" not in context
+
+
+def test_history_prompt_keeps_first_relationship_transition_with_recent_tail():
+    store = StateStore()
+    store.update([CharacterState(name="甲"), CharacterState(name="乙")], [], [])
+    for unit, relation_type in enumerate(("陌生", "试探", "盟友", "猜疑", "敌对"), start=1):
+        store.update(
+            [],
+            [Relationship(
+                source="甲", targets=["乙"], relation_type=relation_type,
+                sentiment="neutral" if relation_type in {"陌生", "试探"} else "negative",
+                description=relation_type, evidence=f"第{unit}次观察。",
+            )],
+            [],
+            chapter=unit,
+            source_unit=unit,
+        )
+
+    rendered = StoryContext(characters=store.characters_snapshot()).for_prompt(
+        RenderingLimits(max_relationship_history=3), focus_characters=["甲"],
+    )["characters"]
+    assert "陌生/neutral" in rendered
+    assert "猜疑/negative" in rendered
+    assert "敌对/negative" in rendered
 
 
 def test_context_prompt_includes_character_relationships():

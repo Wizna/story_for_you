@@ -13,19 +13,29 @@ from story_for_you.utils.prompting import cache_prompt
 
 _VALID_SENTIMENTS = {"positive", "neutral", "negative"}
 _MAX_RELATIONSHIP_ATTEMPTS = 2
+_DEFAULT_MAX_ROSTER_CHARACTERS = 96
 _STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
 
 
 class RelationshipMapper:
     """Maps relationship deltas between characters via the configured LLM."""
 
-    def __init__(self, llm: LLMProvider):
+    def __init__(
+        self,
+        llm: LLMProvider,
+        max_roster_characters: int = _DEFAULT_MAX_ROSTER_CHARACTERS,
+        require_evidence: bool = False,
+    ):
+        if max_roster_characters <= 0:
+            raise ValueError("max_roster_characters must be positive")
         self.llm = llm
         self.template = load_template("relationship_extraction")
+        self.max_roster_characters = max_roster_characters
+        self.require_evidence = require_evidence
 
     def map(self, chapter_text: str, characters: list[str] | list[CharacterState] | None = None) -> list[Relationship]:
         """Return relationship changes observed in the text."""
-        roster, alias_map = self._build_roster(characters or [])
+        roster, alias_map = self._build_roster(characters or [], chapter_text)
         if len(roster) < 2:
             return []
         prompt = build_cacheable_prompt(
@@ -47,7 +57,9 @@ class RelationshipMapper:
                     max_attempts=_MAX_RELATIONSHIP_ATTEMPTS,
                 ),
             )
-            relationships, error = self._parse_response(response.content, alias_map, allowed)
+            relationships, error = self._parse_response(
+                response.content, alias_map, allowed, chapter_text
+            )
             if relationships is not None:
                 return relationships
             last_error = error
@@ -65,6 +77,7 @@ class RelationshipMapper:
         content: str | None,
         alias_map: dict[str, str],
         allowed_characters: set[str],
+        source_text: str = "",
     ) -> tuple[list[Relationship] | None, str | None]:
         if not content:
             return None, "Empty response body."
@@ -74,7 +87,14 @@ class RelationshipMapper:
         relationships: list[Relationship] = []
         for idx, item in enumerate(payload, start=1):
             try:
-                relationships.append(self._from_payload(item, alias_map, allowed_characters))
+                relationship = self._from_payload(item, alias_map, allowed_characters)
+                if self.require_evidence:
+                    evidence = relationship.evidence.strip()
+                    if not evidence or "".join(evidence.split()) not in "".join(source_text.split()):
+                        raise LLMResponseError(
+                            "Relationship evidence must quote the supplied chapter text."
+                        )
+                relationships.append(relationship)
             except LLMResponseError as exc:
                 return None, f"Relationship payload at index {idx}: {exc}"
         return relationships, None
@@ -141,22 +161,52 @@ class RelationshipMapper:
     def _build_roster(
         self,
         characters: list[str] | list[CharacterState],
+        chapter_text: str = "",
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-        roster_by_name: dict[str, dict[str, Any]] = {}
+        entries: list[tuple[str, list[str], str, int]] = []
+        role_priority = {"main": 3, "support": 2, "minor": 1}
+        text = chapter_text.casefold()
         alias_map: dict[str, str] = {}
         for character in characters:
             if isinstance(character, CharacterState):
                 name = character.name.strip()
                 aliases = [alias.strip() for alias in character.aliases if alias.strip()]
+                role = character.role
             elif isinstance(character, str):
                 name = character.strip()
                 aliases = []
+                role = "minor"
             else:
                 raise LLMResponseError("Relationship roster entries must be strings or CharacterState objects.")
             if not name:
                 continue
-            roster_by_name[name] = {"name": name, "aliases": sorted(set(aliases))}
+            entries.append((name, sorted(set(aliases)), role, len(entries)))
+        if len(entries) > self.max_roster_characters:
+            scored = []
+            for name, aliases, role, order in entries:
+                mentions = sum(
+                    text.count(label.casefold())
+                    for label in [name, *aliases]
+                    if label and (label == name or len(label) >= 2)
+                )
+                scored.append((int(mentions > 0), mentions, role_priority.get(role, 0), -order, name, aliases))
+            scored.sort(reverse=True)
+            entries = [
+                (name, aliases, "minor", order)
+                for _, _, _, neg_order, name, aliases in scored[:self.max_roster_characters]
+                for order in [-neg_order]
+            ]
+            entries.sort(key=lambda item: item[3])
+        roster_by_name: dict[str, dict[str, Any]] = {}
+        canonical_names = {name for name, _aliases, _role, _order in entries}
+        alias_candidates: dict[str, set[str]] = {}
+        for name, aliases, _role, _order in entries:
+            roster_by_name[name] = {"name": name, "aliases": aliases}
             alias_map[name] = name
             for alias in aliases:
-                alias_map[alias] = name
+                alias_candidates.setdefault(alias, set()).add(name)
+        for alias, owners in alias_candidates.items():
+            if alias in canonical_names or len(owners) != 1:
+                continue
+            alias_map[alias] = next(iter(owners))
         return [roster_by_name[name] for name in sorted(roster_by_name)], alias_map

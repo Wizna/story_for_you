@@ -123,9 +123,12 @@ class AnalyzerMixin:
         # Register new names before later extractors build their roster.  This
         # keeps aliases such as "祖父" and "二老" mapped to the canonical
         # characters discovered in earlier chapters.
-        self.state_store.update(characters, [], [])
+        self.state_store.update(characters, [], [], chapter=chapter_no, source_unit=source_unit)
         known_characters = list(self.state_store.characters_snapshot().values())
         relationships = self.relationship_mapper.map(chapter_text, known_characters)
+        for relationship in relationships:
+            relationship.chapter = chapter_no
+            relationship.source_unit = source_unit
         recent_context = self._build_recent_context(chapter_no)
         chapter_meta = self._build_chapter_meta(chapter_no, chapter_text, story_state)
 
@@ -141,9 +144,13 @@ class AnalyzerMixin:
         story_state = self.state_synthesizer.update(story_state, events, recent_context)
 
         self.chapter_window.append(summary)
-        self.state_store.update([], relationships, events)
+        self.state_store.update(
+            [], relationships, events, chapter=chapter_no, source_unit=source_unit
+        )
         if story_state:
-            self.state_store.set_story_state(story_state)
+            self.state_store.set_story_state(
+                story_state, chapter=chapter_no, source_unit=source_unit
+            )
             story_state = self.state_store.story_snapshot()
 
         return story_state, summary
@@ -175,6 +182,10 @@ class AnalyzerMixin:
         coverage = self.chapter_window.coverage()
         if coverage:
             context.add_metadata("chapter_coverage", coverage)
+            # Keep the physical analysis-unit count explicit.  A long novel
+            # may have many chapters with no extracted event or relationship;
+            # continuation provenance must still begin after the final unit.
+            context.add_metadata("source_unit_count", coverage["count"])
         primary_cast = compute_primary_cast(context.characters.values())
         if primary_cast:
             context.add_metadata("primary_cast", primary_cast)

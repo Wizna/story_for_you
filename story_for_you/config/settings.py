@@ -89,6 +89,7 @@ class AnalysisSettings:
     max_units_per_batch: int = 8
     batch_context_chars: int = 120000
     preserve_chapter_boundaries: bool = True
+    max_known_characters: int = 96
 
     def __post_init__(self) -> None:
         if self.window_size <= 0:
@@ -101,6 +102,8 @@ class AnalysisSettings:
             raise ValueError(f"max_units_per_batch must be positive, got {self.max_units_per_batch}")
         if self.batch_context_chars <= 0:
             raise ValueError(f"batch_context_chars must be positive, got {self.batch_context_chars}")
+        if self.max_known_characters <= 0:
+            raise ValueError(f"max_known_characters must be positive, got {self.max_known_characters}")
 
 
 @dataclass
@@ -138,12 +141,20 @@ class RenderingLimits:
     max_characteristic_words: int = 5
     max_tone_markers: int = 5
     max_relationships_per_char: int = 3
+    max_relationship_history: int = 4
+    max_thread_history: int = 4
     max_history_events: int = 24
     max_evidence_passages: int = 8
     evidence_chars: int = 12000
+    max_foreshadowing_passages: int = 10
+    foreshadowing_chars: int = 16000
 
     def __post_init__(self) -> None:
-        for name in ("max_history_events", "max_evidence_passages", "evidence_chars"):
+        for name in (
+            "max_history_events", "max_evidence_passages", "evidence_chars",
+            "max_relationship_history", "max_thread_history",
+            "max_foreshadowing_passages", "foreshadowing_chars",
+        ):
             value = getattr(self, name)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise ValueError(f"{name} must be a non-negative integer")

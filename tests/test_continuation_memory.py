@@ -6,8 +6,10 @@ from story_for_you.analysis.context import (
     CharacterState,
     EventImpact,
     PlotEvent,
+    Relationship,
     StoryContext,
 )
+from story_for_you.analysis.threads import StoryThread, ThreadEvidence
 from story_for_you.core.ending.memory import ContinuationMemory, UnitUpdate
 from story_for_you.core.ending.validator import ContinuationValidationResult
 from story_for_you.core.ending_writer import EndingWriter
@@ -47,6 +49,8 @@ def test_generated_memory_retains_old_changes_and_never_mutates_source():
     assert source.characters["甲"].location == "城门"
     assert snapshot.characters["甲"].location == "客栈"
     assert snapshot.characters["甲"].knowledge == ["乙持有宝剑"]
+    assert snapshot.events[-1].source_unit == 1
+    assert snapshot.events[-1].chapter == 1
     assert "宝剑归乙持有" in memory.render()
     assert "甲交出宝剑" in memory.render()
     with pytest.raises(LLMResponseError, match="unvalidated"):
@@ -95,6 +99,72 @@ def test_memory_repair_checks_previous_state_without_committing_a_failed_update(
     memory.commit(update, 1)
     assert memory.snapshot().characters["甲"].goal is None
     assert source.characters["甲"].goal == "守城"
+
+
+def test_generated_provenance_units_follow_original_source_units():
+    source = StoryContext(characters={
+        "甲": CharacterState(
+            name="甲",
+            relationships=[Relationship(
+                source="甲", targets=["乙"], relation_type="盟友", sentiment="positive",
+                description="并肩", chapter=215, source_unit=613,
+            )],
+        ),
+    })
+    memory = ContinuationMemory(source)
+    memory.commit(
+        UnitUpdate(
+            ContinuationValidationResult(True),
+            "甲与乙反目。",
+            relationships=[Relationship(
+                source="甲", targets=["乙"], relation_type="敌对", sentiment="negative",
+                description="反目", evidence="甲与乙反目。",
+            )],
+            unit_number=1,
+        ),
+        1,
+    )
+
+    history = memory.snapshot().characters["甲"].relationship_history
+    assert [item.relation_type for item in history] == ["盟友", "敌对"]
+    assert history[-1].source_unit == 614
+
+
+def test_generated_provenance_uses_source_unit_count_when_source_has_no_observations():
+    source = StoryContext(metadata={"source_unit_count": 613})
+    memory = ContinuationMemory(source)
+
+    assert memory._generated_source_unit(1) == 614
+
+
+def test_memory_review_compacts_thread_roster_to_relevant_stable_ids():
+    characters = {
+        name: CharacterState(
+            name=name,
+            threads=[
+                StoryThread(
+                    thread_id=f"{name}-{index}",
+                    summary=f"{name}线索{index}",
+                    history=[ThreadEvidence(f"线索{index}", f"证据{index}", source_unit=index)],
+                )
+                for index in range(20)
+            ],
+        )
+        for name in ("甲", "乙")
+    }
+    memory = ContinuationMemory(StoryContext(characters=characters))
+    llm = _RecordingLLM([json.dumps({
+        "passed": False,
+        "issues": ["需要补足因果"],
+        "repair_instructions": [],
+    }, ensure_ascii=False)])
+
+    memory.review(llm, "甲走进城门。", "已知状态", 1)
+
+    prompt = llm.prompts[0].render()
+    assert '"甲"' in prompt
+    assert '"乙"' not in prompt
+    assert '"history"' not in prompt
 
 
 def test_memory_quote_error_reports_all_locations_for_one_repair():

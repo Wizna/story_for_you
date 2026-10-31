@@ -20,16 +20,25 @@ from story_for_you.utils.prompting import cache_prompt
 logger = logging.getLogger(__name__)
 
 _STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
+_DEFAULT_MAX_ROSTER_CHARACTERS = 96
 
 
 class EventExtractor:
     """LLM-backed event extractor using structured prompts."""
 
-    def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
+    def __init__(
+        self,
+        llm: LLMProvider,
+        prompt_budget: int | None = None,
+        max_roster_characters: int = _DEFAULT_MAX_ROSTER_CHARACTERS,
+    ):
+        if max_roster_characters <= 0:
+            raise ValueError("max_roster_characters must be positive")
         self.llm = llm
         self.template = load_template("event_extraction")
         self.repair_template = load_template("event_extraction_repair")
         self.prompt_budget = prompt_budget
+        self.max_roster_characters = max_roster_characters
 
     def extract(
         self,
@@ -39,7 +48,7 @@ class EventExtractor:
         recent_context: str,
     ) -> list[PlotEvent]:
         """Extract lasting events from the chapter text."""
-        roster, alias_map = self._build_roster(participants)
+        roster, alias_map = self._build_roster(participants, chapter_text)
         recent_context_text = recent_context.strip() or "暂无历史上下文。"
         chapter_body = chapter_text.strip()
         prompt, truncated = render_cacheable_prompt_with_budget(
@@ -240,24 +249,52 @@ class EventExtractor:
     def _build_roster(
         self,
         participants: list[str] | list[CharacterState],
+        chapter_text: str = "",
     ) -> tuple[list[dict[str, Any]], dict[str, str]]:
-        roster_by_name: dict[str, dict[str, Any]] = {}
-        alias_map: dict[str, str] = {}
-        for participant in participants:
+        entries: list[tuple[str, list[str], str, int]] = []
+        role_priority = {"main": 3, "support": 2, "minor": 1}
+        text = chapter_text.casefold()
+        seen_names: set[str] = set()
+        for order, participant in enumerate(participants):
             if isinstance(participant, CharacterState):
                 name = participant.name.strip()
                 aliases = [alias.strip() for alias in participant.aliases if alias.strip()]
+                role = participant.role
             elif isinstance(participant, str):
                 name = participant.strip()
                 aliases = []
+                role = "minor"
             else:
                 raise LLMResponseError("Event roster entries must be strings or CharacterState objects.")
-            if not name:
+            if not name or name in seen_names:
                 continue
-            roster_by_name[name] = {"name": name, "aliases": sorted(set(aliases))}
-            alias_map[name] = name
+            seen_names.add(name)
+            entries.append((name, sorted(set(aliases)), role, order))
+        if len(entries) > self.max_roster_characters:
+            scored = []
+            for name, aliases, role, order in entries:
+                mentions = sum(
+                    text.count(label.casefold())
+                    for label in [name, *aliases]
+                    if label and (label == name or len(label) >= 2)
+                )
+                scored.append((int(mentions > 0), mentions, role_priority.get(role, 0), -order, name, aliases))
+            scored.sort(reverse=True)
+            selected = scored[:self.max_roster_characters]
+            entries = [(name, aliases, "minor", -neg_order) for _, _, _, neg_order, name, aliases in selected]
+            entries.sort(key=lambda item: item[3])
+        roster_by_name: dict[str, dict[str, Any]] = {}
+        canonical_names = {name for name, _aliases, _role, _order in entries}
+        alias_candidates: dict[str, set[str]] = {}
+        for name, aliases, _role, _order in entries:
+            roster_by_name[name] = {"name": name, "aliases": aliases}
+        alias_map: dict[str, str] = {name: name for name in canonical_names}
+        for name, aliases, _role, _order in entries:
             for alias in aliases:
-                alias_map[alias] = name
+                alias_candidates.setdefault(alias, set()).add(name)
+        for alias, owners in alias_candidates.items():
+            if alias not in canonical_names and len(owners) == 1:
+                alias_map[alias] = next(iter(owners))
         return [roster_by_name[name] for name in sorted(roster_by_name)], alias_map
 
     def _attempt_repair(

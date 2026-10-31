@@ -147,6 +147,41 @@ def test_relationship_mapper_rejects_names_outside_roster():
         RelationshipMapper(llm).map("正文", ["翠翠", "傩送"])
 
 
+def test_relationship_mapper_does_not_assign_shared_title_to_last_character():
+    llm = _SequencedLLM([
+        '[{"source":"师父","targets":["甲"],"relation_type":"照料",'
+        '"sentiment":"positive","description":"照料"}',
+        '[]',
+    ])
+    relationships = RelationshipMapper(llm).map(
+        "师父看着甲。",
+        [
+            CharacterState(name="乙", aliases=["师父"]),
+            CharacterState(name="丙", aliases=["师父"]),
+            "甲",
+        ],
+    )
+    assert relationships == []
+
+
+def test_event_mapper_does_not_assign_shared_title_to_last_character():
+    llm = _SequencedLLM([
+        '[{"event_id":"E1","chapter":1,"type":"progress",'
+        '"participants":["师父","甲"],"summary":"照料",'
+        '"impact":{"power_shifts":{},"relation_changes":{},"world_flags":[]},'
+        '"is_irreversible":false,"deceased_characters":[],"evidence":"师父看着甲。"}',
+        '[]',
+    ])
+    events = EventExtractor(llm).extract(
+        "师父看着甲。", [
+            CharacterState(name="乙", aliases=["师父"]),
+            CharacterState(name="丙", aliases=["师父"]),
+            "甲",
+        ], 1, "",
+    )
+    assert events == []
+
+
 def test_relationship_mapper_accepts_explicit_aliases_from_roster():
     llm = _FakeLLM(
         '[{"source":"二老","targets":["翠翠"],"relation_type":"恋慕",'

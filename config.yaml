@@ -1,7 +1,7 @@
 llm:
   provider: openai
   base_url: https://api.deepseek.com
-  model: deepseek-v4-pro
+  model: deepseek-flash
   api_key_env: DEEPSEEK_API_KEY
   context_window: 1000000
   max_tokens: 32768
@@ -19,3 +19,10 @@ analysis:
   min_units: 8
   max_units_per_batch: 8
   batch_context_chars: 120000
+  max_known_characters: 96
+
+rendering:
+  max_relationship_history: 4
+  max_thread_history: 4
+  max_foreshadowing_passages: 10
+  foreshadowing_chars: 16000

@@ -18,6 +18,17 @@ _VALID_STORY_ARCS = {"setup", "journey", "twist", "climax", "dark-night", "resol
 _VALID_WORLD_TENSIONS = {"low", "medium", "high"}
 
 
+def _bounded_history(items: list[Any], limit: int) -> list[Any]:
+    """Keep the first observation and the newest transitions in a prompt slice."""
+    if limit <= 0:
+        return []
+    if len(items) <= limit:
+        return list(items)
+    if limit == 1:
+        return [items[0]]
+    return [items[0], *items[-(limit - 1):]]
+
+
 def _require_mapping(value: Any, label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise LLMResponseError(f"{label} must be a JSON object.")
@@ -285,6 +296,7 @@ class Relationship:
     confidence: float = 0.0
     evidence: str = ""
     chapter: int | None = None
+    source_unit: int | None = None
 
     def __post_init__(self) -> None:
         """Ensure targets remain deterministic and deduplicated."""
@@ -302,6 +314,11 @@ class Relationship:
         confidence = payload.get("confidence", 0.0)
         if not isinstance(confidence, (int, float)) or isinstance(confidence, bool) or not 0.0 <= confidence <= 1.0:
             raise LLMResponseError("Relationship.confidence must be between 0 and 1.")
+        source_unit = payload.get("source_unit")
+        if source_unit is not None and (
+            not isinstance(source_unit, int) or isinstance(source_unit, bool) or source_unit < 1
+        ):
+            raise LLMResponseError("Relationship.source_unit must be a positive integer or null.")
         return cls(
             targets=_required_str_list(payload, "targets", "Relationship"),
             relation_type=_required_str(payload, "relation_type", "Relationship"),
@@ -311,6 +328,7 @@ class Relationship:
             confidence=float(confidence),
             evidence=_optional_str(payload, "evidence", "Relationship") or "",
             chapter=payload.get("chapter") if isinstance(payload.get("chapter"), int) else None,
+            source_unit=source_unit,
         )
 
 
@@ -322,10 +340,12 @@ class CharacterState:
     role: Literal["main", "support", "minor"] = "minor"
     personality: list[str] = field(default_factory=list)
     relationships: list[Relationship] = field(default_factory=list)
+    incoming_relationship_history: list[Relationship] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
     # Dynamic facts are deliberately separate from personality and aliases.
     # They describe the latest story state used by ending planning.
     status: Literal["alive", "dead", "unknown"] = "unknown"
+    status_evidence: str = ""
     location: str | None = None
     goal: str | None = None
     knowledge: list[str] = field(default_factory=list)
@@ -333,6 +353,7 @@ class CharacterState:
     thread_updates: list[ThreadUpdate] = field(default_factory=list)
     state_changes: list[StateChange] = field(default_factory=list)
     state_history: list[StateChange] = field(default_factory=list)
+    relationship_history: list[Relationship] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any], name_hint: str = "") -> "CharacterState":
@@ -355,6 +376,12 @@ class CharacterState:
         for key in ("threads", "thread_updates", "state_changes", "state_history"):
             if not isinstance(payload.get(key, []), list):
                 raise LLMResponseError(f"CharacterState.{key} must be a list.")
+        relationship_history_payload = payload.get("relationship_history", [])
+        if not isinstance(relationship_history_payload, list):
+            raise LLMResponseError("CharacterState.relationship_history must be a list.")
+        incoming_relationship_history_payload = payload.get("incoming_relationship_history", [])
+        if not isinstance(incoming_relationship_history_payload, list):
+            raise LLMResponseError("CharacterState.incoming_relationship_history must be a list.")
         return cls(
             name=_required_str(payload, "name", "CharacterState") or name_hint,
             aliases=_required_str_list(payload, "aliases", "CharacterState"),
@@ -362,8 +389,12 @@ class CharacterState:
             role=role,
             personality=_required_str_list(payload, "personality", "CharacterState"),
             relationships=[Relationship.from_dict(r) for r in relationship_payload],
+            incoming_relationship_history=[
+                Relationship.from_dict(item) for item in incoming_relationship_history_payload
+            ],
             unresolved=_required_str_list(payload, "unresolved", "CharacterState"),
             status=status,
+            status_evidence=_optional_str(payload, "status_evidence", "CharacterState") or "",
             location=_optional_str(payload, "location", "CharacterState"),
             goal=_optional_str(payload, "goal", "CharacterState"),
             knowledge=_required_str_list(payload, "knowledge", "CharacterState") if "knowledge" in payload else [],
@@ -371,6 +402,7 @@ class CharacterState:
             thread_updates=[ThreadUpdate.from_dict(item) for item in payload.get("thread_updates", [])],
             state_changes=[StateChange.from_dict(item) for item in payload.get("state_changes", [])],
             state_history=[StateChange.from_dict(item) for item in payload.get("state_history", [])],
+            relationship_history=[Relationship.from_dict(item) for item in relationship_history_payload],
         )
 
 
@@ -499,6 +531,21 @@ class StoryContext:
             lines.append("Time constraints: " + "; ".join(self.story_state.time_constraints[-limits.max_time_constraints:]))
         if self.story_state.unresolved_events:
             lines.append("World-level unresolved: " + "; ".join(self.story_state.unresolved_events[-limits.max_unresolved_events:]))
+        historical_threads = [
+            thread for thread in self.story_state.threads
+            if thread.history and thread.status != "resolved"
+        ]
+        if historical_threads:
+            lines.append("Historical world thread evidence (source observations, not current character knowledge):")
+            world_threads = _bounded_history(historical_threads, limits.max_thread_history)
+            for thread in world_threads:
+                latest = thread.history[-1]
+                location = f" chapter={latest.chapter}" if latest.chapter is not None else ""
+                source_unit = f" source_unit={latest.source_unit}" if latest.source_unit is not None else ""
+                lines.append(
+                    f"- [{thread.thread_id}] {thread.summary} ({thread.status}, {thread.confidence})"
+                    f"{location}{source_unit}: {latest.evidence}"
+                )
         return "\n".join(lines)
 
     def _render_character_section(
@@ -528,16 +575,81 @@ class StoryContext:
                     detail += f" ({relation.description})"
                 relations.append(detail)
             relations_part = " | relations: " + "; ".join(relations) if relations else ""
+            relation_history: list[tuple[int, int, str]] = []
+            if character.name in focus:
+                for index, observation in enumerate(character.relationship_history):
+                    targets = ", ".join(observation.targets) or "unknown"
+                    location = f"@{observation.chapter}" if observation.chapter is not None else ""
+                    source_unit = (
+                        f"/unit={observation.source_unit}" if observation.source_unit is not None else ""
+                    )
+                    relation_history.append((
+                        observation.source_unit or observation.chapter or -1,
+                        index,
+                        f"{targets}: {observation.relation_type}/{observation.sentiment}{location}{source_unit}"
+                        + (f" ({observation.description})" if observation.description else "")
+                        + (f"（证据：{observation.evidence}）" if observation.evidence else "")
+                    ))
+                incoming_offset = len(relation_history)
+                for index, observation in enumerate(character.incoming_relationship_history):
+                    source = observation.source or "unknown"
+                    location = f"@{observation.chapter}" if observation.chapter is not None else ""
+                    source_unit = (
+                        f"/unit={observation.source_unit}" if observation.source_unit is not None else ""
+                    )
+                    relation_history.append((
+                        observation.source_unit or observation.chapter or -1,
+                        incoming_offset + index,
+                        f"来自{source}: {observation.relation_type}/{observation.sentiment}{location}{source_unit}"
+                        + (f" ({observation.description})" if observation.description else "")
+                        + (f"（证据：{observation.evidence}）" if observation.evidence else "")
+                    ))
+                relation_history.sort(key=lambda item: (item[0], item[1]))
+            history_part = (
+                " | historical_relationship_history (source observations): "
+                + "; ".join(
+                    item[-1]
+                    for item in _bounded_history(relation_history, limits.max_relationship_history)
+                )
+                if relation_history and limits.max_relationship_history > 0 else ""
+            )
             suffix = f" | unresolved: {unresolved}" if unresolved else ""
             status = character.status
             location = character.location or "unknown"
             goal = character.goal or "unknown"
             knowledge = ", ".join(character.knowledge if character.name in focus else character.knowledge[:3])
             state_part = f" | state: {status}, location={location}, goal={goal}, realm={character.realm or 'unknown'}"
+            if status == "dead" and character.status_evidence:
+                state_part += f", death_evidence_source_quote={character.status_evidence}"
             if knowledge:
                 state_part += f", knows={knowledge}"
             suffix = state_part + suffix
-            suffix += relations_part
+            suffix += relations_part + history_part
+            thread_history: list[tuple[int, int, str]] = []
+            if character.name in focus:
+                sequence = 0
+                for thread in character.threads:
+                    for observation in thread.history:
+                        location = f"@{observation.chapter}" if observation.chapter is not None else ""
+                        source_unit = (
+                            f"/unit={observation.source_unit}" if observation.source_unit is not None else ""
+                        )
+                        thread_history.append((
+                            observation.source_unit or observation.chapter or -1,
+                            sequence,
+                            f"{thread.status}/{thread.confidence}{location}{source_unit}: {observation.summary}"
+                            f"（证据：{observation.evidence}）"
+                        ))
+                        sequence += 1
+                thread_history.sort(key=lambda item: (item[0], item[1]))
+            if thread_history and limits.max_thread_history > 0:
+                suffix += (
+                    " | historical_thread_evidence (source observations, not current knowledge): "
+                    + "; ".join(
+                        item[-1]
+                        for item in _bounded_history(thread_history, limits.max_thread_history)
+                    )
+                )
             lines.append(f"- {character.name}{aliases_part} ({character.role}): {traits}{suffix}")
         return "\n".join(lines)
 

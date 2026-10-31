@@ -15,8 +15,10 @@
     "major_conflicts": ["正在进行的矛盾/任务，含人物誓言/仇恨（明确谁 vs 谁）"],
     "time_constraints": ["deadline/限时诅咒/婚期等"],
     "unresolved_events": ["本章明确观察到仍待收尾的承诺/伏笔/债务"],
-    "thread_updates": [{"operation": "add | update | resolve", "thread_id": "沿用上一帧 threads 中的 ID；add 可为空",
-                        "summary": "伏笔当前描述", "evidence": "本章事件或其原文证据中明确支持这次变化的引文"}]
+    "thread_updates": [{"operation": "add | update | advance | resolve | supersede", "thread_id": "沿用上一帧 threads 中的 ID；add 可为空",
+                        "summary": "伏笔当前描述", "evidence": "本章事件或其原文证据中明确支持这次变化的引文",
+                        "kind": "promise | mystery | threat | relationship | symbol | object | identity | death | unclassified",
+                        "confidence": "high | medium | low", "candidate_outcomes": ["证据支持的候选后果"]}]
   }
 
 ## 规则

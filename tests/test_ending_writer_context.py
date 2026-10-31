@@ -11,6 +11,7 @@ from story_for_you.core.ending_writer import (
     ContinuationPlan,
     EndingChapterPlan,
     EndingWriter,
+    NarrativeSignal,
     SourceAnchor,
 )
 from story_for_you.indexer.segment import Segment, SegmentIndex
@@ -210,6 +211,95 @@ def test_continuation_context_recalls_subtext_cue_paragraphs_without_interpretin
     assert "不代表任何解释成立" in block
 
 
+def test_continuation_context_lists_action_linked_anchor_candidates():
+    writer = EndingWriter(_FakeLLM(), SegmentIndex([], {}, {}, {}))
+    block = writer._build_continuation_context(
+        "老者从怀里取出一道奏章，扔到了御榻上。\n普通景物。",
+        StoryContext(),
+    )
+
+    assert "Candidate Anchor Inventory" in block
+    assert "label=奏章" in block
+
+
+def test_subtext_cues_keep_late_high_signal_ending_from_punctuation_flood():
+    writer = EndingWriter(_FakeLLM(), SegmentIndex([], {}, {}, {}))
+    noisy_middle = "\n".join(f"众人问道：‘第{i}句有何道理？’" for i in range(180))
+    source = noisy_middle + "\n艳婷取出药瓶，老太太惊叫道：‘娘要被毒死了！’"
+
+    cues = writer._extract_subtext_cues(source)
+
+    assert "艳婷取出药瓶" in cues
+    assert "娘要被毒死了" in cues
+
+
+def test_single_subtext_cue_still_triggers_preanalysis():
+    class SubtextLLM(_FakeLLM):
+        def generate(self, prompt, system="", options=None):
+            return LLMResponse(json.dumps({"signals": [{
+                "signal_id": "s1", "kind": "foreshadowing", "label": "毒",
+                "evidence": "她说：‘娘要被毒死了！’", "reading": "可能是死亡预告",
+                "confidence": "medium", "candidate_consequences": ["查验药物"],
+            }]}), 0)
+
+    writer = EndingWriter(SubtextLLM(), SegmentIndex([], {}, {}, {}))
+    signals = writer._phase_subtext(
+        "Recent Source Scene\n她说：‘娘要被毒死了！’\nCandidate Subtext Cues",
+        "承接", "她说：‘娘要被毒死了！’",
+    )
+
+    assert len(signals) == 1
+
+
+def test_continuation_context_recalls_early_motif_for_ending_signal():
+    writer = EndingWriter(
+        _FakeLLM(),
+        SegmentIndex(
+            [
+                Segment(1, "多年前宫中壁上已有迦楼罗钳龙的旧画。", chapter=8),
+                Segment(2, "末章又画着迦楼罗钳住飞龙。", chapter=20),
+            ],
+            {}, {}, {},
+        ),
+    )
+    signal = NarrativeSignal(
+        "s-dragon", "metaphor", "钳龙图", "末章又画着迦楼罗钳住飞龙。",
+        "可能对应权力关系", "medium", candidate_consequences=["身份或权力变化"],
+    )
+
+    block = writer._build_continuation_context(
+        "末章又画着迦楼罗钳住飞龙。", StoryContext(),
+        narrative_signals=[signal],
+    )
+
+    assert "多年前宫中壁上已有迦楼罗钳龙的旧画" in block
+    assert "Long-range Foreshadowing Evidence" in block
+
+
+def test_candidate_cue_history_recalls_early_match_before_subtext_interpretation():
+    writer = EndingWriter(
+        _FakeLLM(),
+        SegmentIndex(
+            [
+                Segment(1, "早年曾有人提到玉玺藏在内库。", chapter=3),
+                Segment(2, "末章又见玉玺入殿。", chapter=20),
+                Segment(3, "近景。", chapter=21),
+                Segment(4, "近景。", chapter=22),
+                Segment(5, "近景。", chapter=23),
+                Segment(6, "近景。", chapter=24),
+            ],
+            {}, {}, {},
+        ),
+    )
+
+    history = writer._build_candidate_cue_history(
+        StoryContext(), "- cue-1: 末章又见玉玺入殿。"
+    )
+
+    assert "早年曾有人提到玉玺藏在内库" in history
+    assert "Candidate Cue Historical Matches" in history
+
+
 def test_continuation_context_excludes_download_site_trailer():
     writer = EndingWriter(_FakeLLM(), SegmentIndex([], {}, {}, {}))
     text = (
@@ -337,6 +427,35 @@ def test_source_anchor_evidence_must_quote_source_text():
         )
 
 
+def test_plan_anchor_evidence_must_come_from_ending_window_not_earlier_source():
+    class EarlierAnchorPlan(_GenericPlanLLM):
+        def generate(self, prompt, system="", options=None):
+            payload = json.loads(super().generate(prompt, system, options).content)
+            payload["source_anchors"] = [{
+                "anchor_id": "old-object",
+                "kind": "object",
+                "label": "旧匣",
+                "evidence": "早年曾有人打开旧匣，里面藏着一封信。",
+                "significance": "可能关联旧案",
+                "handling": "hold",
+            }]
+            payload["chapters"][0]["anchor_actions"] = [{
+                "anchor_id": "old-object", "handling": "hold", "action": "保留悬念",
+            }]
+            return LLMResponse(json.dumps(payload, ensure_ascii=False), 0)
+
+    writer = EndingWriter(EarlierAnchorPlan(), SegmentIndex([], {}, {}, {}))
+    with pytest.raises(LLMResponseError, match="must quote the supplied source scene"):
+        writer._phase_plan(
+            "上下文", "承接", max_chapters=1,
+            source_text=(
+                "早年曾有人打开旧匣，里面藏着一封信。\n"
+                + ("普通景物。" * 7000)
+                + "\n末章只剩皇帝抬眼。"
+            ),
+        )
+
+
 def test_plan_keeps_subtext_as_evidence_backed_hypothesis_and_recommends_plot():
     class SignalPlan(_GenericPlanLLM):
         def generate(self, prompt, system="", options=None):
@@ -370,6 +489,30 @@ def test_plan_keeps_subtext_as_evidence_backed_hypothesis_and_recommends_plot():
     assert plan.narrative_signals[0].confidence == "medium"
     assert plan.plot_recommendations[0].based_on == ["signal-poison"]
     assert "不信任" in writer._format_plan_readings(plan)
+
+
+def test_plan_requires_high_confidence_signal_to_be_covered_by_recommendation():
+    class UncoveredSignalPlan(_GenericPlanLLM):
+        def generate(self, prompt, system="", options=None):
+            payload = json.loads(super().generate(prompt, system, options).content)
+            payload["narrative_signals"] = [{
+                "signal_id": "signal-death", "kind": "foreshadowing", "label": "死亡预告",
+                "evidence": "娘要被毒死了！", "reading": "可能预告某人死亡",
+                "confidence": "high", "candidate_consequences": ["死亡"],
+            }]
+            payload["plot_recommendations"] = [{
+                "recommendation_id": "plot-other", "title": "另一路",
+                "premise": "推进别的冲突", "based_on": [], "beats": ["行动"],
+                "tradeoff": "忽略死亡预告", "recommended": True,
+            }]
+            return LLMResponse(json.dumps(payload, ensure_ascii=False), 0)
+
+    writer = EndingWriter(UncoveredSignalPlan(), SegmentIndex([], {}, {}, {}))
+    with pytest.raises(LLMResponseError, match="each high/medium signal"):
+        writer._phase_plan(
+            "上下文", "承接", max_chapters=1,
+            source_text="老太太说：‘娘要被毒死了！’",
+        )
 
 
 def test_signal_evidence_is_rejected_when_it_is_not_contiguous_source_text():
@@ -475,6 +618,52 @@ def test_hold_anchor_is_explicitly_checked_by_resolution_review():
     assert llm.prompt is not None
     assert "奏章" in llm.prompt.render()
     assert "不能因相关台词已经出现就视为已处理" in llm.prompt.render()
+
+
+def test_resolution_review_runs_for_subtext_even_without_open_threads():
+    class SignalResolution(_FakeLLM):
+        def __init__(self):
+            self.calls = 0
+
+        def generate(self, prompt, system="", options=None):
+            self.calls += 1
+            return LLMResponse(json.dumps({
+                "status": "ok", "missing_threads": [], "edits": [], "notes": "",
+            }, ensure_ascii=False), 0)
+
+    signal = NarrativeSignal(
+        "s1", "foreshadowing", "死亡预告", "娘要被毒死了！", "可能是投毒预告",
+        "medium", candidate_consequences=["查验药物"],
+    )
+    llm = SignalResolution()
+    writer = EndingWriter(llm, SegmentIndex([], {}, {}, {}))
+    result = writer._phase_resolution_review(
+        "正文", StoryContext(), "上下文", None, "", "open", narrative_signals=[signal],
+    )
+
+    assert result == "正文"
+    assert llm.calls == 1
+
+
+def test_validation_cast_includes_characters_that_return_in_generated_text():
+    context = StoryContext(
+        characters={
+            "甲": CharacterState(name="甲", role="main"),
+            "乙": CharacterState(name="乙", role="support", goal="追回玉玺"),
+        }
+    )
+    writer = EndingWriter(_FakeLLM(), SegmentIndex([], {}, {}, {}))
+    plan = ContinuationPlan(
+        1, "推进", "推进关系", "当夜", "open", "场景",
+        [EndingChapterPlan(1, "夜", "推进", "甲", "城门")],
+    )
+
+    block = writer._build_validation_context(
+        "原文", context, plan, [], [], final_text="甲在城门遇见乙，乙仍要追回玉玺。",
+    )
+
+    assert "乙" in block
+    assert "追回玉玺" in block
 
 
 def test_plan_prompt_receives_actual_limit_independently_of_full_requested_scope():

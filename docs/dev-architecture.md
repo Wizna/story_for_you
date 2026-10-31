@@ -224,6 +224,9 @@ class Relationship:
     sentiment: Literal["positive", "neutral", "negative"] = "neutral"
     description: str = ""
     source: str | None = None
+    evidence: str = ""
+    chapter: int | None = None
+    source_unit: int | None = None
 
 @dataclass
 class CharacterState:
@@ -234,7 +237,14 @@ class CharacterState:
     role: Literal["main", "support", "minor"] = "minor"
     personality: list[str] = field(default_factory=list)
     relationships: list[Relationship] = field(default_factory=list)
+    relationship_history: list[Relationship] = field(default_factory=list)
+    incoming_relationship_history: list[Relationship] = field(default_factory=list)
     unresolved: list[str] = field(default_factory=list)
+    status: Literal["alive", "dead", "unknown"] = "unknown"
+    status_evidence: str = ""
+    location: str | None = None
+    goal: str | None = None
+    knowledge: list[str] = field(default_factory=list)
 
 @dataclass
 class StoryState:
@@ -282,7 +292,7 @@ class StoryContext:
         """拆分为 prompt 需要的几个段落"""
         ...
 
-> 关系去重策略：`Relationship.targets` 记录与 `source` 同句出现的所有人物，因而每段 `description` 只会写入一次，就算原文涉及多人也不会在缓存中反复出现。
+> 关系去重策略：`Relationship.targets` 记录与 `source` 同句出现的所有人物，因而每段 `description` 只会写入一次，就算原文涉及多人也不会在缓存中反复出现。当前快照记录最新状态，`relationship_history` 和 `incoming_relationship_history` 记录带章节/物理单元证据的转折；连续的同状态重复观察只更新最新证据。
 ```
 
 - **短期记忆**：`ChapterSummaryWindow`（`layers/chapter_window.py`）维护最近 N 章（默认 12），提供 `append`, `dump`, `to_prompt_lines()`。
@@ -915,7 +925,7 @@ class RemoveResult:
 
 #### 4.6.4 自适应续写 (`ending_writer.py`)
 
-当前实现会在候选深意片段足够多时先运行 `ending_subtext`，从末章反常对白、药物/死亡、宗教或动物意象和异常反应中提取逐字证据，形成带置信度和候选对应的 `NarrativeSignal`。随后生成结构化 `ContinuationPlan`，由模型根据全局状态、原文证据和读者要求判断叙事阶段、范围、单元粒度（回/场景/结构段）和单元数，并为奏章、药瓶、玉玺、火枪等 `SourceAnchor` 分配 `AnchorAction`，同时给出 1–3 个 `PlotRecommendation`（仅一个优先项）。低置信度隐喻保留为假设，不直接写成事实。单元可以是一回、一个场景或一个结构段，不预设为结局；随后逐单元执行初稿与润色，最后对合并文本做跨单元承接和一致性审查。`CharacterState` 除身份和性格外，还保存 `status`、`location`、`goal` 与 `knowledge`，用于约束人物在不同单元的行动和知情范围。
+当前实现会在候选深意片段足够多时先运行 `ending_subtext`，从末章反常对白、药物/死亡、宗教或动物意象和异常反应中提取逐字证据，形成带置信度和候选对应的 `NarrativeSignal`。随后生成结构化 `ContinuationPlan`，由模型根据全局状态、原文证据和读者要求判断叙事阶段、范围、单元粒度（回/场景/结构段）和单元数，并为奏章、药瓶、玉玺、火枪等 `SourceAnchor` 分配 `AnchorAction`，同时给出 1–3 个 `PlotRecommendation`（仅一个优先项）。低置信度隐喻保留为假设，不直接写成事实；计划中的信号会用人物、物件、地点和关系词回溯全书索引，召回早期连续原文供模型核对。单元可以是一回、一个场景或一个结构段，不预设为结局；随后逐单元执行初稿与润色，最后对合并文本做跨单元承接和一致性审查。`CharacterState` 除身份和性格外，还保存 `status`、`status_evidence`、`location`、`goal`、`knowledge`、关系当前快照和关系历史，用于约束人物在不同单元的行动和知情范围。历史关系、伏笔引文和全书召回片段会显式标注为历史观察，不自动变成当前人物已知事实。
 
 每个单元现在先执行场景因果规划，再生成初稿、润色、审查与记忆提取。`core/ending/memory.py`
 使用独立的 `StateStore` 保存已通过审查的续写状态、历史摘要和引文，不修改原作分析；
@@ -927,7 +937,7 @@ class RemoveResult:
 
 `StateChange` 为目标、地点、阵营和知情范围提供带引文的 set/clear/add/remove/replace 操作，
 清除和替换必须匹配旧值，变更历史随 `CharacterState` 保存。事件以物理分析单元、源章节和事件 ID
-标识一次发生，允许归还后再次转交等重复行为；分析缓存格式为 6。
+标识一次发生，允许归还后再次转交等重复行为；关系历史会压缩连续的同状态重复观察，只保留最新证据和实际转折；分析缓存格式为 7。
 
 `core/ending/revision.py` 只应用模型返回的唯一引用替换，拒绝失配、歧义、重叠和空全文，
 不在末尾统一追加桥段。`revision_mode` 支持 full/local/none；只有 full 执行整单元润色。

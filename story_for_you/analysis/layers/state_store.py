@@ -9,9 +9,10 @@ from story_for_you.analysis.context import (
     PlotEvent,
     Relationship,
     StoryState,
+    _bounded_history,
 )
 from story_for_you.analysis.names import normalize_character_label
-from story_for_you.analysis.threads import StoryThread, thread_id
+from story_for_you.analysis.threads import StoryThread, ThreadEvidence, thread_id
 from story_for_you.core.exceptions import LLMResponseError
 
 if TYPE_CHECKING:
@@ -23,6 +24,8 @@ _GENERIC_CHARACTER_TITLES = {
     "三哥", "大嫂", "二嫂", "爹", "娘", "父亲", "母亲", "老爷", "夫人",
     "公子", "小姐", "掌门", "长老", "殿下", "陛下", "将军", "先生",
 }
+_MAX_THREAD_EVIDENCE_HISTORY = 48
+_MAX_RELATIONSHIP_HISTORY = 128
 
 
 class StateStore:
@@ -43,19 +46,42 @@ class StateStore:
         characters: Iterable[CharacterState],
         relationships: Iterable[Relationship],
         events: Iterable[PlotEvent],
+        *,
+        chapter: int | None = None,
+        source_unit: int | None = None,
     ) -> None:
-        for character in characters:
-            self._merge_character(character)
+        character_list = list(characters)
+        for character in character_list:
+            self._merge_character(character, chapter=chapter, source_unit=source_unit)
+        for character in character_list:
+            for relationship in character.relationships:
+                self._merge_relationship(relationship, chapter=chapter, source_unit=source_unit)
         for relationship in relationships:
-            self._merge_relationship(relationship)
+            self._merge_relationship(relationship, chapter=chapter, source_unit=source_unit)
         for event in events:
-            self._event_log.append(event)
-            for name in event.deceased_characters:
+            event_record = deepcopy(event)
+            if chapter is not None and event_record.chapter <= 0:
+                event_record.chapter = chapter
+            if source_unit is not None and event_record.source_unit is None:
+                event_record.source_unit = source_unit
+            self._event_log.append(event_record)
+            # A non-irreversible event may mention a rumour, a false death, or
+            # a witness's mistaken belief.  Only an explicitly irreversible
+            # event is allowed to establish the canonical dead state; the
+            # chapter-local character extractor still has to provide its own
+            # quoted death evidence when it sets ``status=dead``.
+            if not event_record.is_irreversible:
+                continue
+            for name in event_record.deceased_characters:
                 owner = self._resolve_label(name)
                 if owner in self._characters:
                     self._characters[owner].status = "dead"
+                    if event_record.evidence:
+                        self._characters[owner].status_evidence = event_record.evidence
 
-    def set_story_state(self, story_state: StoryState) -> None:
+    def set_story_state(
+        self, story_state: StoryState, *, chapter: int | None = None, source_unit: int | None = None
+    ) -> None:
         """Persist the latest synthesized story state."""
         prior = self._story_state
         existing = CharacterState(
@@ -66,7 +92,7 @@ class StateStore:
             name="世界", unresolved=story_state.unresolved_events,
             threads=story_state.threads, thread_updates=story_state.thread_updates,
         )
-        self._merge_threads(existing, incoming)
+        self._merge_threads(existing, incoming, chapter=chapter, source_unit=source_unit)
         updated = deepcopy(story_state)
         updated.threads = existing.threads
         updated.unresolved_events = existing.unresolved
@@ -107,14 +133,22 @@ class StateStore:
         self._ambiguous_aliases.clear()
 
     # Internal helpers -------------------------------------------------
-    def _merge_character(self, character: CharacterState) -> None:
+    def _merge_character(
+        self, character: CharacterState, *, chapter: int | None = None, source_unit: int | None = None
+    ) -> None:
         owner_name = self._resolve_owner(character)
         existing = self._characters.get(owner_name or character.name)
         if not existing:
             existing = deepcopy(character)
+            # Relationships are merged below after every character has been
+            # registered. Keep the initial snapshot empty so one observation
+            # is not recorded during creation and again during that pass.
+            existing.relationships = []
+            existing.relationship_history = deepcopy(character.relationship_history)
+            existing.incoming_relationship_history = deepcopy(character.incoming_relationship_history)
             existing.threads = []
             existing.unresolved = []
-            self._merge_threads(existing, character)
+            self._merge_threads(existing, character, chapter=chapter, source_unit=source_unit)
             self._apply_state_changes(existing, character)
             self._characters[character.name] = existing
             self._register_aliases(character.name, [character.name, *character.aliases])
@@ -125,7 +159,11 @@ class StateStore:
             existing.aliases = sorted(set(existing.aliases + [character.name]))
         if character.personality:
             existing.personality = list(dict.fromkeys(existing.personality + character.personality))
-        self._merge_threads(existing, character)
+        self._merge_threads(existing, character, chapter=chapter, source_unit=source_unit)
+        for observation in character.relationship_history:
+            self._append_relationship_history(existing, observation)
+        for observation in character.incoming_relationship_history:
+            self._append_incoming_relationship_history(existing, observation)
         if _ROLE_PRIORITY.get(character.role, 0) > _ROLE_PRIORITY.get(existing.role, 0):
             existing.role = character.role
         # Character extraction is chapter-local.  A supplied affiliation is a
@@ -135,7 +173,13 @@ class StateStore:
         if character.realm and "realm" not in changed_fields:
             existing.realm = character.realm
         if character.status != "unknown":
-            existing.status = character.status
+            # Death is an irreversible fact. A later chapter-local extraction
+            # may omit the death or hallucinate an ``alive`` observation, but
+            # it must not resurrect a character already marked dead.
+            if existing.status != "dead" or character.status == "dead":
+                existing.status = character.status
+        if character.status == "dead" and character.status_evidence:
+            existing.status_evidence = character.status_evidence
         if character.location and "location" not in changed_fields:
             existing.location = character.location
         if character.goal and "goal" not in changed_fields:
@@ -166,7 +210,14 @@ class StateStore:
             setattr(existing, field, getattr(candidate, field))
         existing.state_changes = []
 
-    def _merge_threads(self, existing: CharacterState, incoming: CharacterState) -> None:
+    def _merge_threads(
+        self,
+        existing: CharacterState,
+        incoming: CharacterState,
+        *,
+        chapter: int | None = None,
+        source_unit: int | None = None,
+    ) -> None:
         records = {item.thread_id: deepcopy(item) for item in existing.threads}
         for summary in existing.unresolved:
             if any(item.summary == summary for item in records.values()):
@@ -174,7 +225,39 @@ class StateStore:
             key = thread_id(existing.name, summary)
             records.setdefault(key, StoryThread(key, summary))
         for record in incoming.threads:
-            records[record.thread_id] = deepcopy(record)
+            current = records.get(record.thread_id)
+            if current is None:
+                current = deepcopy(record)
+                # Initial extractor records carry the latest evidence in the
+                # flat ``evidence`` field but often have no history yet.  Move
+                # that observation into the bounded history immediately so a
+                # long-range continuation can retrieve the original clue.
+                initial_history = list(current.history)
+                current.history = []
+                for observation in initial_history:
+                    self._append_thread_observation(current, observation)
+                self._append_thread_history(
+                    current, current.summary, current.evidence, chapter, source_unit,
+                )
+                records[record.thread_id] = current
+            else:
+                current.summary = record.summary or current.summary
+                if not (
+                    current.status in {"resolved", "superseded"}
+                    and record.status in {"open", "dormant"}
+                ):
+                    current.status = record.status
+                current.evidence = record.evidence or current.evidence
+                current.kind = record.kind or current.kind
+                current.confidence = record.confidence or current.confidence
+                current.candidate_outcomes = list(dict.fromkeys(
+                    current.candidate_outcomes + record.candidate_outcomes
+                ))
+                for observation in record.history:
+                    self._append_thread_observation(current, observation)
+                self._append_thread_history(
+                    current, current.summary, record.evidence, chapter, source_unit,
+                )
         previous_summaries = {item.summary for item in records.values()}
         for change in incoming.thread_updates:
             key = change.thread_id or thread_id(existing.name, change.summary)
@@ -184,22 +267,81 @@ class StateStore:
                     + "; ".join(f"{item.thread_id}={item.summary}" for item in records.values())
                 )
             if change.operation == "add" and key in records:
-                # Repeated observations cannot reopen an already resolved thread.
+                # Repeated observations cannot reopen an already resolved thread,
+                # but their evidence is still useful for long-range retrieval.
+                self._append_thread_history(records[key], change.summary, change.evidence, chapter, source_unit)
                 continue
-            records[key] = StoryThread(
-                key, change.summary,
-                "resolved" if change.operation == "resolve" else "open", change.evidence,
-            )
+            prior = records.get(key)
+            if prior is None:
+                prior = StoryThread(key, change.summary)
+            status = prior.status
+            if change.operation == "resolve":
+                status = "resolved"
+            elif change.operation == "supersede":
+                status = "superseded"
+            elif change.operation in {"add", "advance"}:
+                status = "open"
+            # ``update`` preserves a resolved/superseded status. A later
+            # observation must not silently reopen a settled thread.
+            prior.summary = change.summary
+            prior.status = status
+            prior.evidence = change.evidence
+            if change.kind != "unclassified":
+                prior.kind = change.kind
+            prior.confidence = change.confidence
+            if change.candidate_outcomes:
+                prior.candidate_outcomes = list(dict.fromkeys(
+                    prior.candidate_outcomes + change.candidate_outcomes
+                ))
+            self._append_thread_history(prior, change.summary, change.evidence, chapter, source_unit)
+            records[key] = prior
         known_summaries = previous_summaries | {item.summary for item in records.values()}
         for summary in incoming.unresolved:
             if summary not in known_summaries:
                 key = thread_id(existing.name, summary)
-                records.setdefault(key, StoryThread(key, summary))
+                record = records.setdefault(key, StoryThread(key, summary))
+                if record.evidence:
+                    self._append_thread_history(record, summary, record.evidence, chapter, source_unit)
         existing.threads = list(records.values())
         existing.unresolved = [item.summary for item in records.values() if item.status == "open"]
         existing.thread_updates = []
 
-    def _merge_relationship(self, relationship: Relationship) -> None:
+    def _append_thread_history(
+        self,
+        thread: StoryThread,
+        summary: str,
+        evidence: str,
+        chapter: int | None,
+        source_unit: int | None,
+    ) -> None:
+        if not evidence.strip():
+            return
+        observation = ThreadEvidence(summary.strip(), evidence.strip(), chapter, source_unit)
+        self._append_thread_observation(thread, observation)
+
+    def _append_thread_observation(self, thread: StoryThread, observation: ThreadEvidence) -> None:
+        """Merge one quoted observation while preserving its best provenance."""
+        for index in range(len(thread.history) - 1, -1, -1):
+            previous = thread.history[index]
+            if previous.summary != observation.summary or previous.evidence != observation.evidence:
+                continue
+            # A later merge may know the physical unit even when the cached
+            # record did not.  Upgrade that row rather than creating a
+            # duplicate observation for the same quotation.
+            previous_position = previous.source_unit or previous.chapter or -1
+            observation_position = observation.source_unit or observation.chapter or -1
+            if observation_position >= previous_position and (
+                observation.chapter is not None or observation.source_unit is not None
+            ):
+                thread.history[index] = deepcopy(observation)
+            return
+        thread.history.append(deepcopy(observation))
+        if len(thread.history) > _MAX_THREAD_EVIDENCE_HISTORY:
+            thread.history = [thread.history[0], *thread.history[-(_MAX_THREAD_EVIDENCE_HISTORY - 1):]]
+
+    def _merge_relationship(
+        self, relationship: Relationship, *, chapter: int | None = None, source_unit: int | None = None
+    ) -> None:
         source = self._resolve_label(relationship.source)
         if not source or source not in self._characters:
             return
@@ -207,30 +349,95 @@ class StateStore:
             return
         owner = self._characters[source]
         normalized_targets = self._normalize_targets(relationship.targets)
+        observation = deepcopy(relationship)
+        observation.source = source
+        observation.targets = normalized_targets
+        if chapter is not None:
+            observation.chapter = chapter
+        if source_unit is not None:
+            observation.source_unit = source_unit
+        self._append_relationship_history(owner, observation)
+        for target in normalized_targets:
+            target_owner = self._resolve_label(target)
+            if not target_owner or target_owner not in self._characters or target_owner == source:
+                continue
+            incoming = deepcopy(observation)
+            incoming.targets = [source]
+            self._append_incoming_relationship_history(
+                self._characters[target_owner], incoming
+            )
         for existing in owner.relationships:
             if existing.targets == normalized_targets:
-                existing.relation_type = relationship.relation_type
-                existing.sentiment = relationship.sentiment
-                if relationship.description:
-                    existing.description = relationship.description
-                if relationship.confidence:
-                    existing.confidence = relationship.confidence
-                if relationship.evidence:
-                    existing.evidence = relationship.evidence
-                if relationship.chapter is not None:
-                    existing.chapter = relationship.chapter
+                existing.relation_type = observation.relation_type
+                existing.sentiment = observation.sentiment
+                if observation.description:
+                    existing.description = observation.description
+                if observation.confidence:
+                    existing.confidence = observation.confidence
+                if observation.evidence:
+                    existing.evidence = observation.evidence
+                if observation.chapter is not None:
+                    existing.chapter = observation.chapter
+                if observation.source_unit is not None:
+                    existing.source_unit = observation.source_unit
                 return
         owner.relationships.append(
             Relationship(
                 targets=normalized_targets,
-                relation_type=relationship.relation_type,
-                sentiment=relationship.sentiment,
-                description=relationship.description,
+                relation_type=observation.relation_type,
+                sentiment=observation.sentiment,
+                description=observation.description,
                 source=source,
-                confidence=relationship.confidence,
-                evidence=relationship.evidence,
-                chapter=relationship.chapter,
+                confidence=observation.confidence,
+                evidence=observation.evidence,
+                chapter=observation.chapter,
+                source_unit=observation.source_unit,
             )
+        )
+
+    def _append_relationship_history(self, owner: CharacterState, observation: Relationship) -> None:
+        # Long novels repeat the same relationship in many chapters. Keep the
+        # latest evidence for an unchanged state, while retaining each actual
+        # transition so an old alliance cannot hide a later betrayal.
+        for index in range(len(owner.relationship_history) - 1, -1, -1):
+            previous = owner.relationship_history[index]
+            if previous.targets != observation.targets:
+                continue
+            if self._same_relationship_state(previous, observation):
+                owner.relationship_history[index] = deepcopy(observation)
+                return
+            break
+        owner.relationship_history.append(deepcopy(observation))
+        if len(owner.relationship_history) > _MAX_RELATIONSHIP_HISTORY:
+            owner.relationship_history = [
+                owner.relationship_history[0],
+                *owner.relationship_history[-(_MAX_RELATIONSHIP_HISTORY - 1):],
+            ]
+
+    def _append_incoming_relationship_history(
+        self, owner: CharacterState, observation: Relationship
+    ) -> None:
+        for index in range(len(owner.incoming_relationship_history) - 1, -1, -1):
+            previous = owner.incoming_relationship_history[index]
+            if previous.source != observation.source or previous.targets != observation.targets:
+                continue
+            if self._same_relationship_state(previous, observation):
+                owner.incoming_relationship_history[index] = deepcopy(observation)
+                return
+            break
+        owner.incoming_relationship_history.append(deepcopy(observation))
+        if len(owner.incoming_relationship_history) > _MAX_RELATIONSHIP_HISTORY:
+            owner.incoming_relationship_history = [
+                owner.incoming_relationship_history[0],
+                *owner.incoming_relationship_history[-(_MAX_RELATIONSHIP_HISTORY - 1):],
+            ]
+
+    def _same_relationship_state(self, left: Relationship, right: Relationship) -> bool:
+        """Compare semantic relationship state while ignoring provenance."""
+        return (
+            left.relation_type == right.relation_type
+            and left.sentiment == right.sentiment
+            and left.description == right.description
         )
 
     def _normalize_targets(self, targets: Iterable[str]) -> list[str]:
@@ -272,7 +479,39 @@ class StateStore:
         for character in ordered[:limits.max_characters]:
             traits = ", ".join(character.personality[:limits.max_personality_traits]) if character.personality else "traits unknown"
             realm = character.realm or "unaffiliated"
-            lines.append(f"- {character.name} ({character.role}, {realm}): {traits}")
+            state = (
+                f"status={character.status}, location={character.location or 'unknown'}, "
+                f"goal={character.goal or 'unknown'}"
+            )
+            if character.status == "dead" and character.status_evidence:
+                state += f", death_evidence={character.status_evidence}"
+            relation = ""
+            if character.relationships:
+                relation = " | " + "; ".join(
+                    f"{','.join(item.targets)}:{item.relation_type}/{item.sentiment}"
+                    for item in character.relationships[:limits.max_relationships_per_char]
+                )
+            history = ""
+            if (
+                (character.relationship_history or character.incoming_relationship_history)
+                and limits.max_relationship_history > 0
+            ):
+                observations = [
+                    *character.relationship_history,
+                    *character.incoming_relationship_history,
+                ]
+                observations.sort(key=lambda item: item.source_unit or item.chapter or -1)
+                observations = _bounded_history(observations, limits.max_relationship_history)
+                history = " | historical_relationship_history (source observations): " + "; ".join(
+                    (
+                        f"来自{item.source}:" if item.source and item.source != character.name else ""
+                    )
+                    + f"{','.join(item.targets)}:{item.relation_type}/{item.sentiment}"
+                    + (f"@{item.chapter}" if item.chapter is not None else "")
+                    + (f"（证据：{item.evidence}）" if item.evidence else "")
+                    for item in observations
+                )
+            lines.append(f"- {character.name} ({character.role}, {realm}; {state}): {traits}{relation}{history}")
         return lines
 
     def _render_unresolved_threads(self, limits: RenderingLimits) -> list[str]:

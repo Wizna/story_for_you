@@ -4,7 +4,6 @@ from typing import Any, Iterable
 
 import logging
 import json
-from dataclasses import asdict
 
 from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.names import normalize_character_label
@@ -25,6 +24,8 @@ from story_for_you.utils.prompting import cache_prompt
 logger = logging.getLogger(__name__)
 
 _STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
+_DEFAULT_MAX_KNOWN_CHARACTERS = 96
+_MAX_ROSTER_THREADS_PER_CHARACTER = 8
 _ROLE_PRIORITY: dict[str, int] = {"main": 3, "support": 2, "minor": 1}
 _GENERIC_CHARACTER_TITLES = {
     "师父", "师傅", "老师", "师兄", "师姐", "师弟", "师妹", "大哥", "二哥",
@@ -36,12 +37,20 @@ _GENERIC_CHARACTER_TITLES = {
 class CharacterExtractor:
     """Identifies characters present in the supplied text."""
 
-    def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
+    def __init__(
+        self,
+        llm: LLMProvider,
+        prompt_budget: int | None = None,
+        max_known_characters: int = _DEFAULT_MAX_KNOWN_CHARACTERS,
+    ):
+        if max_known_characters <= 0:
+            raise ValueError("max_known_characters must be positive")
         self.llm = llm
         self.personality_analyzer = PersonalityAnalyzer(llm)
         self.template = load_template("character_sheet")
         self.repair_template = load_template("character_sheet_repair")
         self.prompt_budget = prompt_budget
+        self.max_known_characters = max_known_characters
 
     def extract(self, text: str, known_characters: Iterable[CharacterState] = ()) -> list[CharacterState]:
         """Return structured character states for the text."""
@@ -63,10 +72,11 @@ class CharacterExtractor:
 
     def _build_prompt(self, text: str, known_characters: Iterable[CharacterState] = ()) -> CacheablePrompt:
         chapter_text = text.strip()
+        selected = self._select_known_characters(chapter_text, known_characters)
         roster = [
-            {"name": char.name, "aliases": char.aliases, "threads": [asdict(item) for item in char.threads],
+            {"name": char.name, "aliases": char.aliases, "threads": self._prompt_threads(char),
              "goal": char.goal, "location": char.location, "realm": char.realm, "knowledge": char.knowledge}
-            for char in known_characters
+            for char in selected
         ]
         prompt, truncated = render_cacheable_prompt_with_budget(
             self.template,
@@ -78,6 +88,61 @@ class CharacterExtractor:
         if truncated:
             logger.debug("Character prompt truncated to %s chars", len(prompt.render()))
         return prompt
+
+    def _prompt_threads(self, character: CharacterState) -> list[dict[str, Any]]:
+        """Render stable thread IDs without replaying every historical quote."""
+        ordered = sorted(
+            character.threads,
+            key=lambda thread: (
+                thread.status in {"open", "dormant"},
+                thread.history[-1].source_unit if thread.history and thread.history[-1].source_unit else 0,
+            ),
+            reverse=True,
+        )
+        return [
+            {
+                "thread_id": thread.thread_id,
+                "summary": thread.summary,
+                "status": thread.status,
+                "kind": thread.kind,
+                "confidence": thread.confidence,
+                "candidate_outcomes": thread.candidate_outcomes[-3:],
+            }
+            for thread in ordered[:_MAX_ROSTER_THREADS_PER_CHARACTER]
+        ]
+
+    def _select_known_characters(
+        self, chapter_text: str, known_characters: Iterable[CharacterState]
+    ) -> list[CharacterState]:
+        """Keep the chapter roster bounded without dropping active participants.
+
+        A long novel can accumulate thousands of incidental names. Sending the
+        complete roster to every chapter prompt eventually crowds out the
+        chapter evidence and causes returning characters to be misidentified.
+        Characters explicitly mentioned in the current unit always rank first;
+        active threads and main/support roles fill the remaining slots.
+        """
+        candidates = list(known_characters)
+        if len(candidates) <= self.max_known_characters:
+            return candidates
+        text = chapter_text.casefold()
+        role_priority = {"main": 3, "support": 2, "minor": 1}
+        scored: list[tuple[int, int, int, int, CharacterState]] = []
+        for _index, character in enumerate(candidates):
+            labels = [character.name, *character.aliases]
+            mentions = sum(
+                text.count(label.casefold())
+                for label in labels
+                if isinstance(label, str)
+                and label.strip()
+                and (label == character.name or len(label.strip()) >= 2)
+            )
+            active = int(bool(character.threads or character.unresolved or character.goal or character.location))
+            scored.append((int(mentions > 0), mentions, active, role_priority.get(character.role, 0), character))
+        scored.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
+        selected = [item[-1] for item in scored[:self.max_known_characters]]
+        original_order = {id(character): index for index, character in enumerate(candidates)}
+        return sorted(selected, key=lambda character: original_order[id(character)])
 
     # Internal helpers -------------------------------------------------
     def _prompt_characters(self, prompt: CacheablePrompt) -> list[CharacterState]:
@@ -128,6 +193,12 @@ class CharacterExtractor:
             try:
                 character = self._to_character(item)
                 if character:
+                    if character.status == "dead":
+                        evidence = character.status_evidence
+                        if not evidence or "".join(evidence.split()) not in source:
+                            raise LLMResponseError(
+                                "Dead character status requires status_evidence quoted from the chapter."
+                            )
                     for field_name in ("thread_updates", "state_changes"):
                         for index, change in enumerate(getattr(character, field_name)):
                             if "".join(change.evidence.split()) not in source:
@@ -161,6 +232,9 @@ class CharacterExtractor:
         status = data.get("status", "unknown")
         if status not in {"alive", "dead", "unknown"}:
             raise LLMResponseError("Character status must be alive, dead, or unknown.")
+        status_evidence = data.get("status_evidence", "")
+        if not isinstance(status_evidence, str):
+            raise LLMResponseError("Character status_evidence must be a string.")
         location = data.get("location")
         goal = data.get("goal")
         if location is not None and not isinstance(location, str):
@@ -183,6 +257,7 @@ class CharacterExtractor:
             relationships=[],
             unresolved=unresolved,
             status=status,
+            status_evidence=status_evidence.strip(),
             location=location.strip() or None if isinstance(location, str) else None,
             goal=goal.strip() or None if isinstance(goal, str) else None,
             knowledge=knowledge,
@@ -233,7 +308,10 @@ class CharacterExtractor:
         target.state_changes.extend(incoming.state_changes)
         target.realm = target.realm or incoming.realm
         if incoming.status != "unknown":
-            target.status = incoming.status
+            if target.status != "dead" or incoming.status == "dead":
+                target.status = incoming.status
+            if incoming.status == "dead" and incoming.status_evidence:
+                target.status_evidence = incoming.status_evidence
         target.location = incoming.location or target.location
         target.goal = incoming.goal or target.goal
         target.knowledge = self._merge_list(target.knowledge, incoming.knowledge)
