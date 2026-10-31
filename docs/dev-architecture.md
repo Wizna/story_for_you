@@ -69,7 +69,7 @@
 | ---------- | ----------------------- | -------------------------- |
 | 语言       | Python 3.11+            | 生态丰富，LLM 集成方便     |
 | LLM 运行时 | DeepSeek API            | 默认云端推理，吞吐优先     |
-| 默认模型   | deepseek-v4-pro         | 1M 上下文，适合长篇全局分析 |
+| 默认模型   | deepseek-flash         | 默认调用模型；实际服务限制需按配置核对 |
 | CLI 框架   | Typer                   | 类型提示友好，自动生成帮助 |
 | LLM 调用   | httpx + OpenAI-compatible Chat API | 轻量，无额外依赖           |
 | 配置管理   | Pydantic + YAML         | 类型安全，易于验证         |
@@ -915,18 +915,29 @@ class RemoveResult:
 
 #### 4.6.4 自适应续写 (`ending_writer.py`)
 
-当前实现先生成结构化 `ContinuationPlan`，由模型根据全局状态、原文证据和读者要求判断叙事阶段、范围、单元粒度（回/场景/结构段）和单元数。单元可以是一回、一个场景或一个结构段，不预设为结局；随后逐单元执行初稿与润色，最后对合并文本做跨单元承接和一致性审查。`CharacterState` 除身份和性格外，还保存 `status`、`location`、`goal` 与 `knowledge`，用于约束人物在不同单元的行动和知情范围。
+当前实现会在候选深意片段足够多时先运行 `ending_subtext`，从末章反常对白、药物/死亡、宗教或动物意象和异常反应中提取逐字证据，形成带置信度和候选对应的 `NarrativeSignal`。随后生成结构化 `ContinuationPlan`，由模型根据全局状态、原文证据和读者要求判断叙事阶段、范围、单元粒度（回/场景/结构段）和单元数，并为奏章、药瓶、玉玺、火枪等 `SourceAnchor` 分配 `AnchorAction`，同时给出 1–3 个 `PlotRecommendation`（仅一个优先项）。低置信度隐喻保留为假设，不直接写成事实。单元可以是一回、一个场景或一个结构段，不预设为结局；随后逐单元执行初稿与润色，最后对合并文本做跨单元承接和一致性审查。`CharacterState` 除身份和性格外，还保存 `status`、`location`、`goal` 与 `knowledge`，用于约束人物在不同单元的行动和知情范围。
 
 每个单元现在先执行场景因果规划，再生成初稿、润色、审查与记忆提取。`core/ending/memory.py`
 使用独立的 `StateStore` 保存已通过审查的续写状态、历史摘要和引文，不修改原作分析；
 后续单元同时接收完整跨章计划、实际状态和近期原文。死亡主体由 `PlotEvent.deceased_characters`
 明确表示；人物与世界伏笔由 `StoryThread`/`ThreadUpdate` 维护稳定 ID 和解决证据。
-证据召回优先当前人物及其相关历史，全部不可逆事件保留；预算不足时明确失败。
+证据召回使用人物参与信息与中文 n-gram/词项相关性，从事件和原文中检索物品、地点、势力及场景线索；
+这是词项匹配，不推断新事实。滚动摘要在保留全部历史的同时按相关性与近期性限制提示长度，
+全部不可逆事件和必需人物状态保留；总预算不足时明确失败。
+
+`StateChange` 为目标、地点、阵营和知情范围提供带引文的 set/clear/add/remove/replace 操作，
+清除和替换必须匹配旧值，变更历史随 `CharacterState` 保存。事件以物理分析单元、源章节和事件 ID
+标识一次发生，允许归还后再次转交等重复行为；分析缓存格式为 6。
 
 `core/ending/revision.py` 只应用模型返回的唯一引用替换，拒绝失配、歧义、重叠和空全文，
-不在末尾统一追加桥段。修改后再审查，最后检查计划章节标题的完整性与顺序。
+不在末尾统一追加桥段。`revision_mode` 支持 full/local/none；只有 full 执行整单元润色。
+程序保留原有重复段落，将重复是否合理交给带上下文的审查。最终审查使用全部计划人物的原作状态及逐单元起始状态。
+修改后、下次模型调用前检查计划章节标题的完整性与顺序，便于断点恢复准确重试失败编辑。
 `BudgetedLLMProvider` 为每次续写调用保留输出预算；OpenAI-compatible/Ollama 适配器会识别长度截断。
-评测入口位于 `evaluation/`；使用步骤和未验证边界见 [续写质量与评测](continuation_quality.md)。
+`ContinuationCheckpoint` 原子保存阶段响应，验证原文、分析、配置、实现与阶段哈希，通过回放重建相同状态，
+并使用文件锁拒绝并发覆盖。最终修订改变正文后会重新提取状态，再导出合并正文和状态供下一轮使用。
+评测入口位于 `evaluation/`，支持冻结分析、分阶段响应与耗时/token 记录、失败留存及盲评隔离；
+使用步骤和未验证边界见 [续写质量与评测](continuation_quality.md)。
 
 ```python
 class EndingWriter:
@@ -1037,7 +1048,7 @@ story style novel.txt --context analysis.json --inject
 
 ```bash
 story --config config.yaml <command> ...  # 指定配置文件
-story --model deepseek-v4-pro ...     # 指定模型
+story --model deepseek-flash ...     # 指定模型
 story --verbose ...                        # 详细输出
 ```
 
@@ -1085,11 +1096,11 @@ story cache status --config config.yaml
 # LLM 配置
 llm:
   provider: openai                # openai (默认) | ollama
-  model: deepseek-v4-pro
+  model: deepseek-flash
   base_url: https://api.deepseek.com
   api_key_env: DEEPSEEK_API_KEY   # 从此环境变量读取 API Key
   temperature: 0.7
-  context_window: 1000000         # deepseek-v4-pro 上下文窗口
+  context_window: 1000000         # 本地上下文预算，需与服务实际限制一致
   max_tokens: 32768
   seed: 42                      # 固定种子保证可复现
 
@@ -1318,14 +1329,14 @@ uv run story --help
 ### 11.1 Provider 生命周期
 
 - CLI 入口通过 `_build_llm(settings)` 构造单例 Provider，再把同一个实例注入 `StoryAnalyzer` 与四个核心业务，确保一次命令只建立一个 HTTP client。
-- `Settings.llm` 提供 `provider/model/base_url/temperature/context_window/max_tokens/timeout/seed`，默认使用 `openai` provider，指向 `https://api.deepseek.com` 与 `deepseek-v4-pro`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
+- `Settings.llm` 提供 `provider/model/base_url/temperature/context_window/max_tokens/timeout/seed`，默认使用 `openai` provider，指向 `https://api.deepseek.com` 与 `deepseek-flash`。所有命令都尊重同一套配置，因此切换模型或调节推理时限只需修改 `config.yaml` 或相应的 `STORY_LLM__*` 环境变量。
 - `max_tokens` 是单次生成输出上限；`context_window` 是模型上下文窗口，用于 Prompt 截断预算。分析阶段通过 `_split_analysis_text()` 使用 `analysis.target_unit_chars` 形成稳定语义单元，避免大上下文模型把整本书压成单个“章节”；`parser.chunk_size` 仍作为业务处理和通用分块上限。
 - `OpenAICompatibleProvider` 默认请求 `/v1/chat/completions`；当 `base_url` 是 DeepSeek 官方域名时，请求官方 OpenAI-compatible 路径 `/chat/completions`。分析抽取类调用传入 `no_think=True` 时，会转换为 DeepSeek 支持的 `thinking: {"type": "disabled"}`，降低结构化 JSON 输出被思考内容污染的概率；非 DeepSeek API 不会收到该专用参数。
 - `LLMProvider` 只接受 `CacheablePrompt`，不保留字符串 prompt 兼容路径。`OpenAICompatibleProvider` 会把稳定前缀放在前置 user message，把可变任务放在后续 user message；Ollama 会把两段拼回普通 prompt。该布局针对 DeepSeek Context Caching 的“完全匹配公共前缀”规则设计，参考 https://api-docs.deepseek.com/guides/kv_cache。
 - CLI 使用 `TelemetryLLMProvider` 包装实际 provider。命令开始时输出基线请求计划；每次 `generate()` 会打印阶段、prompt 摘要、attempt/retry、输入/输出 token、缓存命中 token、缓存命中率、单次费用估算、累计费用和剩余请求估算。Telemetry 只剥离 `_sfy_*` 内部元数据，不改变真实 provider 的业务参数。
 - 费用统计遵循主流 tracing 工具的近似口径：优先展示 provider 返回的 usage，并在 DeepSeek usage 提供 `prompt_cache_hit_tokens`/`prompt_cache_miss_tokens` 时按命中输入折扣估算。其他 OpenAI-compatible 服务未配置价目时显示 `cost=n/a`。费用只用于用户侧消耗感知，不参与业务判断。
 - Telemetry 的内部 metadata 使用 `_sfy_*` option key 传递，例如 `_sfy_phase`、`_sfy_step`、`_sfy_attempt`。`TelemetryLLMProvider` 会在调用真实 provider 前剥离这些 key，确保 DeepSeek/OpenAI/Ollama 只收到业务参数（如 `temperature`、`max_tokens`、`response_format`、`no_think`）。
-- 请求计划是上限估算：`analyze` 最多约等于 `chapter_chunks * 5 + style`，但 0-1 个角色的章节会跳过关系抽取，没有新事件且已有上一帧状态时会跳过状态合并；`continue` 约等于 hint 解析、大纲、初稿、润色、可选伏笔审查和最终验证。任何 repair/retry 都不预先计入基线，而是在发生时按额外请求输出。
+- 请求计划是上限估算：`analyze` 最多约等于 `chapter_chunks * 5 + style`，但 0-1 个角色的章节会跳过关系抽取，没有新事件且已有上一帧状态时会跳过状态合并；`continue` 包含 hint 解析、续写计划、每单元场景规划/初稿/可选润色/记忆审查、可选伏笔审查和最终验证。任何 repair/retry 都不预先计入基线，而是在发生时按额外请求输出。
 - `LLMProvider` 抽象层允许在测试中注入 Fake，实现如下最小协议即可：
 
 请求预算按命令分层：
@@ -1336,7 +1347,7 @@ uv run story --help
 | `compress` | 缓存命中时按预算分批 | 没有缓存时先完整分析；选中片段按原文顺序分批改写 |
 | `filter` | 缓存命中时约等于断点数 | 检索命中的原文直接拼接，只对 gap 生成桥接 |
 | `remove` | 缓存命中时约等于受影响段落数 | 无关段落原样保留，受影响段落才评估/改写 |
-| `continue` | `4 + 4×max_units` 的无修复上限估算 | hint 解析、续写计划、每单元场景规划/初稿/润色/审查与记忆、伏笔审查和终稿验证；伏笔已全部解决时跳过该审查，局部修复与重审按需增加 |
+| `continue` | 默认 `4 + 4×max_units`，none 为 `4 + 3×max_units` 的基线上限估算 | hint 解析、条件触发的深意预分析、续写计划、每单元场景规划/初稿/可选润色/审查与记忆、可选伏笔审查和终稿验证；修复、重审和最终修订后的状态重建按需增加 |
 
 ```python
 class FakeLLM(LLMProvider):
@@ -1373,7 +1384,7 @@ response = llm.generate(prompt=CacheablePrompt(prefix=chapter_text, task=task))
 payload = load_json_response(response.content)
 ```
 
-分析器的章节级多任务调用必须共享同一个 `chapter_text.strip()` 前缀：人物抽取、关系映射、章节摘要和事件抽取都应只在 task 段变化。续写阶段的 `StoryContext` 上下文同样作为 cache prefix，在 hint 解析、大纲、初稿、润色、伏笔审查和最终审稿之间复用。新增 Prompt 时如果需要复用同一长输入，先确认 telemetry 中同章节或同阶段后续请求的 `cache_rate` 是否上升；若长期为 0%，通常说明公共前缀前插入了任务特有文本或动态 metadata。
+分析器的章节级多任务调用必须共享同一个 `chapter_text.strip()` 前缀：人物抽取、关系映射、章节摘要和事件抽取都应只在 task 段变化。续写阶段按各阶段所需证据构建 cache prefix；同一单元初稿、润色等共享证据时可以复用前缀，各单元状态、场景召回及最终审查上下文变化时不会完全相同。新增 Prompt 时如果需要复用同一长输入，先确认 telemetry 中同章节或同阶段后续请求的 `cache_rate` 是否上升；若长期为 0%，通常说明公共前缀前插入了任务特有文本或动态 metadata。
 
 ### 11.3 资源与容错策略
 

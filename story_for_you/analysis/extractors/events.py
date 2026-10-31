@@ -6,7 +6,7 @@ from typing import Any
 
 from story_for_you.analysis.context import CharacterState, EventImpact, PlotEvent
 from story_for_you.analysis.prompting import (
-    clamp_text_middle,
+    CacheablePrompt,
     fill_template,
     load_template,
     render_cacheable_prompt_with_budget,
@@ -19,7 +19,6 @@ from story_for_you.utils.prompting import cache_prompt
 
 logger = logging.getLogger(__name__)
 
-_REPAIR_SNIPPET_BUDGET = 4000
 _STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
 
 
@@ -63,23 +62,22 @@ class EventExtractor:
             ),
         )
         allowed_participants = set(alias_map)
-        events, error = self._parse_response(response.content, chapter_no, alias_map, allowed_participants)
+        events, error = self._parse_response(response.content, chapter_no, alias_map, allowed_participants, prompt.prefix)
         if events is not None:
-            self._validate_evidence(events, chapter_text)
             return events
 
         if error:
             logger.debug("Event extraction parse failed (%s). Attempting repair.", error)
-        repaired_content = self._attempt_repair(response.content, error, chapter_no)
+        repaired_content = self._attempt_repair(response.content, error, chapter_no, prompt)
         if repaired_content:
             events, repair_error = self._parse_response(
                 repaired_content,
                 chapter_no,
                 alias_map,
                 allowed_participants,
+                prompt.prefix,
             )
             if events is not None:
-                self._validate_evidence(events, chapter_text)
                 return events
             error = repair_error or error
 
@@ -152,9 +150,7 @@ class EventExtractor:
         ]
         if set(deceased) - set(participants):
             raise LLMResponseError("Deceased characters must be identified event participants.")
-        evidence = payload.get("evidence", "")
-        if not isinstance(evidence, str):
-            raise LLMResponseError("Event evidence must be a string.")
+        evidence = self._required_str(payload.get("evidence"), "evidence")
         return PlotEvent(
             event_id=event_id,
             chapter=chapter_value,
@@ -169,9 +165,12 @@ class EventExtractor:
 
     def _validate_evidence(self, events: list[PlotEvent], text: str) -> None:
         source = "".join(text.split())
+        invalid_quotes = []
         for event in events:
-            if event.evidence and "".join(event.evidence.split()) not in source:
-                raise LLMResponseError("Event evidence must quote the supplied chapter.")
+            if "".join(event.evidence.split()) not in source:
+                invalid_quotes.append(event.event_id + ": " + json.dumps(event.evidence, ensure_ascii=False))
+        if invalid_quotes:
+            raise LLMResponseError("Event evidence must quote the supplied chapter. Invalid quotes: " + "; ".join(invalid_quotes))
 
     def _parse_response(
         self,
@@ -179,6 +178,7 @@ class EventExtractor:
         chapter_no: int,
         alias_map: dict[str, str],
         allowed_participants: set[str],
+        source_text: str,
     ) -> tuple[list[PlotEvent] | None, str | None]:
         """Attempt to parse structured events from the model output."""
         if not content:
@@ -200,6 +200,10 @@ class EventExtractor:
                 events.append(self._from_payload(item, chapter_no, alias_map, allowed_participants))
             except LLMResponseError as exc:
                 return None, str(exc)
+        try:
+            self._validate_evidence(events, source_text)
+        except LLMResponseError as exc:
+            return None, str(exc)
         return events, None
 
     def _str_dict(self, value: Any, field_name: str) -> dict[str, str]:
@@ -256,18 +260,19 @@ class EventExtractor:
                 alias_map[alias] = name
         return [roster_by_name[name] for name in sorted(roster_by_name)], alias_map
 
-    def _attempt_repair(self, raw_response: str | None, error: str | None, chapter_no: int) -> str | None:
-        """Ask the LLM to fix its malformed JSON response."""
+    def _attempt_repair(
+        self, raw_response: str | None, error: str | None, chapter_no: int, original_prompt: CacheablePrompt,
+    ) -> str | None:
+        """Repair structure or evidence against the same source and complete contract."""
         if not raw_response:
             return None
-        snippet = clamp_text_middle(raw_response, _REPAIR_SNIPPET_BUDGET)
         prompt = fill_template(
             self.repair_template,
             error_message=error or "JSON parsing failed.",
-            invalid_output=snippet,
+            invalid_output=raw_response,
         )
         repaired = self.llm.generate(
-            prompt=cache_prompt(prompt),
+            prompt=cache_prompt(original_prompt.task + "\n\n" + prompt, prefix=original_prompt.prefix),
             options=telemetry_options(
                 _STRUCTURED_OPTIONS,
                 phase=f"analyze chapter {chapter_no}",

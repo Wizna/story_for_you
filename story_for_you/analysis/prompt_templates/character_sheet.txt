@@ -20,6 +20,9 @@
     "location": "本章结束时所在位置，可为空",
     "goal": "当前明确目标，可为空",
     "knowledge": ["该人物已经知道的关键事实，必须区别于读者知道的事实"],
+    "state_changes": [{"field": "goal | location | realm | knowledge", "operation": "set | clear | add | remove | replace",
+                       "previous": "明确撤销或替换时逐字引用该人物已有值，否则 null", "value": "新值，clear/remove 时为 null",
+                       "evidence": "逐字引用本章支持变化的原文"}],
     "thread_updates": [
       {"operation": "add | update | resolve", "thread_id": "沿用已知 ID；add 可为空，由程序分配",
        "summary": "伏笔的当前描述", "evidence": "逐字引用本章支持这次变化的原文"}
@@ -27,7 +30,11 @@
   }
 2. `role` 判定：叙事重点或频繁 POV → `main`；辅助主角/反派 → `support`；偶尔出现 → `minor`。
 3. 同一人物仅保留一次，其他明确属于该人物的称呼写入 `aliases`；“师父、长老、夫人”等通用称谓不能单独证明身份。不确定的信息返回空字符串或空数组。
-4. 数组最多 8 人，按剧情重要性排序；无人物则返回 `[]`。
+4. 覆盖本章实际参与行动、对话或发生状态/关系变化的人物，按剧情重要性排序，不设固定人数截断；无人物则返回 `[]`。仅被顺带提及且没有新事实的人物不用重复列出。
    unresolved 仅列本章明确观察到的未决事项，没提到不是已解决。只有本章明确解决才能输出 resolve；
    update/resolve 必须引用已有 thread_id。保留未知信息，勿用空数组推翻历史事实。thread_updates 无变化返回 []。
 5. 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。
+6. 所有 evidence 必须连续逐字复制原文，保留原标点，包括原文中的中文双引号“”，不能换成单引号‘’；不要拼接不相邻句子。
+   state_changes 用于明确更正、失效或完成：goal/location/realm 使用 set/clear；knowledge 使用 add/remove/replace。
+   clear/remove/replace 必须给出已知状态的精确 previous 值。没提及不算清除；没有证据返回 []。
+   某字段使用 state_changes 时，变化全部写在其中，避免同时通过旧字段重复描述。知识被纠正时保留对信息获取过程的叙述，不能让人物凭空获知真相。

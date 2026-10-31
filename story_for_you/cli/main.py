@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import shutil
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Iterable, Optional, Tuple
@@ -36,6 +37,7 @@ from story_for_you.llm.factory import build_llm
 from story_for_you.llm.telemetry import TelemetryLLMProvider
 from story_for_you.parser.text_splitter import TextChunk, TextSplitter
 from story_for_you.utils.file_io import read_text_file, write_text_file
+from story_for_you.utils.artifacts import atomic_write_json
 
 app = typer.Typer(help="Story For You command line interface.")
 cache_app = typer.Typer(help="Cache management commands.")
@@ -97,14 +99,15 @@ def _has_unresolved_threads(context: StoryContext) -> bool:
     return bool(context.story_state and context.story_state.unresolved_events)
 
 
-def _announce_continue_plan(context: StoryContext, max_chapters: int) -> int:
+def _announce_continue_plan(context: StoryContext, max_chapters: int, revision_mode: str = "full") -> int:
     # The planner chooses the actual count at runtime; this is a conservative
     # upper-bound estimate for telemetry rather than a promise.
-    total = 4 + (4 * max_chapters)
+    per_unit = 3 if revision_mode == "none" else 4
+    total = 4 + (per_unit * max_chapters)
     phases = [
         "interpret user hint",
         f"plan 1-{max_chapters} continuation units (the model chooses the scope)",
-        "plan scenes, draft, polish, then review and remember each unit",
+        "plan scenes, draft, " + ("" if revision_mode == "none" else "revise, ") + "then review and remember each unit",
     ]
     phases.append("review remaining unresolved threads, including those introduced during generation")
     phases.extend(
@@ -243,6 +246,9 @@ def _load_artifacts(
     if context_path:
         payload = json.loads(context_path.read_text(encoding="utf-8"))
         context = StoryContext.from_dict(payload)
+        expected_source = context.metadata.get("continuation_source_sha256")
+        if expected_source and expected_source != hashlib.sha256(text.encode()).hexdigest():
+            raise typer.BadParameter("Continuation state does not match the supplied combined source text.")
         if segments_path and segments_path.exists():
             segments_payload = json.loads(segments_path.read_text(encoding="utf-8"))
             segments = deserialize_segments(segments_payload)
@@ -539,6 +545,9 @@ def remove(
 def continue_story(
     input_file: Path,
     hint: str = typer.Option("", "--hint"),
+    checkpoint: Optional[Path] = typer.Option(None, "--checkpoint", help="保存续写阶段结果，用于恢复。"),
+    resume: bool = typer.Option(False, "--resume", help="从 --checkpoint 指定的阶段记录恢复。"),
+    state_output: Optional[Path] = typer.Option(None, "--state-output", help="导出与成稿一致的续写状态。"),
     output: Optional[Path] = typer.Option(None, "--output", "-o"),
     config: Optional[Path] = typer.Option(None, "--config"),
     context_path: Optional[Path] = typer.Option(None, "--context"),
@@ -554,9 +563,11 @@ def continue_story(
     ),
 ) -> None:
     """Plan and write an adaptive continuation."""
+    if resume and checkpoint is None:
+        raise typer.BadParameter("--resume requires --checkpoint PATH")
     cc = _prepare(input_file, config, context_path, segments_path, no_cache, reanalyze)
     effective_max_chapters = min(max_units, cc.settings.ending.max_chapters)
-    continue_requests = _announce_continue_plan(cc.context, effective_max_chapters)
+    continue_requests = _announce_continue_plan(cc.context, effective_max_chapters, cc.settings.ending.revision_mode)
     _set_llm_plan(cc.llm, "continue", continue_requests)
     writer = EndingWriter(
         cc.llm, cc.segment_index,
@@ -564,13 +575,25 @@ def continue_story(
         rendering_limits=cc.settings.rendering,
         context_window=cc.settings.llm.context_window,
         max_output_tokens=cc.settings.llm.max_tokens,
+        revision_mode=cc.settings.ending.revision_mode,
     )
+    if checkpoint is None and cc.settings.cache.enabled and not no_cache:
+        checkpoint = _cache_dir(cc.settings) / "continuations" / f"{uuid.uuid4().hex}.json"
+    if checkpoint:
+        typer.echo(f"Continuation checkpoint: {checkpoint.resolve()}")
     continuation = writer.continue_story(
-        cc.text, cc.context, hint, max_chapters=effective_max_chapters
+        cc.text, cc.context, hint, max_chapters=effective_max_chapters,
+        checkpoint_path=checkpoint, resume=resume,
     )
     target = output or input_file.with_name(f"{input_file.stem}_continued.txt")
     write_text_file(target, continuation)
     typer.echo(f"Continuation saved to {target}")
+    state_path = state_output or (checkpoint.with_suffix(".context.json") if checkpoint else None)
+    if state_path:
+        atomic_write_json(state_path, writer.last_context.to_dict())
+        combined_path = state_path.with_suffix(".source.txt")
+        combined_path.write_bytes((cc.text + "\n\n" + continuation).encode("utf-8"))
+        typer.echo(f"Next continuation input: {combined_path.resolve()} --context {state_path.resolve()}")
 
 
 @cache_app.command()

@@ -4,10 +4,12 @@ import hashlib
 import json
 import random
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from story_for_you.utils.file_io import read_text_file
+from story_for_you.utils.artifacts import atomic_write_json
 
 _SCORES = ("motivation", "knowledge_boundary", "plot_progress", "style")
 
@@ -16,14 +18,17 @@ def digest(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
+def read_utf8(path: Path) -> str:
+    """Keep original line endings when verifying text hashes."""
+    return path.read_bytes().decode("utf-8")
+
+
 def read_json(path: Path) -> Any:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
 def write_json(path: Path, payload: Any) -> None:
-    path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    atomic_write_json(path, payload)
 
 
 def _new_directory(path: Path) -> Path:
@@ -47,8 +52,15 @@ def _case_list(payload: Any) -> list[dict[str, Any]]:
     return payload
 
 
-def prepare_cases(manifest: Path, output_dir: Path) -> Path:
+def prepare_cases(manifest: Path, output_dir: Path, repetitions: int = 1) -> Path:
     cases = _case_list(read_json(manifest))
+    if isinstance(repetitions, bool) or repetitions < 1:
+        raise ValueError("repetitions must be positive.")
+    if repetitions > 1:
+        cases = _case_list([
+            {**case, "id": f"{case['id']}-r{repeat:02d}"}
+            for case in cases for repeat in range(1, repetitions + 1)
+        ])
     prepared = []
     # Validate every cutoff before creating any output files.
     prefixes = []
@@ -62,18 +74,23 @@ def prepare_cases(manifest: Path, output_dir: Path) -> Path:
         source = (manifest.parent / case["source"]).resolve()
         text = read_text_file(source)
         cutoff = case.get("cutoff_chars")
+        start = case.get("start_chars", 0)
+        at_end = case.get("at_end", False)
         if (
             not isinstance(cutoff, int)
             or isinstance(cutoff, bool)
-            or not 0 < cutoff < len(text)
+            or not isinstance(start, int) or isinstance(start, bool)
+            or not isinstance(at_end, bool)
+            or not 0 <= start < cutoff <= len(text)
+            or (cutoff == len(text) and not at_end)
         ):
             raise ValueError(
-                "cutoff_chars must leave a non-empty prefix and an excluded future suffix."
+                "Invalid source range; an end-of-manuscript cutoff requires at_end=true."
             )
         units = case.get("max_units", 3)
         if not isinstance(units, int) or isinstance(units, bool) or units < 1:
             raise ValueError("max_units must be positive.")
-        prefixes.append(text[:cutoff])
+        prefixes.append(text[start:cutoff])
     root = _new_directory(output_dir)
     for case, prefix in zip(cases, prefixes):
         target = root / f"{case['id']}.prefix.txt"
@@ -85,6 +102,8 @@ def prepare_cases(manifest: Path, output_dir: Path) -> Path:
                 "prefix_sha256": digest(prefix),
                 "hint": case.get("hint", ""),
                 "max_units": case.get("max_units", 3),
+                "source_range": {"start": case.get("start_chars", 0), "end": case["cutoff_chars"]},
+                "at_end": case.get("at_end", False),
             }
         )
     path = root / "cases.json"
@@ -97,7 +116,7 @@ def load_prepared(path: Path) -> list[dict[str, Any]]:
     for case in cases:
         if not isinstance(case.get("prefix"), str):
             raise ValueError("Prepared case requires a prefix path.")
-        prefix = (path.parent / case["prefix"]).read_text(encoding="utf-8")
+        prefix = read_utf8(path.parent / case["prefix"])
         if digest(prefix) != case.get("prefix_sha256"):
             raise ValueError(f"Prefix hash mismatch: {case['id']}")
         if not isinstance(case.get("hint"), str):
@@ -108,36 +127,52 @@ def load_prepared(path: Path) -> list[dict[str, Any]]:
     return cases
 
 
+@dataclass
+class GeneratedCase:
+    text: str
+    metadata: dict = field(default_factory=dict)
+    trace: list[dict] = field(default_factory=list)
+
+
 def generate_cases(
     prepared: Path,
     output_dir: Path,
-    generate: Callable[[str, str, int], str],
+    generate: Callable[[str, str, int], str | GeneratedCase],
     *,
     model: str = "unknown",
+    provenance: dict | None = None,
+    failure_metadata: Callable[[], dict] | None = None,
 ) -> Path:
     cases = load_prepared(prepared)
     root = _new_directory(output_dir)
     results = []
     for case in cases:
-        prefix = (prepared.parent / case["prefix"]).read_text(encoding="utf-8")
+        prefix = read_utf8(prepared.parent / case["prefix"])
         if digest(prefix) != case["prefix_sha256"]:
             raise ValueError("Prefix changed after validation.")
-        text = generate(prefix, case["hint"], case["max_units"])
-        if not isinstance(text, str) or not text.strip():
-            raise ValueError("Evaluation generation returned an empty continuation.")
+        common = {"id": case["id"], "prefix_sha256": case["prefix_sha256"], "model": model,
+                  "hint": case["hint"], "max_units": case["max_units"], "provenance": provenance or {}}
+        try:
+            result = generate(prefix, case["hint"], case["max_units"])
+            generated = result if isinstance(result, GeneratedCase) else GeneratedCase(result)
+            text = generated.text
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError("Evaluation generation returned an empty continuation.")
+        except Exception as exc:
+            results.append({**common, "status": "failed", "error_type": type(exc).__name__,
+                            "metadata": failure_metadata() if failure_metadata else {}})
+            write_json(root / "results.json", results)
+            continue
         target = root / f"{case['id']}.txt"
         target.write_text(text, encoding="utf-8")
-        results.append(
-            {
-                "id": case["id"],
-                "prefix_sha256": case["prefix_sha256"],
+        trace = root / f"{case['id']}.trace.json"
+        write_json(trace, generated.trace)
+        results.append({**common,
+                "status": "completed", "metadata": generated.metadata, "trace": trace.name,
                 "output": target.name,
                 "output_sha256": digest(text),
-                "model": model,
-                "hint": case["hint"],
-                "max_units": case["max_units"],
-            }
-        )
+        })
+        write_json(root / "results.json", results)
     path = root / "results.json"
     write_json(path, results)
     return path
@@ -165,6 +200,8 @@ def prepare_blind_comparison(
             ("candidate", candidate, candidate_cases),
         ):
             record = records[case["id"]]
+            if record.get("status", "completed") != "completed":
+                raise ValueError("Cannot blind a failed generation; inspect failure metadata first.")
             if any(
                 record.get(key) != case.get(key)
                 for key in ("prefix_sha256", "hint", "max_units")
@@ -172,11 +209,15 @@ def prepare_blind_comparison(
                 raise ValueError(
                     "Runs must use matching prefixes, hints and continuation limits."
                 )
-            text = (manifest.parent / record["output"]).read_text(encoding="utf-8")
+            text = read_utf8(manifest.parent / record["output"])
             if digest(text) != record.get("output_sha256"):
                 raise ValueError("Run output hash mismatch.")
             pair[label] = text
         texts[case["id"]] = pair
+        left = baseline_cases[case["id"]].get("metadata", {}).get("analysis_sha256")
+        right = candidate_cases[case["id"]].get("metadata", {}).get("analysis_sha256")
+        if (left or right) and left != right:
+            raise ValueError("Writer comparisons must use the same frozen analysis.")
     root = _new_directory(output_dir)
     blind = root / "blind"
     blind.mkdir()
@@ -187,7 +228,7 @@ def prepare_blind_comparison(
         pair = ["baseline", "candidate"]
         rng.shuffle(pair)
         name = case["id"]
-        prefix = (prepared.parent / case["prefix"]).read_text(encoding="utf-8")
+        prefix = read_utf8(prepared.parent / case["prefix"])
         folder = blind / name
         folder.mkdir()
         (folder / "prefix.txt").write_text(prefix, encoding="utf-8")

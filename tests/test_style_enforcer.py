@@ -5,22 +5,27 @@ from __future__ import annotations
 from story_for_you.core.ending.style_enforcer import StyleEnforcer
 
 
-def test_exact_duplicate_removed():
+def test_exact_repetition_is_left_for_contextual_review():
     enforcer = StyleEnforcer()
     text = "翠翠坐在船头，望着对岸的山。\n\n翠翠坐在船头，望着对岸的山。"
 
     result = enforcer.post_process(text)
 
-    assert result.count("翠翠坐在船头") == 1
+    assert result == text
 
 
-def test_whitespace_normalized_duplicate_removed():
+def test_internal_whitespace_and_repetition_are_preserved():
     enforcer = StyleEnforcer()
     text = "翠翠坐在 船头 望着对岸。\n\n翠翠坐在  船头  望着对岸。"
 
     result = enforcer.post_process(text)
 
-    assert result.count("翠翠坐在") == 1
+    assert result == text
+
+
+def test_repeated_answers_in_different_scenes_are_preserved():
+    text = '第1章 夜审\n\n“你认罪吗？”\n\n“不。”\n\n第2章 再审\n\n“你在场吗？”\n\n“不。”'
+    assert StyleEnforcer().post_process(text).count('“不。”') == 2
 
 
 def test_duplicate_bridge_filtered():

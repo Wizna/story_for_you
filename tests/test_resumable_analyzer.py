@@ -16,7 +16,7 @@ class _OfflineAnalyzer(ResumableStoryAnalyzer):
         self.fail_assembly = fail_assembly
         self.processed: list[str] = []
 
-    def _process_chapter(self, chapter_no, chapter_text, story_state):
+    def _process_chapter(self, chapter_no, chapter_text, story_state, *, source_unit=None):
         if chapter_text == self.fail_unit:
             raise RuntimeError("interrupted")
         self.processed.append(chapter_text)

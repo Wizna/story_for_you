@@ -124,10 +124,11 @@ uv run story remove novel.txt -c "王五" --mode soft  # 软删除：弱化存�
 
 ### `continue` - 自适应续写
 
-先由模型判断本次是承接场景、展开阶段、转折、高潮、余波还是自然终止，再决定需要多少个叙事单元。单元可以对应一回、一个场景、一个大章节或多个回目的结构段；调用 `continue` 不会强迫故事进入结局。续写上下文同时包含原文尾部、索引场景尾部、不可逆事实、人物位置/目标/知情状态和关系状态。
+先由模型判断本次是承接场景、展开阶段、转折、高潮、余波还是自然终止，再决定需要多少个叙事单元。单元可以对应一回、一个场景、一个大章节或多个回目的结构段；调用 `continue` 不会强迫故事进入结局。续写上下文同时包含原文尾部、索引场景尾部、不可逆事实、人物位置/目标/知情状态和关系状态。末章出现反常对白、药物/死亡、宗教或动物意象等候选深意时，会先做一次带逐字证据的伏笔与隐喻预分析，再把高显著物件、双关解释、候选对应人物和可执行情节建议交给结构规划；低置信度解释只作为假设，不会直接写成事实。
 
 | 阶段 | 说明 |
 | --- | --- |
+| 末章伏笔与隐喻预分析（条件触发） | 从反常对白、重复意象和异常反应中提取逐字证据，列出候选解释与后果 |
 | 续写范围与结构规划 | 判断叙事阶段、时间/回目范围、单元数量和本轮收束程度 |
 | 单元场景规划 | 明确目标、阻力、行动、转折、代价与人物知情边界，保留后续单元职责 |
 | 单元初稿与润色 | 段落、对白和修辞服从原作，不设统一段长与特征词配额 |
@@ -145,17 +146,37 @@ uv run story continue novel.txt --max-units 6                  # 单次运行的
 
 人物死亡只依据明确人物状态或事件中的死亡主体。人物与世界伏笔按稳定 ID 更新，只有明确解决证据才能关闭。
 重点人物的完整知情状态、相关历史事件与原文位置会补入上下文，不可逆事实不会按最近 20 条截断。
-分析缓存格式已更新，旧分析会自动失效。模型输出被截断或调用预算不足时会报错，不保存半截结果。
+物品、地点、势力和场景线索也参与历史原文召回；最终审查涵盖全部计划人物及各单元开始时的状态。
+规划阶段会为奏章、书信、药瓶、玉玺、火枪和象征图像等高显著锚点指定 `advance`、`hold` 或 `background` 处理，并要求每个锚点进入至少一个单元的具体动作。模型可同时列出 1–3 个基于证据的情节方向并标记一个优先项；“钳龙”对应谁、药是否有毒等未证实解释会保留候选分支。模型误写旧伏笔 ID 时，记忆审查只把有原文证据的未知更新降级为新的开放线索，不会静默关闭旧线索。
+明确完成的目标、离开的地点和被纠正的知识可通过带原文证据的状态操作更新，并保留变更历史。
+分析缓存格式为 6，旧分析会自动失效。模型输出被截断或调用预算不足时会报错，不保存半截结果。
+
+默认 `ending.revision_mode: full` 执行整单元润色；`local` 只替换模型明确引用的片段；`none` 跳过润色，
+三种模式都保留承接审查。对白、复沓与重复段落不会被程序自动删除。
+
+续写支持阶段断点及下一轮状态导出。开启缓存时自动保存断点，也可明确指定：
+
+```bash
+uv run story continue novel.txt --hint "继续当前场景" --checkpoint .story_cache/scene.json
+# 保持原文、hint、配置、单元上限和代码一致，恢复已完成阶段
+uv run story continue novel.txt --hint "继续当前场景" --checkpoint .story_cache/scene.json --resume
+# 成功后，使用导出的合并正文和状态继续下一轮
+uv run story continue .story_cache/scene.context.source.txt --context .story_cache/scene.context.json --hint "推进下一场"
+```
+
+`--state-output PATH` 可指定状态输出位置。成稿若经过最终修订，会先重建与成稿一致的状态；
+下轮输入会核对正文哈希，避免将旧状态用到不同的稿件。断点和生成材料不应提交到 Git。
 
 ### `eval` - 续写盲评
 
-支持截断前正文隔离、无缓存生成、匿名 A/B 打包，以及人工评分汇总。准备与评分操作不调用 LLM，
-`eval generate` 会调用已配置的模型。完整示例与指标解释见 [续写质量与评测](docs/continuation_quality.md)。
+支持截断前正文隔离、冻结分析、润色消融、匿名 A/B 打包，以及人工评分汇总。准备与评分不调用模型，
+`eval analyze/generate` 会调用已配置的模型。完整示例与指标解释见 [续写质量与评测](docs/continuation_quality.md)。
 
 ```bash
-uv run story eval prepare cases.json --output-dir outputs/eval-inputs
-uv run story eval generate outputs/eval-inputs/cases.json --config baseline.yaml --output-dir outputs/eval-baseline
-uv run story eval generate outputs/eval-inputs/cases.json --config candidate.yaml --output-dir outputs/eval-candidate
+uv run story eval prepare cases.json --repetitions 3 --output-dir outputs/eval-inputs
+uv run story eval analyze outputs/eval-inputs/cases.json --output-dir outputs/eval-analysis
+uv run story eval generate outputs/eval-inputs/cases.json --analysis outputs/eval-analysis/analysis.json --revision-mode full --output-dir outputs/eval-baseline
+uv run story eval generate outputs/eval-inputs/cases.json --analysis outputs/eval-analysis/analysis.json --revision-mode local --output-dir outputs/eval-candidate
 uv run story eval blind outputs/eval-inputs/cases.json outputs/eval-baseline/results.json outputs/eval-candidate/results.json --output-dir outputs/eval-comparison
 # 人工填写 blind/ratings.json 后汇总
 uv run story eval report outputs/eval-comparison/blind/ratings.json outputs/eval-comparison/private_key.json -o outputs/eval-report.json
@@ -200,11 +221,11 @@ export STORY_LLM__BASE_URL="http://localhost:11434"
 llm:
   # DeepSeek（默认配置）
   provider: openai
-  model: deepseek-v4-pro
+  model: deepseek-flash
   base_url: https://api.deepseek.com
   api_key_env: DEEPSEEK_API_KEY   # 从此环境变量读取 API Key
   temperature: 0.7
-  context_window: 1000000         # deepseek-v4-pro 上下文窗口
+  context_window: 1000000         # 本地上下文预算，需与服务实际限制一致
   max_tokens: 32768
 
   # 切换到 OpenAI 只需改这三行：
@@ -224,6 +245,15 @@ analysis:
   min_units: 8
   max_units_per_batch: 8
   batch_context_chars: 120000
+
+ending:
+  max_chapters: 40                # 计划单元的配置上限；CLI --max-units 默认 6
+  revision_mode: full             # full / local / none
+
+rendering:
+  max_history_events: 24          # 按实体、人物与场景相关性召回
+  max_evidence_passages: 8
+  evidence_chars: 12000           # 检索证据与滚动摘要各自的字符预算；必需状态另行保留
 
 cache:
   enabled: true
@@ -264,7 +294,7 @@ DeepSeek 官方模型会按内置价目估算费用；其他 OpenAI-compatible �
 | `compress` | 按输入与输出预算分批改写 | 先跑 `analyze`，再分批改写 | 复用缓存的 `StoryContext + SegmentIndex`，按原文顺序处理选中片段 |
 | `filter` | 每个断点 1 次桥接请求 | 先跑 `analyze`，再按断点桥接 | 原文段落直接拼接，仅断点调用 LLM |
 | `remove` | 每个受影响段落最多 1 次处理请求 | 先跑 `analyze`，再处理受影响段落 | 未受影响段落原样保留 |
-| `continue` | `3 + 2×max_units` 的上限估算，存在伏笔时 +1 | 先跑 `analyze`，再续写 | 实际单元数由模型选择；固定 `StoryContext` 作为 cache prefix；ongoing/partial 计划不会强行补完所有伏笔 |
+| `continue` | 默认模式 `3 + 4N + R + S`；`none` 为 `3 + 3N + R + S` | 先跑 `analyze`，再续写 | N 为实际单元数；R 为伏笔审查 0/1；S 为候选深意预分析 0/1（检测到候选片段时）；修复、重审和最终修订后的状态重建另计；可恢复已完成阶段 |
 
 示例输出：
 
@@ -287,7 +317,7 @@ LLM plan for analyze: baseline ~41 request(s). Repairs/retries are logged as ext
 
 `max_tokens` 控制单次生成的最大输出，不代表可用上下文长度；长篇分析的分块预算由
 `context_window - prompt.margin`、`parser.chunk_size` 和 `analysis.target_unit_chars` 共同决定。
-默认配置面向 1M 上下文的 `deepseek-v4-pro`，但语义分析仍按约 8000 字符的分析单元执行，
+默认模型为 `deepseek-flash`，本地上下文预算配置为 1M，但语义分析仍按约 8000 字符的分析单元执行，
 避免把整本书压成单个“章节”导致事件覆盖丢失。
 
 语义任务不再提供 Python 兜底：人物、关系、事件、故事状态、读者指令、结局审查、删除/桥接文本都由 LLM 处理。Python 仅负责分块、缓存、索引、去重、JSON/schema 校验和流程编排；LLM 失败、空响应或结构错误会直接报错。
@@ -334,7 +364,7 @@ CharacterExtractor → RelationshipMapper → ChapterSummarizer → EventExtract
 
 **关键设计**：
 - **LLM 语义优先**：所有人物/剧情/关系/续写约束判断都交给 LLM，Python 不用关键词或正则猜测剧情含义
-- **断点续传**：长篇分析支持中断后继续，进度保存在 `.story_cache/`
+- **断点续传**：长篇分析与续写均支持中断后继续，进度保存在 `.story_cache/`；续写可导出下一轮正文与状态
 - **风格一致性**：自动提取原作风格，注入所有处理环节
 
 ## 开发

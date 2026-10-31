@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 
 class StyleEnforcer:
-    """Applies non-semantic cleanup such as duplicate paragraph removal."""
+    """Preserve prose; semantic repetition belongs to the contextual reviewer."""
 
     DEDUP_SIMILARITY_THRESHOLD = 0.25
 
@@ -25,31 +25,8 @@ class StyleEnforcer:
         self.style = style
 
     def post_process(self, text: str) -> str:
-        """Deduplicate repeated paragraphs without interpreting story semantics."""
-
-        if not text:
-            return text
-
-        paragraphs = [para for para in text.split("\n\n") if para.strip()]
-        if not paragraphs:
-            return text
-
-        normalized_seen: set[str] = set()
-        cleaned: list[str] = []
-        last_norm = ""
-        for para in paragraphs:
-            norm = re.sub(r"\s+", " ", para.strip())
-            if norm == last_norm or norm in normalized_seen:
-                continue
-            cleaned.append(para.strip())
-            normalized_seen.add(norm)
-            last_norm = norm
-
-        # Similarity is useful for a reviewer, but unsafe as a destructive
-        # post-processing rule: two Chinese paragraphs often share a lead-in
-        # while the second one contains the actual plot advancement.
-        cleaned = self._dedupe_similar_paragraphs(cleaned)
-        return "\n\n".join(cleaned) if cleaned else text
+        """Trim the outer boundary only, preserving dialogue and intentional repetition."""
+        return text.strip()
 
     def filter_duplicate_bridges(self, polished: str, bridges: list[str]) -> list[str]:
         """Filter out bridge paragraphs that are too similar to existing polished content.

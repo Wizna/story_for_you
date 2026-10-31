@@ -4,6 +4,7 @@ from story_for_you.analysis.context import CharacterState, StoryContext
 from story_for_you.core.ending_writer import EndingWriter
 from story_for_you.indexer.segment import SegmentIndex
 from story_for_you.llm.base import LLMProvider, LLMResponse
+from tests.test_cacheable_prompting import _RecordingLLM
 
 
 class PipelineLLM(LLMProvider):
@@ -197,3 +198,56 @@ def test_failed_unit_is_repaired_and_reviewed_before_next_unit_sees_its_state():
     )
     assert "随后走进客栈" in result
     assert "location=客栈" in llm.draft_prompts[1]
+
+
+def test_final_validation_and_repair_include_all_planned_cast_source_evidence():
+    class EvidencePipeline(PipelineLLM):
+        def __init__(self):
+            super().__init__()
+            self.validations = []
+            self.repairs = []
+
+        def generate(self, prompt, system="", options=None):
+            step = options["_sfy_step"]
+            if step == ": validate continuation":
+                self.validations.append(prompt.prefix)
+                failed = len(self.validations) == 1
+                return LLMResponse(json.dumps({
+                    "passed": not failed,
+                    "issues": ["动作需要澄清"] if failed else [],
+                    "repair_instructions": ["调整持剑动作"] if failed else [],
+                }), 0)
+            if step == ": final repair":
+                self.repairs.append(prompt.prefix)
+                return LLMResponse(json.dumps({"edits": [{
+                    "old_text": "乙拔剑守在门外。", "new_text": "乙持剑守在门外。", "reason": "澄清动作",
+                }]}), 0)
+            response = super().generate(prompt, system, options)
+            if step == ": continuation plan":
+                payload = json.loads(response.content)
+                for chapter in payload["chapters"]:
+                    chapter["focus_characters"].append("g")
+                return LLMResponse(json.dumps(payload), 0)
+            return response
+
+    chars = {name: CharacterState(name, role="main") for name in "abcdefg"}
+    chars["g"].knowledge = ["只有 g 知道的密钥 G_SECRET"]
+    chars["甲"] = CharacterState("甲", location="城门")
+    llm = EvidencePipeline()
+    EndingWriter(llm, SegmentIndex([], {}, {}, {})).continue_story(
+        "故事仍在继续。", StoryContext(characters=chars),
+    )
+    assert all("G_SECRET" in prompt for prompt in [*llm.validations, *llm.repairs])
+    assert '"location": "城门"' in llm.validations[0]
+    assert '"location": "客栈"' in llm.validations[0]
+
+
+def test_scene_plan_repairs_a_missing_field_in_a_later_scene_once():
+    fields = ("viewpoint", "setting", "goal", "obstacle", "action", "turn", "cost", "end_state", "knowledge_boundary")
+    first = dict.fromkeys(fields, "有原文依据的安排")
+    second = {key: value for key, value in first.items() if key != "obstacle"}
+    llm = _RecordingLLM([json.dumps({"scenes": [first, second]}), json.dumps({"scenes": [first, first]})])
+    result = EndingWriter(llm, SegmentIndex([], {}, {}, {}))._phase_scene_plan("原作证据", "当前单元", "继续")
+    assert "场景2" in result
+    assert "scenes[1].obstacle" in llm.prompts[1].task
+    assert llm.prompts[1].prefix == "原作证据"

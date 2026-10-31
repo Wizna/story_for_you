@@ -9,6 +9,7 @@ from story_for_you.core.exceptions import LLMResponseError
 from story_for_you.llm.base import LLMProvider
 from story_for_you.llm.telemetry import telemetry_options
 from story_for_you.utils.json_utils import load_json_response
+from story_for_you.utils.prompting import cache_prompt
 
 _VALID_SENTIMENTS = {"positive", "neutral", "negative"}
 _MAX_RELATIONSHIP_ATTEMPTS = 2
@@ -51,7 +52,12 @@ class RelationshipMapper:
                 return relationships
             last_error = error
             if attempt < _MAX_RELATIONSHIP_ATTEMPTS:
-                continue
+                prompt = cache_prompt(
+                    prompt.task + "\n\n上次输出未通过校验：" + (error or "未知错误")
+                    + "\n请对照原文和角色清单修正，保留有效关系；清单外人物不能擅自映射给另一人。严格输出完整 JSON 数组。"
+                    + "\n上次输出：\n" + (response.content or "(空)"),
+                    prefix=prompt.prefix,
+                )
         raise LLMResponseError(f"Relationship extraction failed after retry: {last_error or 'unknown parse failure'}")
 
     def _parse_response(

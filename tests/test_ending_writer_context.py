@@ -5,8 +5,14 @@ import pytest
 
 from story_for_you.analysis.context import CharacterState, EventImpact, PlotEvent, StoryContext
 from story_for_you.core.ending import StyleEnforcer
-from story_for_you.core.exceptions import GenerationError
-from story_for_you.core.ending_writer import EndingWriter
+from story_for_you.core.exceptions import GenerationError, LLMResponseError
+from story_for_you.core.ending_writer import (
+    AnchorAction,
+    ContinuationPlan,
+    EndingChapterPlan,
+    EndingWriter,
+    SourceAnchor,
+)
 from story_for_you.indexer.segment import Segment, SegmentIndex
 from story_for_you.llm.base import LLMProvider, LLMResponse
 from story_for_you.utils.prompting import CacheablePrompt
@@ -191,6 +197,19 @@ def test_continuation_context_keeps_source_tail_and_hard_facts():
     assert "Recent Source Scene" in block
 
 
+def test_continuation_context_recalls_subtext_cue_paragraphs_without_interpreting_them():
+    writer = EndingWriter(_FakeLLM(), SegmentIndex([], {}, {}, {}))
+    block = writer._build_continuation_context(
+        "老太太惊叫道：‘娘要被毒死了！’\n图上画着迦楼罗钳住飞龙。\n普通景物。",
+        StoryContext(),
+    )
+
+    assert "Candidate Subtext Cues" in block
+    assert "娘要被毒死了" in block
+    assert "迦楼罗钳住飞龙" in block
+    assert "不代表任何解释成立" in block
+
+
 def test_continuation_context_excludes_download_site_trailer():
     writer = EndingWriter(_FakeLLM(), SegmentIndex([], {}, {}, {}))
     text = (
@@ -260,6 +279,220 @@ def test_plan_accepts_generic_continuation_schema():
     assert plan.closure_level == "partial"
     assert plan.unit_type == "回"
     assert plan.chapters[0].end_state == "人物关系出现不可逆变化"
+
+
+def test_plan_parses_source_anchor_and_assigns_it_to_a_unit():
+    class AnchorPlan(_GenericPlanLLM):
+        def generate(self, prompt, system="", options=None):
+            payload = json.loads(super().generate(prompt, system, options).content)
+            payload["source_anchors"] = [{
+                "anchor_id": "a-memorial",
+                "kind": "message",
+                "label": "奏章",
+                "evidence": "从怀里取出了一道奏章，扔到了御榻上",
+                "significance": "它应当带来新的政务信息或冲突",
+                "handling": "advance",
+            }]
+            payload["chapters"][0]["anchor_actions"] = [{
+                "anchor_id": "a-memorial",
+                "handling": "advance",
+                "action": "让皇帝拆阅奏章并作出有代价的决定",
+            }]
+            return LLMResponse(json.dumps(payload, ensure_ascii=False), 0)
+
+    writer = EndingWriter(AnchorPlan(), SegmentIndex([], {}, {}, {}))
+    plan = writer._phase_plan(
+        "上下文", "后四十回", max_chapters=6,
+        source_text="老者从怀里取出了一道奏章，扔到了御榻上。",
+    )
+
+    assert plan.source_anchors[0].label == "奏章"
+    assert plan.chapters[0].anchor_actions[0].anchor_id == "a-memorial"
+
+
+def test_source_anchor_evidence_must_quote_source_text():
+    class InvalidAnchorPlan(_GenericPlanLLM):
+        def generate(self, prompt, system="", options=None):
+            payload = json.loads(super().generate(prompt, system, options).content)
+            payload["source_anchors"] = [{
+                "anchor_id": "a-memorial",
+                "kind": "message",
+                "label": "奏章",
+                "evidence": "模型编造的奏章内容",
+                "significance": "会改变后续",
+                "handling": "hold",
+            }]
+            payload["chapters"][0]["anchor_actions"] = [{
+                "anchor_id": "a-memorial",
+                "handling": "hold",
+                "action": "保留为下一单元线索",
+            }]
+            return LLMResponse(json.dumps(payload, ensure_ascii=False), 0)
+
+    writer = EndingWriter(InvalidAnchorPlan(), SegmentIndex([], {}, {}, {}))
+    with pytest.raises(LLMResponseError, match="must quote the supplied source scene"):
+        writer._phase_plan(
+            "上下文", "后四十回", max_chapters=6,
+            source_text="老者从怀里取出了一道奏章，扔到了御榻上。",
+        )
+
+
+def test_plan_keeps_subtext_as_evidence_backed_hypothesis_and_recommends_plot():
+    class SignalPlan(_GenericPlanLLM):
+        def generate(self, prompt, system="", options=None):
+            payload = json.loads(super().generate(prompt, system, options).content)
+            payload["narrative_signals"] = [{
+                "signal_id": "signal-poison",
+                "kind": "double_meaning",
+                "label": "娘要被毒死了",
+                "evidence": "娘要被毒死了！",
+                "reading": "可能是真实投毒，也可能是人物对艳婷的不信任预告",
+                "confidence": "medium",
+                "candidate_consequences": ["药物被查验", "艳婷的动机被迫暴露"],
+            }]
+            payload["plot_recommendations"] = [{
+                "recommendation_id": "plot-poison",
+                "title": "药散引出的试探",
+                "premise": "围绕不信任先查药，再让关系和立储局势发生变化",
+                "based_on": ["signal-poison"],
+                "beats": ["查验药散", "发现与奏章相关的线索"],
+                "tradeoff": "暂不确认艳婷是否真要下毒",
+                "recommended": True,
+            }]
+            return LLMResponse(json.dumps(payload, ensure_ascii=False), 0)
+
+    writer = EndingWriter(SignalPlan(), SegmentIndex([], {}, {}, {}))
+    plan = writer._phase_plan(
+        "上下文", "承接", max_chapters=1,
+        source_text="老太太惊叫道：‘娘要被毒死了！’",
+    )
+
+    assert plan.narrative_signals[0].confidence == "medium"
+    assert plan.plot_recommendations[0].based_on == ["signal-poison"]
+    assert "不信任" in writer._format_plan_readings(plan)
+
+
+def test_signal_evidence_is_rejected_when_it_is_not_contiguous_source_text():
+    class InvalidSignalPlan(_GenericPlanLLM):
+        def generate(self, prompt, system="", options=None):
+            payload = json.loads(super().generate(prompt, system, options).content)
+            payload["narrative_signals"] = [{
+                "signal_id": "signal-poison",
+                "kind": "foreshadowing",
+                "label": "毒",
+                "evidence": "娘会真的被毒死",
+                "reading": "确定死亡",
+                "confidence": "high",
+                "candidate_consequences": ["死亡"],
+            }]
+            payload["plot_recommendations"] = [{
+                "recommendation_id": "plot-poison",
+                "title": "毒发",
+                "premise": "毒发",
+                "based_on": ["signal-poison"],
+                "beats": ["死亡"],
+                "tradeoff": "失去悬念",
+                "recommended": True,
+            }]
+            return LLMResponse(json.dumps(payload, ensure_ascii=False), 0)
+
+    writer = EndingWriter(InvalidSignalPlan(), SegmentIndex([], {}, {}, {}))
+    with pytest.raises(LLMResponseError, match=r"narrative_signals\[0\].evidence"):
+        writer._phase_plan(
+            "上下文", "承接", max_chapters=1,
+            source_text="老太太惊叫道：‘娘要被毒死了！’",
+        )
+
+
+def test_signal_evidence_snaps_terminal_punctuation_to_source():
+    writer = EndingWriter(_FakeLLM(), SegmentIndex([], {}, {}, {}))
+    source = "皇上问道：‘你们说这句话……有没有道理啊……’"
+    signal = {
+        "signal_id": "signal-question",
+        "kind": "double_meaning",
+        "label": "皇上试探群臣",
+        "evidence": "皇上问道：‘你们说这句话……有没有道理啊？’",
+        "reading": "可能是对群臣的试探",
+        "confidence": "medium",
+        "candidate_consequences": ["群臣被迫表态"],
+    }
+
+    parsed = writer._parse_narrative_signals([signal], source)
+
+    assert parsed[0].evidence == source
+
+
+def test_anchor_actions_are_visible_to_chapter_and_draft_prompts():
+    class CaptureLLM(_FakeLLM):
+        def __init__(self):
+            self.prompts = []
+
+        def generate(self, prompt, system="", options=None):
+            self.prompts.append(prompt)
+            return LLMResponse("正文", 0)
+
+    anchor = SourceAnchor(
+        "a-memorial", "message", "奏章", "扔到了御榻上", "带来政务信息", "hold"
+    )
+    action = AnchorAction("a-memorial", "hold", "本单元留下皇帝尚未拆阅的悬置")
+    chapter = EndingChapterPlan(1, "灯影", "推进", "甲", "当夜", anchor_actions=[action])
+    plan = ContinuationPlan(1, "原因", "推进", "当夜", "open", "章", [chapter], [anchor])
+    llm = CaptureLLM()
+    writer = EndingWriter(llm, SegmentIndex([], {}, {}, {}))
+    instruction = writer._chapter_instruction(plan, chapter, "open")
+    writer._phase_draft(
+        StoryContext(), writer._outline_from_chapter(plan, chapter), None,
+        "上下文", "", "", instruction, source_anchors=writer._format_anchor_actions([anchor], [action]),
+    )
+
+    assert "奏章" in instruction
+    assert "本单元留下皇帝尚未拆阅的悬置" in llm.prompts[-1].render()
+
+
+def test_hold_anchor_is_explicitly_checked_by_resolution_review():
+    class CaptureResolution(_FakeLLM):
+        def __init__(self):
+            self.content = json.dumps({
+                "status": "ok", "missing_threads": [], "edits": [], "notes": "",
+            }, ensure_ascii=False)
+            self.prompt = None
+
+        def generate(self, prompt, system="", options=None):
+            self.prompt = prompt
+            return LLMResponse(self.content, 0)
+
+    anchor = SourceAnchor(
+        "a-memorial", "message", "奏章", "扔到了御榻上", "尚未拆阅", "hold"
+    )
+    llm = CaptureResolution()
+    writer = EndingWriter(llm, SegmentIndex([], {}, {}, {}))
+    result = writer._phase_resolution_review(
+        "正文", StoryContext(characters={"甲": CharacterState(name="甲", unresolved=["旧事"])}),
+        "上下文", None, "", "open", source_anchors=[anchor],
+    )
+
+    assert result == "正文"
+    assert llm.prompt is not None
+    assert "奏章" in llm.prompt.render()
+    assert "不能因相关台词已经出现就视为已处理" in llm.prompt.render()
+
+
+def test_plan_prompt_receives_actual_limit_independently_of_full_requested_scope():
+    class CapturePlan(_GenericPlanLLM):
+        def __init__(self):
+            self.prompts = []
+
+        def generate(self, prompt, system="", options=None):
+            self.prompts.append(prompt.render())
+            return super().generate(prompt, system, options)
+
+    llm = CapturePlan()
+    writer = EndingWriter(llm, SegmentIndex([], {}, {}, {}))
+    writer._phase_plan("原作证据", "补写后四十回", 1)
+    writer._phase_plan("原作证据", "补写后四十回", 40)
+    assert "max_chapters = 1。" in llm.prompts[0]
+    assert "max_chapters = 40。" in llm.prompts[1]
+    assert all("补写后四十回" in prompt for prompt in llm.prompts)
 
 
 def test_ongoing_resolution_can_leave_threads_open():

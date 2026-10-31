@@ -115,6 +115,7 @@ class StateStore:
             existing.threads = []
             existing.unresolved = []
             self._merge_threads(existing, character)
+            self._apply_state_changes(existing, character)
             self._characters[character.name] = existing
             self._register_aliases(character.name, [character.name, *character.aliases])
             return
@@ -129,17 +130,41 @@ class StateStore:
             existing.role = character.role
         # Character extraction is chapter-local.  A supplied affiliation is a
         # newer observation and may reflect a defection, disguise, or promotion.
-        if character.realm:
+        changed_fields = {change.field for change in character.state_changes}
+        self._apply_state_changes(existing, character)
+        if character.realm and "realm" not in changed_fields:
             existing.realm = character.realm
         if character.status != "unknown":
             existing.status = character.status
-        if character.location:
+        if character.location and "location" not in changed_fields:
             existing.location = character.location
-        if character.goal:
+        if character.goal and "goal" not in changed_fields:
             existing.goal = character.goal
-        if character.knowledge:
+        if character.knowledge and "knowledge" not in changed_fields:
             existing.knowledge = list(dict.fromkeys(existing.knowledge + character.knowledge))
         self._register_aliases(existing.name, [existing.name, *existing.aliases, character.name])
+
+    def _apply_state_changes(self, existing: CharacterState, incoming: CharacterState) -> None:
+        candidate = deepcopy(existing)
+        for change in incoming.state_changes:
+            if change.field == "knowledge":
+                if change.operation in {"remove", "replace"}:
+                    if change.previous not in candidate.knowledge:
+                        raise LLMResponseError(f"Unknown previous knowledge for {existing.name}: {change.previous}")
+                    candidate.knowledge.remove(change.previous)
+                if change.operation in {"add", "replace"} and change.value not in candidate.knowledge:
+                    candidate.knowledge.append(change.value)
+            else:
+                if change.previous is not None and getattr(candidate, change.field) != change.previous:
+                    raise LLMResponseError(
+                        f"Stale {change.field} update for {existing.name}: "
+                        f"expected previous={getattr(candidate, change.field)!r}, received {change.previous!r}."
+                    )
+                setattr(candidate, change.field, change.value if change.operation == "set" else None)
+            candidate.state_history.append(deepcopy(change))
+        for field in ("goal", "location", "realm", "knowledge", "state_history"):
+            setattr(existing, field, getattr(candidate, field))
+        existing.state_changes = []
 
     def _merge_threads(self, existing: CharacterState, incoming: CharacterState) -> None:
         records = {item.thread_id: deepcopy(item) for item in existing.threads}
@@ -154,7 +179,10 @@ class StateStore:
         for change in incoming.thread_updates:
             key = change.thread_id or thread_id(existing.name, change.summary)
             if change.operation != "add" and key not in records:
-                raise LLMResponseError(f"Unknown thread ID for {existing.name}: {key}")
+                raise LLMResponseError(
+                    f"Unknown thread ID for {existing.name}: {key}; known IDs: "
+                    + "; ".join(f"{item.thread_id}={item.summary}" for item in records.values())
+                )
             if change.operation == "add" and key in records:
                 # Repeated observations cannot reopen an already resolved thread.
                 continue

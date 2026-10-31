@@ -404,7 +404,7 @@ def test_style_inject_requires_context_before_llm(tmp_path):
 def test_style_inject_updates_context_json(tmp_path, monkeypatch):
     input_file = tmp_path / "novel.txt"
     context_file = tmp_path / "context.json"
-    input_file.write_text("正文", encoding="utf-8")
+    input_file.write_text("风从窗外来。", encoding="utf-8")
     context_file.write_text(json.dumps(StoryContext().to_dict()), encoding="utf-8")
     monkeypatch.setattr(
         "story_for_you.cli.main._build_cli_llm",

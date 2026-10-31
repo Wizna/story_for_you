@@ -1,11 +1,11 @@
-你在提取剧情事件时生成了无效 JSON。请将下列错误输出修正为合法的 JSON 数组。
+你在提取剧情事件时生成了不符合上述合同或原文证据的输出。请对照前一条消息的章节正文、上述角色清单与完整字段要求，修正为合法的 JSON 数组。
 
-格式：每个元素为 { event_id: string, chapter: int, type: "progress"|"setback"|"reveal"|"conflict", participants: string[], summary: string, impact: { power_shifts: {string: string}, relation_changes: {string: string}, world_flags: string[] }, is_irreversible: bool }。所有字段必须基于原输出或原文证据明确给出；无法确定时不要补造事件，返回空数组。保持原文描述的语言和风格。
+保留所有有原文支持的事件及其字段，不得为躲避校验而删除有效事件、清空 evidence 或返回空数组。每条 evidence 必须是正文中连续的一段原句，可只引用支持该事件的短句；不得概述、拼接不相邻句子、补省略号或改动标点。仅移除确实没有原文支持的事件，不补造事件。deceased_characters 必须保留并遵守死亡判定规则。
 
 拒绝原因：
 {{error_message}}
 
-待修正输出（可能已截断）：
+待修正输出：
 {{invalid_output}}
 
 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

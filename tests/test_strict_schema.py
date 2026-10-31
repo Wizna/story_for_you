@@ -124,11 +124,11 @@ def test_event_extractor_accepts_explicit_aliases_from_roster():
     llm = _FakeLLM(
         '[{"event_id":"CH001-E01","chapter":1,"type":"progress","participants":["二老"],'
         '"summary":"傩送回到渡口","impact":{"power_shifts":{},'
-        '"relation_changes":{},"world_flags":[]},"is_irreversible":false}]'
+        '"relation_changes":{},"world_flags":[]},"is_irreversible":false,"evidence":"二老回到渡口。"}]'
     )
 
     events = EventExtractor(llm).extract(
-        "正文",
+        "二老回到渡口。",
         [CharacterState(name="傩送", aliases=["二老"], role="main")],
         1,
         "",

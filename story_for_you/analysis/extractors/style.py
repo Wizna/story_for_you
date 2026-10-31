@@ -25,7 +25,7 @@ _FRONT_MATTER_MARKERS = ("版权", "作者简介", "内容简介", "题记", "�
 class StyleExtractor:
     """Extracts writing style characteristics from chapter samples."""
 
-    SAMPLE_CHAPTERS = 3  # 首、中、尾章节
+    SAMPLE_CHAPTERS = 4  # 首、中、最近两个单元
     SAMPLE_SIZE = 2000  # 每样本字符数
 
     def __init__(self, llm: LLMProvider, prompt_budget: int | None = None):
@@ -39,13 +39,13 @@ class StyleExtractor:
         pov_summary = self._summarize_pov(summaries)
         mood_summary = self._summarize_mood(summaries)
         prompt = self._build_prompt(samples, pov_summary, mood_summary)
-        return self._execute_and_parse(prompt, phase="analyze")
+        return self._execute_and_parse(prompt, phase="analyze", source_samples=samples)
 
     def extract_from_raw(self, chapters: list[str]) -> WritingStyle:
         """Extract style directly from raw chapter text without summaries."""
         samples = self._select_samples(chapters)
         prompt = self._build_prompt(samples, "未知", "未知")
-        return self._execute_and_parse(prompt, phase="style")
+        return self._execute_and_parse(prompt, phase="style", source_samples=samples)
 
     def _select_samples(self, chapters: list[str]) -> list[tuple[int, str]]:
         """选取代表性章节样本：首、中、尾。"""
@@ -102,10 +102,8 @@ class StyleExtractor:
             return [0]
         if total == 2:
             return [0, 1]
-        # 首、中、尾
         mid = total // 2
-        near_end = min(total - 1, int(total * 0.8))
-        return [0, mid, near_end]
+        return sorted({0, mid, total - 2, total - 1})
 
     def _summarize_pov(self, summaries: list[ChapterSummary]) -> str:
         """汇总章节的叙事视角。"""
@@ -152,7 +150,9 @@ class StyleExtractor:
             parts.append(f"### 第 {chapter_num} 章节样本\n{content}")
         return "\n\n".join(parts)
 
-    def _execute_and_parse(self, prompt: str, *, phase: str) -> WritingStyle:
+    def _execute_and_parse(
+        self, prompt: str, *, phase: str, source_samples: list[tuple[int, str]],
+    ) -> WritingStyle:
         """执行 LLM 调用并解析结果。"""
         response = self.llm.generate(
             prompt=cache_prompt(prompt),
@@ -162,7 +162,13 @@ class StyleExtractor:
                 step=": extract writing style",
             ),
         )
-        return self._parse_response(response.content)
+        style = self._parse_response(response.content)
+        sources = {number: "".join(text.split()) for number, text in source_samples}
+        for sample in style.representative_samples:
+            quote = "".join(sample.content.split())
+            if not quote or quote not in sources.get(sample.source_chapter, ""):
+                raise LLMResponseError("Style sample must quote its supplied source chapter.")
+        return style
 
     def _parse_response(self, content: str) -> WritingStyle:
         """解析 LLM 返回的 JSON 响应。"""
@@ -194,19 +200,13 @@ class StyleExtractor:
         sample_payload = data.get("representative_samples")
         if not isinstance(sample_payload, list):
             raise LLMResponseError("Style representative_samples must be a list.")
-        for item in sample_payload[:3]:
+        for item in sample_payload[:6]:
             if not isinstance(item, dict):
                 raise LLMResponseError("Style sample item must be an object.")
             for field_name in ("source_chapter", "content", "style_notes"):
                 if field_name not in item:
                     raise LLMResponseError(f"Style sample missing required field: {field_name}")
-            samples.append(
-                StyleSample(
-                    source_chapter=self._required_int(item.get("source_chapter"), "source_chapter"),
-                    content=self._required_str(item.get("content"), "content", allow_empty=True),
-                    style_notes=self._required_str(item.get("style_notes"), "style_notes", allow_empty=True),
-                )
-            )
+            samples.append(StyleSample.from_dict(item))
         for field_name in ("characteristic_words", "description_focus", "tone_markers"):
             if not isinstance(data.get(field_name), list):
                 raise LLMResponseError(f"Style field must be a list: {field_name}")

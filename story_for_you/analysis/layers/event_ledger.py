@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import asdict
-import re
 from typing import Any, Iterable, List
 
 from story_for_you.analysis.context import PlotEvent
@@ -16,16 +15,14 @@ class EventLedger:
         self._events: list[PlotEvent] = []
         self._char_index: dict[str, list[PlotEvent]] = defaultdict(list)
         self._irreversible: list[PlotEvent] = []
-        self._event_keys: set[tuple[str, tuple[str, ...], str]] = set()
+        self._event_keys: set[tuple[int | None, int, str]] = set()
 
     def record(self, events: Iterable[PlotEvent]) -> list[PlotEvent]:
         """Append new events and return the events actually retained.
 
-        Adjacent analysis units can describe the same plot change at a natural
-        boundary.  Exact semantic duplicates must not be fed back into later
-        state updates or writing prompts.  The key intentionally requires the
-        same type, cast and normalized summary; it does not use fuzzy matching
-        that could discard distinct repeated actions in a story.
+        Only replaying the same extraction occurrence is idempotent. Similar
+        actions in another scene can change state again. Physical source units
+        also disambiguate event IDs in chapters split across several chunks.
         """
         recorded: list[PlotEvent] = []
         for event in events:
@@ -69,9 +66,8 @@ class EventLedger:
         self._irreversible.clear()
         self._event_keys.clear()
 
-    def _event_key(self, event: PlotEvent) -> tuple[str, tuple[str, ...], str]:
-        normalized_summary = re.sub(r"\s+", "", event.summary).casefold()
-        return event.type, tuple(sorted(set(event.participants))), normalized_summary
+    def _event_key(self, event: PlotEvent) -> tuple[int | None, int, str]:
+        return event.source_unit, event.chapter, event.event_id
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize the ledger state to a dictionary."""

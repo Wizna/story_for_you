@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any, Literal, TYPE_CHECKING
 
+from story_for_you.analysis.state_changes import StateChange
+
 from story_for_you.exceptions import LLMResponseError
 from story_for_you.analysis.threads import StoryThread, ThreadUpdate
 
@@ -93,8 +95,10 @@ class StyleSample:
     """A representative text sample demonstrating the writing style."""
 
     source_chapter: int
-    content: str  # 20-50字原文片段
+    content: str
     style_notes: str  # 为何典型
+    speaker: str | None = None
+    scene_type: str | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "StyleSample":
@@ -104,6 +108,8 @@ class StyleSample:
             source_chapter=_required_int(payload, "source_chapter", "StyleSample"),
             content=_required_str(payload, "content", "StyleSample", allow_empty=True),
             style_notes=_required_str(payload, "style_notes", "StyleSample", allow_empty=True),
+            speaker=_optional_str(payload, "speaker", "StyleSample"),
+            scene_type=_optional_str(payload, "scene_type", "StyleSample"),
         )
 
 
@@ -233,6 +239,7 @@ class PlotEvent:
     is_irreversible: bool = False
     deceased_characters: list[str] = field(default_factory=list)
     evidence: str = ""
+    source_unit: int | None = None
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any]) -> "PlotEvent":
@@ -246,6 +253,11 @@ class PlotEvent:
         event_type = _required_str(payload, "type", "PlotEvent")
         if event_type not in _VALID_EVENT_TYPES:
             raise LLMResponseError(f"Invalid PlotEvent.type: {event_type!r}")
+        source_unit = payload.get("source_unit")
+        if source_unit is not None and (
+            not isinstance(source_unit, int) or isinstance(source_unit, bool) or source_unit < 1
+        ):
+            raise LLMResponseError("PlotEvent.source_unit must be a positive integer or null.")
         return cls(
             event_id=_required_str(payload, "event_id", "PlotEvent"),
             chapter=_required_int(payload, "chapter", "PlotEvent"),
@@ -259,6 +271,7 @@ class PlotEvent:
                 if "deceased_characters" in payload else []
             ),
             evidence=_optional_str(payload, "evidence", "PlotEvent") or "",
+            source_unit=source_unit,
         )
 
 
@@ -318,6 +331,8 @@ class CharacterState:
     knowledge: list[str] = field(default_factory=list)
     threads: list[StoryThread] = field(default_factory=list)
     thread_updates: list[ThreadUpdate] = field(default_factory=list)
+    state_changes: list[StateChange] = field(default_factory=list)
+    state_history: list[StateChange] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, payload: dict[str, Any], name_hint: str = "") -> "CharacterState":
@@ -337,7 +352,7 @@ class CharacterState:
         status = payload.get("status", "unknown")
         if not isinstance(status, str) or status not in {"alive", "dead", "unknown"}:
             raise LLMResponseError("CharacterState.status must be alive, dead, or unknown.")
-        for key in ("threads", "thread_updates"):
+        for key in ("threads", "thread_updates", "state_changes", "state_history"):
             if not isinstance(payload.get(key, []), list):
                 raise LLMResponseError(f"CharacterState.{key} must be a list.")
         return cls(
@@ -354,6 +369,8 @@ class CharacterState:
             knowledge=_required_str_list(payload, "knowledge", "CharacterState") if "knowledge" in payload else [],
             threads=[StoryThread.from_dict(item) for item in payload.get("threads", [])],
             thread_updates=[ThreadUpdate.from_dict(item) for item in payload.get("thread_updates", [])],
+            state_changes=[StateChange.from_dict(item) for item in payload.get("state_changes", [])],
+            state_history=[StateChange.from_dict(item) for item in payload.get("state_history", [])],
         )
 
 
@@ -516,7 +533,7 @@ class StoryContext:
             location = character.location or "unknown"
             goal = character.goal or "unknown"
             knowledge = ", ".join(character.knowledge if character.name in focus else character.knowledge[:3])
-            state_part = f" | state: {status}, location={location}, goal={goal}"
+            state_part = f" | state: {status}, location={location}, goal={goal}, realm={character.realm or 'unknown'}"
             if knowledge:
                 state_part += f", knows={knowledge}"
             suffix = state_part + suffix

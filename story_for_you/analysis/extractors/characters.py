@@ -8,10 +8,10 @@ from dataclasses import asdict
 
 from story_for_you.analysis.context import CharacterState
 from story_for_you.analysis.names import normalize_character_label
+from story_for_you.analysis.state_changes import StateChange
 from story_for_you.analysis.threads import ThreadUpdate
 from story_for_you.analysis.prompting import (
     CacheablePrompt,
-    clamp_text_middle,
     fill_template,
     load_template,
     render_cacheable_prompt_with_budget,
@@ -24,8 +24,6 @@ from story_for_you.utils.prompting import cache_prompt
 
 logger = logging.getLogger(__name__)
 
-_MAX_LLM_CHARACTERS = 8
-_REPAIR_SNIPPET_BUDGET = 4000
 _STRUCTURED_OPTIONS = {"no_think": True, "temperature": 0.1}
 _ROLE_PRIORITY: dict[str, int] = {"main": 3, "support": 2, "minor": 1}
 _GENERIC_CHARACTER_TITLES = {
@@ -50,11 +48,6 @@ class CharacterExtractor:
         prompt = self._build_prompt(text, known_characters)
         characters = self._prompt_characters(prompt)
         merged = self.merge_aliases(characters)
-        source = "".join(text.split())
-        for character in merged:
-            for change in character.thread_updates:
-                if "".join(change.evidence.split()) not in source:
-                    raise LLMResponseError("Thread update evidence must quote the supplied chapter.")
         return self.personality_analyzer.analyze(merged)
 
     def merge_aliases(self, characters: Iterable[CharacterState]) -> list[CharacterState]:
@@ -71,7 +64,8 @@ class CharacterExtractor:
     def _build_prompt(self, text: str, known_characters: Iterable[CharacterState] = ()) -> CacheablePrompt:
         chapter_text = text.strip()
         roster = [
-            {"name": char.name, "aliases": char.aliases, "threads": [asdict(item) for item in char.threads]}
+            {"name": char.name, "aliases": char.aliases, "threads": [asdict(item) for item in char.threads],
+             "goal": char.goal, "location": char.location, "realm": char.realm, "knowledge": char.knowledge}
             for char in known_characters
         ]
         prompt, truncated = render_cacheable_prompt_with_budget(
@@ -96,15 +90,15 @@ class CharacterExtractor:
                 step=": extract characters",
             ),
         )
-        characters, error = self._parse_response(response.content)
+        characters, error = self._parse_response(response.content, prompt.prefix)
         if characters is not None:
             return characters
 
         if error:
             logger.debug("Character extraction parse failed (%s). Attempting repair.", error)
-        repaired_content = self._attempt_repair(response.content, error)
+        repaired_content = self._attempt_repair(response.content, error, prompt)
         if repaired_content:
-            characters, repair_error = self._parse_response(repaired_content)
+            characters, repair_error = self._parse_response(repaired_content, prompt.prefix)
             if characters is not None:
                 return characters
             error = repair_error or error
@@ -117,7 +111,7 @@ class CharacterExtractor:
         )
         raise LLMResponseError(f"Character extraction failed after repair: {error or 'unknown parse failure'}")
 
-    def _parse_response(self, content: str | None) -> tuple[list[CharacterState] | None, str | None]:
+    def _parse_response(self, content: str | None, source_text: str) -> tuple[list[CharacterState] | None, str | None]:
         if not content:
             return None, "Empty response body."
         payload = load_json_response(content)
@@ -126,15 +120,27 @@ class CharacterExtractor:
         if not isinstance(payload, list):
             return None, "Character extractor payload is not a list."
         characters: list[CharacterState] = []
-        for idx, item in enumerate(payload[:_MAX_LLM_CHARACTERS], start=1):
+        source = "".join(source_text.split())
+        invalid_quotes: list[str] = []
+        for idx, item in enumerate(payload, start=1):
             if not isinstance(item, dict):
                 return None, f"Character payload at index {idx} is not an object."
             try:
                 character = self._to_character(item)
+                if character:
+                    for field_name in ("thread_updates", "state_changes"):
+                        for index, change in enumerate(getattr(character, field_name)):
+                            if "".join(change.evidence.split()) not in source:
+                                invalid_quotes.append(
+                                    f"{character.name}.{field_name}[{index}].evidence="
+                                    + json.dumps(change.evidence, ensure_ascii=False)
+                                )
             except LLMResponseError as exc:
                 return None, str(exc)
             if character:
                 characters.append(character)
+        if invalid_quotes:
+            return None, "State/thread update evidence must quote the supplied chapter. Invalid quotes: " + "; ".join(invalid_quotes)
         return characters, None
 
     def _to_character(self, data: dict) -> CharacterState | None:
@@ -165,6 +171,9 @@ class CharacterExtractor:
         updates = data.get("thread_updates", [])
         if not isinstance(updates, list):
             raise LLMResponseError("Character thread_updates must be a list.")
+        changes = data.get("state_changes", [])
+        if not isinstance(changes, list):
+            raise LLMResponseError("Character state_changes must be a list.")
         return CharacterState(
             name=name,
             aliases=aliases,
@@ -178,6 +187,7 @@ class CharacterExtractor:
             goal=goal.strip() or None if isinstance(goal, str) else None,
             knowledge=knowledge,
             thread_updates=[ThreadUpdate.from_dict(item) for item in updates],
+            state_changes=[StateChange.from_dict(item) for item in changes],
         )
 
     def _normalize_role(self, value: Any) -> str:
@@ -220,6 +230,7 @@ class CharacterExtractor:
         )
         target.unresolved = self._merge_list(target.unresolved, incoming.unresolved)
         target.thread_updates.extend(incoming.thread_updates)
+        target.state_changes.extend(incoming.state_changes)
         target.realm = target.realm or incoming.realm
         if incoming.status != "unknown":
             target.status = incoming.status
@@ -267,18 +278,19 @@ class CharacterExtractor:
             normalized_traits.append(normalized)
         return list(dict.fromkeys(normalized_traits))
 
-    def _attempt_repair(self, raw_response: str | None, error: str | None) -> str | None:
-        """Ask the LLM to repair malformed character JSON once."""
+    def _attempt_repair(
+        self, raw_response: str | None, error: str | None, original_prompt: CacheablePrompt,
+    ) -> str | None:
+        """Repair structure and quotations once, keeping the source and state contract."""
         if not raw_response:
             return None
-        snippet = clamp_text_middle(raw_response, _REPAIR_SNIPPET_BUDGET)
         prompt = fill_template(
             self.repair_template,
             error_message=error or "JSON parsing failed.",
-            invalid_output=snippet,
+            invalid_output=raw_response,
         )
         repaired = self.llm.generate(
-            prompt=cache_prompt(prompt),
+            prompt=cache_prompt(original_prompt.task + "\n\n" + prompt, prefix=original_prompt.prefix),
             options=telemetry_options(
                 _STRUCTURED_OPTIONS,
                 phase="analyze chapter",

@@ -79,7 +79,7 @@ class ResumableStoryAnalyzer(AnalyzerMixin):
             chapter_text = chapters[i]
 
             story_state, _ = self._process_chapter(
-                chapter_no, chapter_text, story_state
+                chapter_no, chapter_text, story_state, source_unit=i + 1
             )
 
             self._save_progress(analysis_key, total_chapters, i + 1)

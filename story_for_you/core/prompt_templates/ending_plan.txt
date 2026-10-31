@@ -10,11 +10,17 @@
 {{hint}}
 
 ## 约束
-- `max_chapters` 是单次运行的安全上限，不代表故事应该在这么多单元内结束。unit_count 必须在 1 到该上限之间。
+- 本轮单元上限 max_chapters = {{max_chapters}}。unit_count 必须在 1 到 {{max_chapters}} 之间。这是单次运行的安全上限，不代表故事应该在这么多单元内结束。
 - 自行选择 `unit_type`：明确要求“后四十回/补写十回”时通常填“回”，场景承接可填“场景”，复杂长篇结构推进可填“大章节”或“结构段”。unit_count 与 unit_type 必须匹配读者要求和原文尺度。
 - 先判断当前叙事处于承接、展开、转折、高潮、余波还是自然终止阶段；不要因为调用名是 continue 就强行写成结局。
 - 如果读者明确指定“后四十回”等范围，记录在 narrative_horizon，并按当前单次上限规划本轮最合理的连续单元；不得用一个总结段替代大篇幅要求。
 - 规划应优先处理当前场景的因果，然后推进人物状态、关系、势力和未决线索。每个单元要有可见行动、视角边界和结果状态。
+- 先从 `Recent Source Scene` 识别原文末尾被特写、拿出、递交、收起、损毁、提及或异常处理的高显著锚点：物件、奏章/书信等消息、线索、威胁、承诺和象征。只列会改变后续行动、信息或悬念的项目，不要把普通桌椅、衣物和泛泛景物都列入。
+- 先查看 `Candidate Subtext Cues`，重点复核其中的反常拒绝/恐惧、重复词、疾病与药物、宗教或动物图像、称谓与现实人物相似、突然的沉默/哭喊和“像/不是/有没有道理”等双关句。候选片段只是检索提示，不能把程序召回或模型猜测当成事实。
+- 每个 `source_anchors[].evidence` 必须是 `Recent Source Scene` 中逐字连续出现的原文，不能概括、拼接或改写；`significance` 说明它为什么影响后续。对这类锚点不能只承接相关台词后静默丢弃。
+- 为每个锚点在至少一个单元的 `anchor_actions` 中安排处理：`advance` 通过人物行动、信息或后果推进，`hold` 明确保留为可追踪的后续线索，`background` 仅在不改变其意义时自然带过。`action` 写出具体处理或保留理由，不能只写“注意到”或“继续关注”。
+- 从有明显双关、反常反应、寓言/宗教意象、人物称谓或重复意象的原文中提取 `narrative_signals`。每条必须有逐字证据、谨慎的 `reading`、`high|medium|low` 置信度和至少一个候选后果；不要把推测写成事实，例如“某人可能对应某种身份”不能直接写成“某人就是该身份”。
+- 根据 `source_anchors` 和 `narrative_signals` 生成 1–3 个 `plot_recommendations`。每个建议列出证据 ID、可执行节点、代价/风险，并只标记一个 `recommended=true`；推荐情节应解决当前场景因果，同时为低置信度隐喻保留验证空间。
 - 人物只能依据各自知情范围行动；保留信息差、叙事视角和原作的留白。
 - 不引入原文没有铺垫的新主角、后代、陌生传话人或多年后跳跃。新的信息必须由已有线索、行动或物件触发。
 - closure_level 是自然语言或简短标签，描述本轮结束程度，例如 `ongoing`、`partial`、`full`、`open`；不要套用 HE/BE/OE。
@@ -29,6 +35,41 @@
   "narrative_horizon": "时间、回目或结构范围；如读者要求后四十回，应明确写出",
   "closure_level": "ongoing | partial | full | open，或更准确的自然语言",
   "unit_type": "回 | 场景 | 大章节 | 结构段，按本次要求自行判断",
+  "source_anchors": [
+    {
+      "anchor_id": "anchor-1",
+      "kind": "object | message | clue | threat | promise | symbol",
+      "label": "奏章/书信/佩剑等简短名称",
+      "evidence": "从 Recent Source Scene 逐字复制的连续原文",
+      "significance": "它对后续行动、信息或悬念的意义",
+      "handling": "advance | hold | background",
+      "interpretation": "若该物件还带有隐喻或双重含义，写可能解读；否则为空字符串",
+      "candidate_consequences": ["有证据支持的候选后果"]
+    }
+  ],
+  "narrative_signals": [
+    {
+      "signal_id": "signal-1",
+      "kind": "foreshadowing | metaphor | double_meaning | identity | threat | promise | misdirection",
+      "label": "对白/意象的简短名称",
+      "evidence": "从 Recent Source Scene 逐字复制的连续原文",
+      "reading": "谨慎的可能解读，不把推测写成事实",
+      "confidence": "high | medium | low",
+      "candidate_referents": ["可能对应的人物/势力/物件；不确定时列出多个，不要定论"],
+      "candidate_consequences": ["候选后果1", "候选后果2"]
+    }
+  ],
+  "plot_recommendations": [
+    {
+      "recommendation_id": "plot-1",
+      "title": "情节建议标题",
+      "premise": "由证据支持的推进前提",
+      "based_on": ["signal-1", "anchor-1"],
+      "beats": ["可执行节点1", "可执行节点2"],
+      "tradeoff": "采用该方向的代价、风险或需要保留的悬念",
+      "recommended": true
+    }
+  ],
   "chapters": [
     {
       "title": "本单元标题",
@@ -39,7 +80,14 @@
       "focus_characters": ["本单元实际参与行动的人物"],
       "resolved_threads": ["本单元回应或推进的关系、伏笔、状态"],
       "carry_forward": ["下一单元必须承接的张力、信息或代价"],
-      "end_state": "本单元结束时人物、关系或世界状态发生了什么变化"
+      "end_state": "本单元结束时人物、关系或世界状态发生了什么变化",
+      "anchor_actions": [
+        {
+          "anchor_id": "anchor-1",
+          "handling": "advance | hold | background",
+          "action": "本单元如何推进、保留或自然背景化该锚点"
+        }
+      ]
     }
   ]
 }

@@ -24,8 +24,10 @@ class TextEdit:
         return cls(payload["old_text"], payload["new_text"], payload["reason"])
 
 
-def apply_edits(text: str, edits: list[TextEdit]) -> str:
+def apply_edits(text: str, edits: list[TextEdit], *, allow_noop: bool = False) -> str:
     if not edits:
+        if allow_noop:
+            return text
         raise LLMResponseError("Revision requested changes but returned no edits.")
     spans: list[tuple[int, int, str]] = []
     for edit in edits:
@@ -34,7 +36,7 @@ def apply_edits(text: str, edits: list[TextEdit]) -> str:
             raise LLMResponseError(
                 "Revision quote must match exactly one location in the original draft."
             )
-        if edit.old_text == edit.new_text:
+        if edit.old_text == edit.new_text and not allow_noop:
             raise LLMResponseError("Revision edit must change the quoted passage.")
         spans.append((start, start + len(edit.old_text), edit.new_text))
     spans.sort()

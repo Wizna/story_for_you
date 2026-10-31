@@ -12,7 +12,7 @@ import yaml
 @dataclass
 class LLMSettings:
     provider: str = "openai"
-    model: str = "deepseek-v4-pro"
+    model: str = "deepseek-flash"
     base_url: str = "https://api.deepseek.com"
     temperature: float = 0.7
     top_p: float = 0.9
@@ -138,6 +138,15 @@ class RenderingLimits:
     max_characteristic_words: int = 5
     max_tone_markers: int = 5
     max_relationships_per_char: int = 3
+    max_history_events: int = 24
+    max_evidence_passages: int = 8
+    evidence_chars: int = 12000
+
+    def __post_init__(self) -> None:
+        for name in ("max_history_events", "max_evidence_passages", "evidence_chars"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
 
 
 @dataclass
@@ -167,10 +176,13 @@ class EndingSettings:
 
     temperatures: EndingPhaseTemperatures = field(default_factory=EndingPhaseTemperatures)
     max_chapters: int = 40
+    revision_mode: str = "full"
 
     def __post_init__(self) -> None:
         if self.max_chapters <= 0:
             raise ValueError(f"max_chapters must be positive, got {self.max_chapters}")
+        if self.revision_mode not in {"full", "local", "none"}:
+            raise ValueError("revision_mode must be full, local, or none")
 
 
 @dataclass

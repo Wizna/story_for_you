@@ -26,12 +26,15 @@
     "tone_markers": ["语气词，如 呢/吧/罢"],
     "narrator_style": "detached | intimate | intrusive",
     "representative_samples": [
-      {"source_chapter": 1, "content": "≤50 字原文片段", "style_notes": "风格说明"}
+      {"source_chapter": 1, "content": "100-300 字连续原文，保留对白及其前后叙述；不足时可更短",
+       "speaker": "归属明确的对白说话者，否则 null", "scene_type": "原文实际场景，如审讯、交战、闲谈或叙述",
+       "style_notes": "措辞、称谓、句长、停顿、叙事距离等可观察特点，区分人物声音与叙述者声音"}
     ],
     "style_summary": "100-150 字中文风格总结，可直接用于指导文本生成"
   }
 
 ## 要点
-1. `characteristic_words` 和 `representative_samples`（≤3 个）必须从原文提取。
+1. `characteristic_words` 和 `representative_samples`（≤6 个）必须从给定样本逐字提取，source_chapter 必须对应样本编号。
+   尽量覆盖近期场景、对白与叙述，保留不同人物的用语差异；没有证据不要编造说话者或样例。
 2. `style_summary` 应简洁有力，适合作为写作指导。
 3. 严格输出 JSON，不要包裹在代码块中，不要添加任何解释。

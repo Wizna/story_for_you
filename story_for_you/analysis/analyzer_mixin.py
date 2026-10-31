@@ -110,7 +110,8 @@ class AnalyzerMixin:
         }
 
     def _process_chapter(
-        self, chapter_no: int, chapter_text: str, story_state: StoryState | None
+        self, chapter_no: int, chapter_text: str, story_state: StoryState | None,
+        *, source_unit: int | None = None,
     ) -> tuple[StoryState | None, ChapterSummary]:
         """Run the full extraction pipeline for a single chapter.
 
@@ -134,6 +135,7 @@ class AnalyzerMixin:
         events = self.event_extractor.extract(chapter_text, known_characters, chapter_no, recent_context)
         for event in events:
             event.chapter = chapter_no
+            event.source_unit = source_unit
         events = self.event_ledger.record(events)
 
         story_state = self.state_synthesizer.update(story_state, events, recent_context)

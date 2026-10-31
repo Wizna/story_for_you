@@ -50,7 +50,7 @@ class StoryAnalyzer(AnalyzerMixin):
             chapter_no = labels[index] if labels else index + 1
             chapter_no = chapter_no or index + 1
             story_state, _summary = self._process_chapter(
-                chapter_no, chapter_text, story_state
+                chapter_no, chapter_text, story_state, source_unit=index + 1
             )
 
         return self._assemble_context(chapters)

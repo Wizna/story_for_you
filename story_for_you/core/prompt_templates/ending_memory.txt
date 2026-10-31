@@ -6,17 +6,27 @@
 ## 已知伏笔 ID
 {{known_threads}}
 
+## 本单元提及人物的当前精确状态
+{{known_states}}
+
 ## 第 {{unit_number}} 单元实际成稿
 {{unit_text}}
 
-审查实际正文是否承接前一场景，遵守本单元视角、角色知情范围、物品归属、伤势、生死、时间地点与因果。
+## 本单元原文高显著锚点处理要求
+{{source_anchors}}
+
+审查实际正文是否承接前一场景，遵守本单元视角、角色知情范围、物品归属、伤势、生死、时间地点与因果。逐条核对上面的高显著锚点：advance 是否由行动、信息或后果推进，hold 是否留下可追踪的悬置，background 是否仍保留其意义；锚点完全消失或只剩无后果的复述时，passed=false。解释假设和候选情节只是推理材料，不是已发生事实；低置信度的身份、死亡和象征关系必须有本单元证据后才能写入记忆。
 只执行本单元的推进要求，不要求提前完成后续单元或全部读者结局要求。
 未来计划不是已发生事实；不可因为计划写了某结果就忽略正文矛盾。
 passed=false 时给出具体 issues 和 repair_instructions，不更新记忆。
 passed=true 时只提取本单元实际发生且有原文证据的状态变化；没提及的旧事实保留，不得凭空推进计划。
 每个 characters/event 的 evidence 必须逐字摘自本单元；角色 knowledge 只记录该角色已获知的事实。
 relationships 只列本单元改变的关系；物品变化需写入 events 的 impact/summary。
-thread_updates 仅在证据支持新增、推进、解决时输出；update/resolve 使用已知 ID，add 的 ID 可为空。
+thread_updates 仅在证据支持新增、推进、解决时输出；update/resolve 必须逐字复制上方已知 ID，不能自行生成、哈希或改写 ID；无法确认对应旧线索时使用 operation=add 且 thread_id=""，由程序生成新 ID。
+人物与世界的每条 thread_updates 均使用以下完整格式，字段名必须是 operation，不能用 action：
+{"operation": "add | update | resolve", "thread_id": "已知ID，add 可为空", "summary": "当前描述", "evidence": "本单元的连续原句"}
+所有 evidence 优先复制能支持变化的简短连续原文，保留原标点和引号，不得概述、拼接不相邻句子或把双引号改成单引号。
+截取长对话的一部分时不能自行补上后引号；也可选取不含引号的连续短句。不得为语句完整而增加原文没有的任何字或标点。
 严格返回 JSON 对象：
 {
   "passed": true,
@@ -27,6 +37,9 @@ thread_updates 仅在证据支持新增、推进、解决时输出；update/reso
     "name": "人物主名", "aliases": [], "role": "main", "realm": null,
     "personality": [], "unresolved": [], "status": "unknown",
     "location": null, "goal": null, "knowledge": [],
+    "state_changes": [{"field": "goal | location | realm | knowledge", "operation": "set | clear | add | remove | replace",
+                       "previous": "撤销/替换时逐字引用当前值，否则 null", "value": "新值，clear/remove 时 null",
+                       "evidence": "本单元支持变化的原文"}],
     "thread_updates": [], "evidence": "本单元原文"
   }],
   "events": [{
@@ -44,5 +57,12 @@ thread_updates 仅在证据支持新增、推进、解决时输出；update/reso
   "world_evidence": "世界状态有变化时逐字摘录本单元证据，否则为空"
 }
 无角色、事件或关系变化时返回对应空数组。story_state 仅在本单元改变世界状态时返回完整 StoryState
-（current_arc、world_tension、major_conflicts、time_constraints、unresolved_events、thread_updates），否则为 null。
+（否则为 null），所有字段必须出现且类型如下：
+{"current_arc": "当前阶段", "world_tension": "当前紧张程度", "major_conflicts": ["主要冲突"],
+ "time_constraints": ["时间限制"], "unresolved_events": ["未决事件"], "thread_updates": []}
+数组字段没有新内容时返回 []，不能用 null 或字符串代替。
 世界伏笔的已知 ID 见上下文；没提到的旧线索不算解决，resolve 必须有本单元证据。
+state_changes：goal/location/realm 仅用 set/clear，knowledge 仅用 add/remove/replace。
+clear/remove/replace 必须给出精确 previous 值；某字段有显式变化时仅用 state_changes 更新该字段。
+无变化返回 []，没有提及不等于失效。已完成目标用 clear；已失效或被纠正的知识用 remove/replace，保留人物知情边界。
+previous 必须逐字引用上述当前状态，不能填本单元刚出现的临时目标。旧值不匹配时重新判断该变更是否有依据，不能只替换 previous 来躲避校验。

@@ -10,7 +10,7 @@ import json
 from story_for_you.analysis.context import StoryContext
 from story_for_you.utils.file_io import compute_file_hash
 
-_ANALYSIS_CACHE_FORMAT_VERSION = 5
+_ANALYSIS_CACHE_FORMAT_VERSION = 6
 
 
 @dataclass

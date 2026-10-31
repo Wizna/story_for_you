@@ -107,7 +107,10 @@ def format_style_guide(style: WritingStyle | None) -> str:
     return "\n".join(sections) if sections else "(无风格摘要，请保持中性文学风格)"
 
 
-def format_style_samples(style: WritingStyle | None, max_samples: int = 3) -> str:
+def format_style_samples(
+    style: WritingStyle | None, max_samples: int = 3, *,
+    focus_characters: list[str] | None = None, scene_query: str = "",
+) -> str:
     """Format representative style samples for prompt injection.
 
     Args:
@@ -117,16 +120,25 @@ def format_style_samples(style: WritingStyle | None, max_samples: int = 3) -> st
     Returns:
         Formatted sample snippets or a placeholder.
     """
+    from story_for_you.core.ending.retrieval import rank_texts
+
     if style is None:
         return "(无示例片段)"
     samples = getattr(style, "representative_samples", [])
     if not samples:
         return "(无示例片段)"
     lines = []
-    for sample in samples[:max_samples]:
+    scores = {i: score for score, i in rank_texts(scene_query, [
+        (sample.scene_type or "") + " " + sample.style_notes + " " + sample.content for sample in samples
+    ])}
+    ordered = sorted(enumerate(samples), key=lambda row: (
+        row[1].speaker in (focus_characters or []), scores[row[0]], row[1].source_chapter,
+    ), reverse=True)
+    for _, sample in ordered[:max_samples]:
         content = getattr(sample, "content", "")
         if content:
-            lines.append(f"「{content}」")
+            label = f"来源单元{sample.source_chapter}；说话者={sample.speaker or '未标注，不推断'}；场景={sample.scene_type or '未标注'}"
+            lines.append(f"[{label}]「{content}」\n表达特点：{sample.style_notes}")
     return "\n".join(lines) if lines else "(无示例片段)"
 
 

@@ -30,7 +30,7 @@
     },
     "is_irreversible": true | false,
     "deceased_characters": ["仅本事件明确死亡的人物主名；见证者、收尸者不得列入"],
-    "evidence": "逐字引用本章支持事件的原文"
+    "evidence": "逐字引用本章支持事件的一段连续原句，不能为空、不得拼接、省略或改动标点"
   }
 
 ## 规则
